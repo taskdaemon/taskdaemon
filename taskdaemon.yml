@@ -1,0 +1,297 @@
+# TaskDaemon Example Configuration
+#
+# This file serves as documentation and example defaults.
+# It is NOT used at runtime - defaults are embedded in the binary.
+#
+# Users create their own configs at:
+#   - ~/.config/taskdaemon/taskdaemon.yml (global)
+#   - <project>/.taskdaemon.yml (per-project)
+
+# === LLM Configuration ===
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api-key-env: ANTHROPIC_API_KEY
+  base-url: https://api.anthropic.com
+  max-tokens: 16384
+  timeout-ms: 300000
+
+# === Concurrency Limits ===
+concurrency:
+  max-loops: 50
+  max-api-calls: 10
+  max-worktrees: 50
+
+# === Validation Defaults ===
+validation:
+  command: "otto ci"
+  iteration-timeout-ms: 300000
+  max-iterations: 100
+
+# === Git Configuration ===
+git:
+  worktree-dir: /tmp/taskdaemon/worktrees
+  disk-quota-gb: 100
+
+# === Storage Configuration ===
+storage:
+  taskstore-dir: .taskstore
+  jsonl-warn-mb: 50
+  jsonl-error-mb: 200
+
+# === Loop Type Paths ===
+loops:
+  paths:
+    - builtin
+    - ~/.config/taskdaemon/loops
+    - .taskdaemon/loops
+
+# =============================================================================
+# BUILT-IN LOOP TYPE DEFINITIONS
+# =============================================================================
+#
+# These 4 loop types ship embedded in the binary.
+# Users can override them by placing a file with the same name in their
+# ~/.config/taskdaemon/loops/ or <project>/.taskdaemon/loops/ directory.
+
+# -----------------------------------------------------------------------------
+# PLAN LOOP
+# -----------------------------------------------------------------------------
+# Level 1: Takes user idea, produces Plan markdown using Rule of Five
+# Input: User's feature request or idea
+# Output: .taskstore/plans/<id>.md
+# -----------------------------------------------------------------------------
+plan:
+  description: "Create or refine a Plan document using Rule of Five methodology"
+
+  prompt-template: |
+    You are creating a Plan document for the following request:
+
+    ## User Request
+    {{user-request}}
+
+    {{#if current-plan}}
+    ## Current Plan Draft
+    {{current-plan}}
+    {{/if}}
+
+    ## Review Pass
+    This is review pass {{review-pass}} of 5.
+
+    Focus areas by pass:
+    - Pass 1: Completeness - Are all sections filled? Missing requirements?
+    - Pass 2: Correctness - Logical errors? Wrong assumptions?
+    - Pass 3: Edge Cases - What could go wrong? Error handling?
+    - Pass 4: Architecture - Does this fit the larger system?
+    - Pass 5: Clarity - Is it implementable? Ambiguous sections?
+
+    {{#if progress}}
+    ## Previous Iterations
+    {{progress}}
+    {{/if}}
+
+    ## Instructions
+    Review and improve the Plan. Write the complete updated Plan to:
+    {{output-file}}
+
+    When the Plan is complete and passes all 5 review passes, ensure validation succeeds.
+
+  validation-command: "otto ci"
+  success-exit-code: 0
+  max-iterations: 25
+  iteration-timeout-ms: 300000
+
+  inputs:
+    - user-request
+    - current-plan
+    - review-pass
+  outputs:
+    - plan-markdown
+
+# -----------------------------------------------------------------------------
+# SPEC LOOP
+# -----------------------------------------------------------------------------
+# Level 2: Takes completed Plan, produces N Spec markdowns with dependencies
+# Input: Plan markdown
+# Output: .taskstore/specs/<id>.md (multiple)
+# -----------------------------------------------------------------------------
+spec:
+  description: "Decompose a Plan into atomic Spec documents with dependencies"
+
+  prompt-template: |
+    You are decomposing a Plan into Specs (atomic work units).
+
+    ## Plan Content
+    {{plan-content}}
+
+    {{#if existing-specs}}
+    ## Existing Specs
+    {{existing-specs}}
+    {{/if}}
+
+    {{#if coverage-gaps}}
+    ## Coverage Analysis
+    What the Plan covers that Specs don't yet:
+    {{coverage-gaps}}
+    {{/if}}
+
+    {{#if progress}}
+    ## Previous Iterations
+    {{progress}}
+    {{/if}}
+
+    ## Instructions
+    Create Spec documents for uncovered functionality. Each Spec should:
+    - Be atomic (completable in one focused session)
+    - Have clear acceptance criteria
+    - Define phases for implementation
+    - Specify dependencies on other Specs (if any)
+
+    Write Specs to: .taskstore/specs/<spec-id>.md
+    Update specs.jsonl with metadata including deps field.
+
+    When all Plan functionality is covered by Specs, validation will succeed.
+
+  validation-command: "otto ci"
+  success-exit-code: 0
+  max-iterations: 50
+  iteration-timeout-ms: 300000
+
+  inputs:
+    - plan-content
+    - existing-specs
+    - coverage-gaps
+  outputs:
+    - spec-markdowns
+    - specs-jsonl
+
+# -----------------------------------------------------------------------------
+# PHASE LOOP
+# -----------------------------------------------------------------------------
+# Level 3: Takes a Spec phase, produces code/tests in git worktree
+# Input: Spec markdown, phase description
+# Output: Committed code in feature branch
+# -----------------------------------------------------------------------------
+phase:
+  description: "Implement a single phase of a Spec in an isolated git worktree"
+
+  prompt-template: |
+    You are implementing Phase {{phase-number}} of {{total-phases}}: {{phase-name}}
+
+    ## Spec Content
+    {{spec-content}}
+
+    {{#if phase-description}}
+    ## Phase Description
+    {{phase-description}}
+    {{/if}}
+
+    {{#if completed-phases}}
+    ## Completed Phases
+    {{completed-phases}}
+    {{/if}}
+
+    ## Current State
+    Working directory: {{working-directory}}
+
+    {{#if git-status}}
+    Git status:
+    {{git-status}}
+    {{/if}}
+
+    {{#if git-diff}}
+    Git diff (recent changes):
+    {{git-diff}}
+    {{/if}}
+
+    {{#if progress}}
+    ## Previous Iterations
+    {{progress}}
+    {{/if}}
+
+    {{#if previous-errors}}
+    ## Validation Output (failed)
+    {{previous-errors}}
+    {{/if}}
+
+    ## Instructions
+    Implement this phase. Write code, tests, and documentation as needed.
+    Commit your changes with a meaningful message.
+
+    When validation passes (tests pass, lints clean), this phase is complete.
+
+  validation-command: "otto ci"
+  success-exit-code: 0
+  max-iterations: 100
+  iteration-timeout-ms: 300000
+
+  inputs:
+    - spec-content
+    - phase-name
+    - phase-number
+    - total-phases
+    - phase-description
+    - completed-phases
+    - working-directory
+    - git-status
+    - git-diff
+    - previous-errors
+  outputs:
+    - committed-code
+
+# -----------------------------------------------------------------------------
+# RALPH LOOP
+# -----------------------------------------------------------------------------
+# Generic loop for arbitrary tasks (the classic Ralph Wiggum pattern)
+# Input: Task description
+# Output: Varies based on task
+# -----------------------------------------------------------------------------
+ralph:
+  description: "Generic loop for arbitrary tasks - the classic Ralph Wiggum pattern"
+
+  prompt-template: |
+    ## Task
+    {{task-description}}
+
+    ## Current State
+    Working directory: {{working-directory}}
+
+    {{#if files-in-scope}}
+    Files in scope:
+    {{files-in-scope}}
+    {{/if}}
+
+    {{#if git-status}}
+    Git status:
+    {{git-status}}
+    {{/if}}
+
+    {{#if progress}}
+    ## Previous Iterations
+    {{progress}}
+    {{/if}}
+
+    {{#if previous-errors}}
+    ## Validation Output (failed)
+    {{previous-errors}}
+    {{/if}}
+
+    ## Instructions
+    Complete the task. Make necessary changes to files.
+    Commit your changes when appropriate.
+
+    When validation passes, the task is complete.
+
+  validation-command: "otto ci"
+  success-exit-code: 0
+  max-iterations: 100
+  iteration-timeout-ms: 300000
+
+  inputs:
+    - task-description
+    - working-directory
+    - files-in-scope
+    - git-status
+    - previous-errors
+  outputs:
+    - task-artifacts
