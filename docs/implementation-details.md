@@ -231,10 +231,12 @@ These are configurations in `~/.config/taskdaemon/loops/` or `.taskdaemon/loops/
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `id` | string | Required, max 256 chars, pattern: `plan-*` |
+| `id` | string | Required, 6-char hex + slug |
+| `parent` | string | Optional, ID of parent (typically null for top-level Plans) |
+| `deps` | list | IDs that must complete before this can start (typically empty) |
 | `title` | string | Required, max 256 chars |
 | `status` | enum | draft, ready, in-progress, complete, failed, cancelled |
-| `file` | string | Required, relative path in `.taskstore/plans/` |
+| `file` | string | Required, absolute path |
 | `created-at` | int | Required, unix ms |
 | `updated-at` | int | Required, unix ms |
 
@@ -244,31 +246,31 @@ These are configurations in `~/.config/taskdaemon/loops/` or `.taskdaemon/loops/
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `id` | string | Required, pattern: `spec-*` |
-| `plan-id` | string | Required, must reference existing Plan |
+| `id` | string | Required, 6-char hex + slug |
+| `parent` | string | Required, ID of parent (typically a Plan) |
 | `title` | string | Required |
 | `status` | enum | pending, blocked, running, complete, failed |
-| `deps` | list | Optional, Spec IDs this Spec depends on |
+| `deps` | list | IDs that must complete before this can start |
 | `file` | string | Required |
 | `phases` | list | Phase objects with name, description |
 | `created-at` | int | Required, unix ms |
 | `updated-at` | int | Required, unix ms |
 
 **Dependency Rules:**
-- `plan-id` links Spec to its parent Plan (required)
-- `deps` links Spec to other Specs it depends on (optional)
-- If `deps` is present, this Spec cannot start until ALL Specs in `deps` are `complete`
+- `parent` links to parent record (structural hierarchy)
+- `deps` links to sibling records that must complete first (execution dependency)
+- If `deps` is present, this record cannot start until ALL deps are `complete`
 - Circular dependencies are not allowed (validated at creation)
 
 **Example:**
 ```json
 {
-  "id": "spec-oauth-endpoints",
-  "plan-id": "plan-add-oauth",
+  "id": "019431-spec-oauth-endpoints",
+  "parent": "019430-plan-add-oauth",
   "title": "OAuth API Endpoints",
   "status": "blocked",
-  "deps": ["spec-oauth-db-schema"],
-  "file": "specs/oauth-endpoints.md",
+  "deps": ["019431-spec-oauth-db-schema"],
+  "file": "/home/user/project/.taskstore/specs/oauth-endpoints.md",
   "phases": [
     { "name": "Phase 1", "description": "Create endpoint stubs" },
     { "name": "Phase 2", "description": "Implement token validation" }
@@ -276,7 +278,7 @@ These are configurations in `~/.config/taskdaemon/loops/` or `.taskdaemon/loops/
 }
 ```
 
-This Spec is `blocked` until `spec-oauth-db-schema` is `complete`.
+This Spec is `blocked` until `019431-spec-oauth-db-schema` is `complete`.
 
 ---
 
@@ -284,16 +286,23 @@ This Spec is `blocked` until `spec-oauth-db-schema` is `complete`.
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `id` | string | Required, UUIDv7 |
-| `loop-type` | string | Required, must match a defined loop name (plan, spec, phase, ralph) |
-| `plan-id` | string | Optional, reference to Plan |
-| `spec-id` | string | Optional, reference to Spec |
-| `worktree` | string | Optional, absolute path to git worktree |
+| `id` | string | Required, 6-char hex + slug |
+| `loop-type` | string | Required, must match a defined loop name |
+| `parent` | string | Optional, ID of parent record (up the tree) |
+| `deps` | list | IDs that must complete before this can start |
 | `status` | enum | pending, running, paused, rebasing, blocked, complete, failed, stopped |
+| `worktree` | string | Optional, absolute path to git worktree |
 | `iteration` | int | Current iteration, >= 1 |
 | `progress` | string | Accumulated progress text from previous iterations |
+| `context` | object | Template context (spawned values, NOT runtime values) |
 | `created-at` | int | Required, unix ms |
 | `updated-at` | int | Required, unix ms |
+
+**Hierarchy:**
+- `parent` = structural (who spawned me, points UP the tree)
+- `deps` = execution dependencies (what must finish before I start)
+
+These are orthogonal. A record can have a parent AND deps.
 
 ---
 

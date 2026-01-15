@@ -168,7 +168,7 @@ pub struct AppState {
 
     // Data (cached from TaskStore)
     plans: Vec<PlanSummary>,
-    specs: HashMap<String, Vec<SpecSummary>>,  // plan_id → Spec list
+    specs: HashMap<String, Vec<SpecSummary>>,  // parent_id → Spec list
     executions: Vec<ExecutionSummary>,
 
     // Filtering
@@ -239,11 +239,11 @@ pub enum SpecStatus {
 #[derive(Debug, Clone)]
 pub struct ExecutionSummary {
     pub id: String,
-    pub spec_id: String,
-    pub spec_title: String,         // Cached for display
+    pub parent: Option<String>,     // ID of parent record
+    pub parent_title: String,       // Cached for display
     pub status: ExecStatus,
-    pub loop_type: String,          // e.g., "spec-implementation"
-    pub iteration_count: u32,
+    pub loop_type: String,          // e.g., "phase", "ralph"
+    pub iteration: u32,
     pub started_at: i64,
     pub updated_at: i64,
     pub error_message: Option<String>,
@@ -259,16 +259,12 @@ pub struct ExecutionSummary {
 ```rust
 #[derive(Debug, Clone)]
 pub enum TuiEvent {
-    // Plan lifecycle
-    PlanCreated { plan_id: String, title: String },
-    PlanStatusChanged { plan_id: String, old_status: PlanStatus, new_status: PlanStatus },
-
-    // Spec events
-    SpecsCreated { plan_id: String, count: usize },
-    SpecStatusChanged { spec_id: String, status: SpecStatus },
+    // Record lifecycle (generic for Plan, Spec, etc.)
+    RecordCreated { id: String, record_type: String, title: String },
+    RecordStatusChanged { id: String, old_status: String, new_status: String },
 
     // Execution events
-    LoopStarted { exec_id: String, spec_id: String },
+    LoopStarted { exec_id: String, parent: Option<String> },
     LoopIterationChanged { exec_id: String, iteration: u32 },
     LoopOutput { exec_id: String, output: String },
     LoopCompleted { exec_id: String, success: bool },
@@ -573,14 +569,13 @@ pub enum TuiEvent {
 │ LOOP STATE VARIABLES                                            │
 ├────────────────────────┬────────────────────────────────────────┤
 │ worktree               │ /tmp/taskdaemon/worktrees/exec-abc123  │
-│ execution_id           │ exec-abc123                             │
-│ spec_id                │ spec-550e8400                           │
-│ loop_type              │ spec-implementation                     │
-│ iteration_count        │ 5                                       │
-│ validation_cmd         │ cargo check && cargo test && clippy     │
-│ cargo_toml             │ { package: { name: "oauth-service", ...│
-│ git_status             │ M src/auth.rs\nM src/lib.rs\n...       │
-│ check_output           │ Finished dev [unoptimized + debuginfo] │
+│ execution-id           │ exec-abc123                             │
+│ parent                 │ 550e84-spec-oauth-endpoints             │
+│ loop-type              │ phase                                   │
+│ iteration              │ 5                                       │
+│ validation-cmd         │ otto ci                                 │
+│ git-status             │ M src/auth.rs\nM src/lib.rs\n...       │
+│ previous-errors        │ error[E0432]: unresolved import...     │
 └────────────────────────┴────────────────────────────────────────┘
 ```
 

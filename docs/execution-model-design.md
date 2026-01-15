@@ -37,15 +37,20 @@ async fn spawn_spec_loop(spec: &Spec) -> Result<(String, PathBuf)> {
     // Create execution record
     let exec = LoopExecution {
         id: exec_id.clone(),
-        loop_type: "spec-implementation".to_string(),
-        spec_id: Some(spec.id.clone()),
-        plan_id: Some(spec.plan_id.clone()),
+        loop_type: "phase".to_string(),
+        parent: Some(spec.id.clone()),  // Points to parent Spec
+        deps: vec![],                    // No execution dependencies
         worktree: Some(worktree_path.to_str().unwrap().to_string()),
         status: LoopStatus::Running,
-        iteration_count: 0,
-        started_at: now_ms(),
+        iteration: 0,
+        progress: String::new(),
+        context: serde_json::json!({
+            "spec-content": spec.content,
+            "phase-name": phase.name,
+            "phase-number": phase_num,
+        }),
+        created_at: now_ms(),
         updated_at: now_ms(),
-        last_error: None,
     };
 
     store.create(exec)?;
@@ -56,8 +61,8 @@ async fn spawn_spec_loop(spec: &Spec) -> Result<(String, PathBuf)> {
 
 **Worktree naming:**
 - Path: `/tmp/taskdaemon/worktrees/{exec_id}`
-- Branch: `feature/{spec_id}-{exec_id}`
-- Example: `feature/spec-001-exec-abc123`
+- Branch: `feature/{parent_id}-{exec_id}` (or just `feature/{exec_id}` if no parent)
+- Example: `feature/550e84-spec-oauth-exec-abc123`
 
 **Why separate worktrees:**
 - Parallel execution: 10 Specs work simultaneously without conflicts
@@ -70,8 +75,8 @@ async fn spawn_spec_loop(spec: &Spec) -> Result<(String, PathBuf)> {
 Worktrees are cleaned up when loops complete or fail:
 
 ```rust
-async fn cleanup_worktree(exec_id: &str, spec_id: &str, worktree: &Path) -> Result<()> {
-    tracing::info!("Cleaning up worktree for {}", exec_id);
+async fn cleanup_worktree(exec: &LoopExecution, worktree: &Path) -> Result<()> {
+    tracing::info!("Cleaning up worktree for {}", exec.id);
 
     // Remove worktree
     let status = Command::new("git")
@@ -85,8 +90,11 @@ async fn cleanup_worktree(exec_id: &str, spec_id: &str, worktree: &Path) -> Resu
         // Don't fail - cleanup task will retry
     }
 
-    // Delete branch if not merged (matches creation pattern: feature/{spec_id}-{exec_id})
-    let branch_name = format!("feature/{}-{}", spec_id, exec_id);
+    // Delete branch (matches creation pattern)
+    let branch_name = match &exec.parent {
+        Some(parent) => format!("feature/{}-{}", parent, exec.id),
+        None => format!("feature/{}", exec.id),
+    };
     Command::new("git")
         .args(["branch", "-D", &branch_name])
         .current_dir(&repo_root)
@@ -239,7 +247,7 @@ async fn persist_loop_state(
 
 **Persisted data:**
 ```jsonl
-{"id":"exec-abc123","loop_type":"spec-implementation","spec_id":"spec-001","plan_id":"plan-001","worktree":"/tmp/taskdaemon/worktrees/exec-abc123","status":"Running","iteration_count":7,"started_at":1705276800000,"updated_at":1705277200000,"last_error":null}
+{"id":"exec-abc123","loop-type":"phase","parent":"spec-001","deps":[],"worktree":"/tmp/taskdaemon/worktrees/exec-abc123","status":"Running","iteration":7,"progress":"Iteration 1: Created stub files...","context":{"spec-content":"...","phase-name":"Phase 1"},"created-at":1705276800000,"updated-at":1705277200000}
 ```
 
 ## Crash Recovery
@@ -294,11 +302,7 @@ async fn recover_loops(manager: &mut LoopManager, store: &Store) -> Result<()> {
 
         // Resume loop
         tracing::info!("Resuming loop {}", exec.id);
-        let loop_level = LoopLevel::SpecOuter {
-            spec_id: exec.spec_id.unwrap(),
-            worktree: PathBuf::from(worktree_path),
-        };
-        manager.spawn_loop(loop_level).await?;
+        manager.resume_loop(&exec).await?;
     }
 
     Ok(())

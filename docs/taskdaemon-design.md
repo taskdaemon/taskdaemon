@@ -298,8 +298,10 @@ TaskDaemon has no opinion on what the validator should be. It's entirely user-de
 let mut handles = vec![];
 for spec in ready_specs {
     let handle = tokio::spawn(async move {
-        run_loop(LoopLevel::SpecImpl {
-            spec_id: spec.id
+        run_loop(LoopConfig {
+            loop_type: "phase".to_string(),
+            parent: Some(spec.id),
+            context: spec.into_context(),
         }).await
     });
     handles.push(handle);
@@ -652,10 +654,10 @@ impl Record for Plan {
 #[derive(Serialize, Deserialize, Clone)]
 struct Spec {
     id: String,
-    plan_id: String,
+    parent: String,           // ID of parent (typically a Plan)
     title: String,
     status: SpecStatus,
-    dependencies: Vec<String>,  // Other spec IDs
+    deps: Vec<String>,        // IDs that must complete before this can start
     file: String,
     phases: Vec<Phase>,
     created_at: i64,
@@ -667,15 +669,16 @@ impl Record for Spec { /* ... */ }
 #[derive(Serialize, Deserialize, Clone)]
 struct LoopExecution {
     id: String,
-    loop_type: String,  // "plan-refinement", "spec-decomposition", etc.
-    spec_id: Option<String>,
-    plan_id: Option<String>,
+    loop_type: String,        // "plan", "spec", "phase", "ralph"
+    parent: Option<String>,   // ID of parent record (up the tree)
+    deps: Vec<String>,        // IDs that must complete before this can start
     worktree: Option<String>,
-    status: LoopStatus,  // Running, Complete, Failed, Paused
-    iteration_count: u32,
-    started_at: i64,
+    status: LoopStatus,       // Running, Complete, Failed, Paused
+    iteration: u32,
+    progress: String,         // Accumulated progress from previous iterations
+    context: serde_json::Value, // Template context
+    created_at: i64,
     updated_at: i64,
-    last_error: Option<String>,
 }
 
 impl Record for LoopExecution { /* ... */ }
