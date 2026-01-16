@@ -40,30 +40,24 @@ iteration=0
 
 while true; do
     ((iteration++))
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
 
-# Get script directory and project root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+    echo -e "${YELLOW}=== Iteration $iteration of $MAX_ITERATIONS ===${NC}"
 
-cd "$PROJECT_ROOT"
+    if [[ $iteration -gt $MAX_ITERATIONS ]]; then
+        echo -e "${GREEN}Max iterations reached. Exiting.${NC}"
+        exit 0
+    fi
 
-echo -e "${GREEN}=== Ralph Wiggum Loop ===${NC}"
-echo "Project: $PROJECT_ROOT"
-echo "Prompt:  $PROMPT_FILE"
-echo "Model:   $MODEL"
-echo "Max:     $MAX_ITERATIONS iterations"
-echo ""
+    # Run Claude with the prompt
+    cat "$PROMPT_FILE" | claude -p \
+        --dangerously-skip-permissions \
+        --model "$MODEL" \
+        --verbose
 
-# Check prompt file exists
-if [[ ! -f "$PROMPT_FILE" ]]; then
-    echo -e "${RED}Error: $PROMPT_FILE not found in project root${NC}"
-    echo "Create a PROMPT.md file with instructions for Claude."
-    exit 1
-fi
+    # Optional: push changes after each iteration
+    # git push origin $(git branch --show-current) 2>/dev/null || true
 
-iteration=0
-
-while true; do
-    ((iteration++))
+    echo ""
+    echo -e "${GREEN}Iteration $iteration complete. Sleeping ${SLEEP_BETWEEN}s...${NC}"
+    sleep "$SLEEP_BETWEEN"
+done
