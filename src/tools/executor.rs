@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use crate::llm::{ToolCall, ToolDefinition};
 
-use super::builtin::{EditFileTool, GlobTool, ListDirectoryTool, ReadFileTool, RunCommandTool, WriteFileTool};
+use super::builtin::{
+    CompleteTaskTool, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, QueryTool, ReadFileTool, RunCommandTool,
+    ShareTool, WriteFileTool,
+};
 use super::{Tool, ToolContext, ToolResult};
 
 /// Manages tool execution for a loop
@@ -23,9 +26,17 @@ impl ToolExecutor {
         tools.insert("edit_file".into(), Box::new(EditFileTool));
         tools.insert("list_directory".into(), Box::new(ListDirectoryTool));
         tools.insert("glob".into(), Box::new(GlobTool));
+        tools.insert("grep".into(), Box::new(GrepTool));
 
         // Command execution
         tools.insert("run_command".into(), Box::new(RunCommandTool));
+
+        // Task completion
+        tools.insert("complete_task".into(), Box::new(CompleteTaskTool));
+
+        // Coordination tools (require coordinator handle in context)
+        tools.insert("query".into(), Box::new(QueryTool));
+        tools.insert("share".into(), Box::new(ShareTool));
 
         Self { tools }
     }

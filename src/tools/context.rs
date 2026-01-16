@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::coordinator::CoordinatorHandle;
+
 use super::ToolError;
 
 /// Execution context for tools - scoped to a single loop
@@ -25,6 +27,9 @@ pub struct ToolContext {
 
     /// Whether sandbox mode is enabled (default: true)
     pub sandbox_enabled: bool,
+
+    /// Optional coordinator handle for inter-loop communication
+    pub coordinator: Option<CoordinatorHandle>,
 }
 
 impl ToolContext {
@@ -35,6 +40,7 @@ impl ToolContext {
             exec_id,
             read_files: Arc::new(Mutex::new(HashSet::new())),
             sandbox_enabled: true,
+            coordinator: None,
         }
     }
 
@@ -45,6 +51,18 @@ impl ToolContext {
             exec_id,
             read_files: Arc::new(Mutex::new(HashSet::new())),
             sandbox_enabled: false,
+            coordinator: None,
+        }
+    }
+
+    /// Create a context with coordinator handle for inter-loop communication
+    pub fn with_coordinator(worktree: PathBuf, exec_id: String, coordinator: CoordinatorHandle) -> Self {
+        Self {
+            worktree,
+            exec_id,
+            read_files: Arc::new(Mutex::new(HashSet::new())),
+            sandbox_enabled: true,
+            coordinator: Some(coordinator),
         }
     }
 
