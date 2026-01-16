@@ -334,9 +334,14 @@ async fn run_daemon(config: &Config) -> Result<()> {
 
     let _state_manager = StateManager::spawn(&store_path)?;
 
-    // Load loop types
+    // Load loop types and convert to configs
     let loader = LoopTypeLoader::new(&config.loops)?;
-    info!("Loaded {} loop types", loader.len());
+    let loop_configs = loader.to_configs();
+    info!(
+        "Loaded {} loop types: {:?}",
+        loop_configs.len(),
+        loop_configs.keys().collect::<Vec<_>>()
+    );
 
     // Initialize coordinator for inter-loop communication (with event persistence)
     let coordinator = Coordinator::with_persistence(Default::default(), &store_path);
@@ -360,7 +365,8 @@ async fn run_daemon(config: &Config) -> Result<()> {
 
     // TODO: Initialize remaining orchestration:
     // - Scheduler for queue management
-    // - LoopManager for running loops
+    // - LoopManager for running loops (use loop_configs)
+    let _ = &loop_configs; // Suppress unused warning until LoopManager is wired
 
     info!("Daemon running. Press Ctrl+C to stop.");
 
