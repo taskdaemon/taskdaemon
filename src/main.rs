@@ -10,11 +10,15 @@ use clap::{CommandFactory, FromArgMatches};
 use eyre::{Context, Result};
 use tracing::{info, warn};
 
+use std::sync::Arc;
+
 use taskdaemon::cli::{Cli, Command, DaemonCommand, OutputFormat, generate_after_help};
 use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
-use taskdaemon::r#loop::LoopTypeLoader;
+use taskdaemon::llm::{AnthropicClient, LlmClient};
+use taskdaemon::r#loop::{LoopManager, LoopManagerConfig, LoopTypeLoader};
+use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;
 use taskdaemon::tui;
 use taskdaemon::watcher::{MainWatcher, WatcherConfig};
@@ -332,7 +336,8 @@ async fn run_daemon(config: &Config) -> Result<()> {
         fs::create_dir_all(&store_path)?;
     }
 
-    let _state_manager = StateManager::spawn(&store_path)?;
+    let state_manager = StateManager::spawn(&store_path)?;
+    info!("StateManager initialized");
 
     // Load loop types and convert to configs
     let loader = LoopTypeLoader::new(&config.loops)?;
@@ -343,6 +348,9 @@ async fn run_daemon(config: &Config) -> Result<()> {
         loop_configs.keys().collect::<Vec<_>>()
     );
 
+    // Get repo root for MainWatcher and LoopManager
+    let repo_root = std::env::current_dir().context("Failed to get current directory")?;
+
     // Initialize coordinator for inter-loop communication (with event persistence)
     let coordinator = Coordinator::with_persistence(Default::default(), &store_path);
     let coordinator_tx = coordinator.sender();
@@ -352,9 +360,8 @@ async fn run_daemon(config: &Config) -> Result<()> {
     info!("Coordinator started");
 
     // Initialize and spawn MainWatcher for git main branch monitoring
-    let repo_root = std::env::current_dir().context("Failed to get current directory")?;
     let watcher_config = WatcherConfig::default();
-    let main_watcher = MainWatcher::new(watcher_config, repo_root, coordinator_tx);
+    let main_watcher = MainWatcher::new(watcher_config, repo_root.clone(), coordinator_tx.clone());
 
     let watcher_handle = tokio::spawn(async move {
         if let Err(e) = main_watcher.run().await {
@@ -363,10 +370,45 @@ async fn run_daemon(config: &Config) -> Result<()> {
     });
     info!("MainWatcher started");
 
-    // TODO: Initialize remaining orchestration:
-    // - Scheduler for queue management
-    // - LoopManager for running loops (use loop_configs)
-    let _ = &loop_configs; // Suppress unused warning until LoopManager is wired
+    // Initialize scheduler for API rate limiting
+    let scheduler_config = SchedulerConfig::default();
+    let scheduler = Scheduler::new(scheduler_config);
+    info!("Scheduler initialized");
+
+    // Create LLM client (reads API key from env var specified in config)
+    let llm_client: Arc<dyn LlmClient> =
+        Arc::new(AnthropicClient::from_config(&config.llm).context("Failed to create LLM client")?);
+    info!("LLM client initialized (model: {})", config.llm.model);
+
+    // Initialize LoopManager for loop orchestration
+    let manager_config = LoopManagerConfig {
+        max_concurrent_loops: config.concurrency.max_loops as usize,
+        poll_interval_secs: 10,
+        shutdown_timeout_secs: 60,
+        repo_root: repo_root.clone(),
+        worktree_dir: config.git.worktree_dir.clone(),
+    };
+
+    let mut loop_manager = LoopManager::new(
+        manager_config,
+        coordinator_tx, // LoopManager gets the sender, not the Coordinator
+        scheduler,
+        llm_client,
+        state_manager.clone(),
+        loop_configs,
+    );
+    info!("LoopManager initialized");
+
+    // Create shutdown channel for LoopManager
+    let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+    // Spawn LoopManager
+    let manager_handle = tokio::spawn(async move {
+        if let Err(e) = loop_manager.run(shutdown_rx).await {
+            tracing::error!(error = %e, "LoopManager error");
+        }
+    });
+    info!("LoopManager started");
 
     info!("Daemon running. Press Ctrl+C to stop, SIGHUP to reload config.");
 
@@ -402,10 +444,12 @@ async fn run_daemon(config: &Config) -> Result<()> {
                 }
                 _ = sigint.recv() => {
                     warn!("SIGINT received");
+                    let _ = shutdown_tx.send(()).await;
                     break;
                 }
                 _ = sigterm.recv() => {
                     warn!("SIGTERM received");
+                    let _ = shutdown_tx.send(()).await;
                     break;
                 }
             }
@@ -416,12 +460,18 @@ async fn run_daemon(config: &Config) -> Result<()> {
     {
         // On non-Unix, just wait for Ctrl+C
         tokio::signal::ctrl_c().await?;
+        let _ = shutdown_tx.send(()).await;
     }
 
     info!("Daemon shutting down...");
 
-    // Cleanup - abort watcher and coordinator tasks
+    // Wait for LoopManager to finish (it handles coordinator shutdown)
+    let _ = manager_handle.await;
+
+    // Cleanup - abort watcher task
     watcher_handle.abort();
+
+    // Coordinator was shut down by LoopManager, but abort handle for safety
     coord_handle.abort();
 
     Ok(())

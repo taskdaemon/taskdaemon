@@ -17,7 +17,7 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
-use crate::coordinator::{CoordRequest, Coordinator};
+use crate::coordinator::{CoordRequest, CoordinatorHandle};
 use crate::domain::{LoopExecution, LoopExecutionStatus, Spec, SpecStatus};
 use crate::llm::LlmClient;
 use crate::r#loop::{LoopConfig, LoopEngine};
@@ -78,8 +78,8 @@ pub struct LoopManager {
     /// Concurrency limiter
     semaphore: Arc<Semaphore>,
 
-    /// Shared coordinator for inter-loop communication
-    coordinator: Arc<Coordinator>,
+    /// Coordinator sender for registration and control
+    coordinator_tx: mpsc::Sender<CoordRequest>,
 
     /// Scheduler for API rate limiting
     scheduler: Arc<Scheduler>,
@@ -102,9 +102,14 @@ pub struct LoopManager {
 
 impl LoopManager {
     /// Create a new LoopManager
+    ///
+    /// Takes a coordinator sender (not the Coordinator itself) because the
+    /// Coordinator runs as its own task. This allows proper ownership:
+    /// - Coordinator::run() consumes self
+    /// - LoopManager communicates via the sender
     pub fn new(
         config: LoopManagerConfig,
-        coordinator: Coordinator,
+        coordinator_tx: mpsc::Sender<CoordRequest>,
         scheduler: Scheduler,
         llm: Arc<dyn LlmClient>,
         state: StateManager,
@@ -121,7 +126,7 @@ impl LoopManager {
             semaphore: Arc::new(Semaphore::new(config.max_concurrent_loops)),
             config,
             tasks: HashMap::new(),
-            coordinator: Arc::new(coordinator),
+            coordinator_tx,
             scheduler: Arc::new(scheduler),
             llm,
             state,
@@ -129,6 +134,28 @@ impl LoopManager {
             loop_configs,
             shutdown_requested: false,
         }
+    }
+
+    /// Create a CoordinatorHandle for a new execution by registering with the Coordinator
+    ///
+    /// This sends a Register message to the Coordinator and creates a handle with
+    /// its own message receiver channel.
+    async fn create_coord_handle(&self, exec_id: &str) -> Result<CoordinatorHandle> {
+        let (msg_tx, msg_rx) = mpsc::channel(100);
+
+        self.coordinator_tx
+            .send(CoordRequest::Register {
+                exec_id: exec_id.to_string(),
+                tx: msg_tx,
+            })
+            .await
+            .map_err(|_| eyre::eyre!("Coordinator channel closed"))?;
+
+        Ok(CoordinatorHandle::new(
+            self.coordinator_tx.clone(),
+            msg_rx,
+            exec_id.to_string(),
+        ))
     }
 
     /// Run the manager's main loop
@@ -274,10 +301,9 @@ impl LoopManager {
         // Get loop config for this type
         let loop_config = self.loop_configs.get(&exec.loop_type).cloned().unwrap_or_default();
 
-        // Register with coordinator
+        // Register with coordinator and get a handle
         let coord_handle = self
-            .coordinator
-            .register(&exec.id)
+            .create_coord_handle(&exec.id)
             .await
             .context("Failed to register with coordinator")?;
 
@@ -383,8 +409,7 @@ impl LoopManager {
         // Request stop for all running loops via coordinator
         for exec_id in self.tasks.keys() {
             let _ = self
-                .coordinator
-                .sender()
+                .coordinator_tx
                 .send(CoordRequest::Stop {
                     from_exec_id: "loop_manager".to_string(),
                     target_exec_id: exec_id.clone(),
@@ -416,8 +441,8 @@ impl LoopManager {
             }
         }
 
-        // Shutdown coordinator
-        self.coordinator.shutdown().await?;
+        // Shutdown coordinator by sending shutdown message
+        let _ = self.coordinator_tx.send(CoordRequest::Shutdown).await;
 
         info!("LoopManager shutdown complete");
         Ok(())
@@ -435,8 +460,7 @@ impl LoopManager {
 
     /// Stop a specific loop
     pub async fn stop_loop(&self, exec_id: &str) -> Result<()> {
-        self.coordinator
-            .sender()
+        self.coordinator_tx
             .send(CoordRequest::Stop {
                 from_exec_id: "loop_manager".to_string(),
                 target_exec_id: exec_id.to_string(),
