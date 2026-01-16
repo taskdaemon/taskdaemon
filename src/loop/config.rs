@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Configuration for a loop type (from YAML)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopConfig {
-    /// Loop type name (e.g., "plan", "spec", "phase", "ralph")
+    /// Loop type name (matches a type loaded from YAML configuration)
     pub loop_type: String,
 
     /// Handlebars prompt template
@@ -65,7 +65,9 @@ fn default_progress_max_chars() -> usize {
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
-            loop_type: "ralph".to_string(),
+            // loop_type is empty by default - actual type should come from
+            // the LoopLoader based on the execution's loop_type field
+            loop_type: String::new(),
             prompt_template: String::new(),
             validation_command: "otto ci".to_string(),
             success_exit_code: 0,
@@ -94,7 +96,7 @@ mod tests {
     fn test_default_config() {
         let config = LoopConfig::default();
 
-        assert_eq!(config.loop_type, "ralph");
+        assert!(config.loop_type.is_empty());
         assert_eq!(config.max_iterations, 100);
         assert_eq!(config.max_turns_per_iteration, 50);
         assert_eq!(config.iteration_timeout_ms, 300_000);

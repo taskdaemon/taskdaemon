@@ -17,7 +17,7 @@ use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
 use taskdaemon::llm::{AnthropicClient, LlmClient};
-use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopManager, LoopManagerConfig, LoopTypeLoader};
+use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopLoader, LoopManager, LoopManagerConfig};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;
 use taskdaemon::tui;
@@ -188,8 +188,11 @@ async fn cmd_tui(config: &Config) -> Result<()> {
 
     let state_manager = StateManager::spawn(&store_path).context("Failed to spawn StateManager")?;
 
+    // Get default loop type from config
+    let default_loop_type = config.loops.default_type.clone();
+
     // Run TUI
-    tui::run_with_state(state_manager).await
+    tui::run_with_state(state_manager, default_loop_type).await
 }
 
 /// Show logs
@@ -246,7 +249,7 @@ async fn cmd_run(config: &Config, loop_type: &str, task: &str, max_iterations: O
     }
 
     // Load loop types
-    let loader = LoopTypeLoader::new(&config.loops)?;
+    let loader = LoopLoader::new(&config.loops)?;
     let _loop_def = loader
         .get(loop_type)
         .ok_or_else(|| eyre::eyre!("Unknown loop type: {}", loop_type))?;
@@ -318,7 +321,7 @@ async fn cmd_run_daemon(config: &Config) -> Result<()> {
 
 /// List available loop types
 async fn cmd_list_loops(config: &Config) -> Result<()> {
-    let loader = LoopTypeLoader::new(&config.loops)?;
+    let loader = LoopLoader::new(&config.loops)?;
 
     let loop_types: Vec<String> = loader.names().map(|s| s.to_string()).collect();
 
@@ -450,7 +453,7 @@ async fn run_daemon(config: &Config) -> Result<()> {
     info!("StateManager initialized");
 
     // Load loop types and convert to configs
-    let loader = LoopTypeLoader::new(&config.loops)?;
+    let loader = LoopLoader::new(&config.loops)?;
     let loop_configs = loader.to_configs();
     info!(
         "Loaded {} loop types: {:?}",
@@ -533,7 +536,7 @@ async fn run_daemon(config: &Config) -> Result<()> {
                 _ = sighup.recv() => {
                     info!("SIGHUP received - reloading configuration");
                     // Reload loop types (hot-reload)
-                    match LoopTypeLoader::new(&config.loops) {
+                    match LoopLoader::new(&config.loops) {
                         Ok(new_loader) => {
                             let new_configs = new_loader.to_configs();
                             info!(

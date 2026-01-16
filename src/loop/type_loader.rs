@@ -40,9 +40,15 @@ use crate::config::LoopsConfig;
 /// A loop type definition as loaded from YAML
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopType {
-    /// Parent type to extend (inheritance)
+    /// Parent type to extend (inheritance for config values)
     #[serde(default)]
     pub extends: Option<String>,
+
+    /// Parent loop type for cascade relationships
+    /// e.g., spec has parent: plan, phase has parent: spec
+    /// When a parent loop completes, it spawns child loops
+    #[serde(default)]
+    pub parent: Option<String>,
 
     /// Human-readable description
     #[serde(default)]
@@ -185,7 +191,7 @@ struct TrackedFile {
 }
 
 /// Loader for loop type definitions with hot-reload support
-pub struct LoopTypeLoader {
+pub struct LoopLoader {
     /// Loaded loop types by name (before inheritance resolution)
     raw_types: HashMap<String, LoopType>,
 
@@ -199,7 +205,7 @@ pub struct LoopTypeLoader {
     config: LoopsConfig,
 }
 
-impl LoopTypeLoader {
+impl LoopLoader {
     /// Create a new loader using the given configuration
     pub fn new(config: &LoopsConfig) -> Result<Self> {
         let mut loader = Self {
@@ -442,6 +448,16 @@ impl LoopTypeLoader {
         self.types.iter().map(|(k, v)| (k.as_str(), v))
     }
 
+    /// Find all loop types that have the given parent type
+    /// Used for cascade logic - when a parent loop completes, spawn these child types
+    pub fn children_of(&self, parent_type: &str) -> Vec<&str> {
+        self.types
+            .iter()
+            .filter(|(_, lt)| lt.parent.as_deref() == Some(parent_type))
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
     /// Convert all loop types to LoopConfig format for the LoopManager
     pub fn to_configs(&self) -> HashMap<String, LoopConfig> {
         self.types
@@ -517,7 +533,7 @@ mod tests {
     #[test]
     fn test_load_builtins() {
         let config = LoopsConfig::default();
-        let loader = LoopTypeLoader::new(&config).unwrap();
+        let loader = LoopLoader::new(&config).unwrap();
 
         assert!(loader.get("plan").is_some());
         assert!(loader.get("spec").is_some());
@@ -626,8 +642,9 @@ inputs:
     fn test_has_changes_no_files() {
         let config = LoopsConfig {
             paths: vec!["builtin".to_string()],
+            default_type: String::new(),
         };
-        let loader = LoopTypeLoader::new(&config).unwrap();
+        let loader = LoopLoader::new(&config).unwrap();
 
         // No external files tracked, so no changes
         assert!(!loader.has_changes());

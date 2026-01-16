@@ -10,7 +10,7 @@
 # === LLM Configuration ===
 llm:
   provider: anthropic
-  model: claude-sonnet-4-20250514
+  model: claude-opus-4-20250514
   api-key-env: ANTHROPIC_API_KEY
   base-url: https://api.anthropic.com
   max-tokens: 16384
@@ -34,10 +34,12 @@ git:
   disk-quota-gb: 100
 
 # === Storage Configuration ===
-storage:
-  taskstore-dir: .taskstore
-  jsonl-warn-mb: 100
-  jsonl-error-mb: 500
+# Default uses XDG data directory: ~/.local/share/taskdaemon
+# Uncomment to override:
+# storage:
+#   taskstore-dir: ~/.local/share/taskdaemon
+#   jsonl-warn-mb: 100
+#   jsonl-error-mb: 500
 
 # === Loop Type Paths ===
 loops:
@@ -45,6 +47,9 @@ loops:
     - builtin
     - ~/.config/taskdaemon/loops
     - .taskdaemon/loops
+  # Default loop type for TUI quick-create (when user presses 'n')
+  # Leave empty to prompt for type selection, or set to any loaded loop type name
+  default-type:
 
 # =============================================================================
 # BUILT-IN LOOP TYPE DEFINITIONS
@@ -62,6 +67,7 @@ loops:
 # Output: .taskstore/plans/<id>.md
 # -----------------------------------------------------------------------------
 plan:
+  # No parent - this is a root loop type
   description: "Create or refine a Plan document using Rule of Five methodology"
 
   prompt-template: |
@@ -124,6 +130,7 @@ plan:
 # Output: .taskstore/specs/<id>.md (multiple)
 # -----------------------------------------------------------------------------
 spec:
+  parent: plan
   description: "Decompose a Plan into atomic Spec documents with dependencies"
 
   prompt-template: |
@@ -189,6 +196,7 @@ spec:
 # Output: Committed code in feature branch
 # -----------------------------------------------------------------------------
 phase:
+  parent: spec
   description: "Implement a single phase of a Spec in an isolated git worktree"
 
   prompt-template: |
@@ -274,6 +282,7 @@ phase:
 # Output: Varies based on task
 # -----------------------------------------------------------------------------
 ralph:
+  # No parent - standalone loop type
   description: "Generic loop for arbitrary tasks - the classic Ralph Wiggum pattern"
 
   prompt-template: |

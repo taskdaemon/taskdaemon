@@ -30,7 +30,6 @@ pub mod coordinator;
 pub mod daemon;
 pub mod domain;
 pub mod llm;
-pub mod planning;
 pub mod progress;
 pub mod repl;
 pub mod scheduler;
@@ -52,17 +51,14 @@ pub use coordinator::{
     PersistedEvent, PersistedEventType,
 };
 pub use domain::{
-    DomainId, Filter, FilterOp, IndexValue, LoopExecution, LoopExecutionStatus, Phase, PhaseStatus, Plan, PlanStatus,
-    Priority, Record, Spec, SpecStatus, Store,
+    DomainId, Filter, FilterOp, IndexValue, Loop, LoopExecution, LoopExecutionStatus, LoopStatus, Phase, PhaseStatus,
+    Priority, Record, Store,
 };
 pub use llm::{AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError};
 pub use r#loop::{
-    CascadeHandler, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopManager,
-    LoopManagerConfig, LoopMetrics, LoopStats, LoopStatus, LoopTaskResult, LoopType, LoopTypeLoader, TypeMetrics,
-    topological_sort, validate_dependency_graph,
-};
-pub use planning::{
-    DecomposedPlan, DecomposerConfig, PlanDecomposer, PlanDraft, PlanningSession, SessionConfig, SessionState,
+    CascadeHandler, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopLoader, LoopManager,
+    LoopManagerConfig, LoopMetrics, LoopStats, LoopTaskResult, LoopType, TypeMetrics, topological_sort,
+    validate_dependency_graph,
 };
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};

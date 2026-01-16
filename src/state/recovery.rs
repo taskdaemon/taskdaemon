@@ -4,17 +4,15 @@
 
 use tracing::{debug, info, warn};
 
-use crate::domain::{LoopExecution, LoopExecutionStatus, Plan, PlanStatus, Spec, SpecStatus};
+use crate::domain::{Loop, LoopExecution, LoopExecutionStatus, LoopStatus};
 
 use super::StateManager;
 
 /// Recovery statistics
 #[derive(Debug, Default)]
 pub struct RecoveryStats {
-    /// Number of plans that need recovery
-    pub plans_to_recover: usize,
-    /// Number of specs that need recovery
-    pub specs_to_recover: usize,
+    /// Number of loops (records) that need recovery
+    pub loops_to_recover: usize,
     /// Number of executions that need recovery
     pub executions_to_recover: usize,
 }
@@ -23,8 +21,8 @@ impl std::fmt::Display for RecoveryStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "plans: {}, specs: {}, executions: {}",
-            self.plans_to_recover, self.specs_to_recover, self.executions_to_recover
+            "loops: {}, executions: {}",
+            self.loops_to_recover, self.executions_to_recover
         )
     }
 }
@@ -32,32 +30,20 @@ impl std::fmt::Display for RecoveryStats {
 /// Check for incomplete work and gather recovery statistics
 ///
 /// This scans the TaskStore for:
-/// - Plans in InProgress state (crashed mid-execution)
-/// - Specs in Running state (crashed mid-execution)
+/// - Loops in InProgress state (crashed mid-execution)
 /// - LoopExecutions in Running/Rebasing state (crashed mid-iteration)
 pub async fn scan_for_recovery(state: &StateManager) -> eyre::Result<RecoveryStats> {
     let mut stats = RecoveryStats::default();
 
-    // Find plans that were in progress
-    let in_progress_plans = state
-        .list_plans(Some("in_progress".to_string()))
+    // Find loops that were in progress
+    let in_progress_loops = state
+        .list_loops(None, Some("in_progress".to_string()), None)
         .await
-        .map_err(|e| eyre::eyre!("Failed to list in-progress plans: {}", e))?;
-    stats.plans_to_recover = in_progress_plans.len();
+        .map_err(|e| eyre::eyre!("Failed to list in-progress loops: {}", e))?;
+    stats.loops_to_recover = in_progress_loops.len();
 
-    for plan in &in_progress_plans {
-        debug!(plan_id = %plan.id, "Found in-progress plan needing recovery");
-    }
-
-    // Find specs that were running
-    let running_specs = state
-        .list_specs(None, Some("running".to_string()))
-        .await
-        .map_err(|e| eyre::eyre!("Failed to list running specs: {}", e))?;
-    stats.specs_to_recover = running_specs.len();
-
-    for spec in &running_specs {
-        debug!(spec_id = %spec.id, "Found running spec needing recovery");
+    for record in &in_progress_loops {
+        debug!(loop_id = %record.id, loop_type = %record.r#type, "Found in-progress loop needing recovery");
     }
 
     // Find executions that were active (running or rebasing)
@@ -82,7 +68,7 @@ pub async fn scan_for_recovery(state: &StateManager) -> eyre::Result<RecoverySta
         );
     }
 
-    if stats.plans_to_recover > 0 || stats.specs_to_recover > 0 || stats.executions_to_recover > 0 {
+    if stats.loops_to_recover > 0 || stats.executions_to_recover > 0 {
         info!("Recovery scan found incomplete work: {}", stats);
     } else {
         debug!("Recovery scan found no incomplete work");
@@ -92,18 +78,12 @@ pub async fn scan_for_recovery(state: &StateManager) -> eyre::Result<RecoverySta
 }
 
 /// Get all incomplete items that need recovery
-pub async fn get_incomplete_items(state: &StateManager) -> eyre::Result<(Vec<Plan>, Vec<Spec>, Vec<LoopExecution>)> {
-    // Get in-progress plans
-    let plans = state
-        .list_plans(Some("in_progress".to_string()))
+pub async fn get_incomplete_items(state: &StateManager) -> eyre::Result<(Vec<Loop>, Vec<LoopExecution>)> {
+    // Get in-progress loops
+    let loops = state
+        .list_loops(None, Some("in_progress".to_string()), None)
         .await
-        .map_err(|e| eyre::eyre!("Failed to list in-progress plans: {}", e))?;
-
-    // Get running specs
-    let specs = state
-        .list_specs(None, Some("running".to_string()))
-        .await
-        .map_err(|e| eyre::eyre!("Failed to list running specs: {}", e))?;
+        .map_err(|e| eyre::eyre!("Failed to list in-progress loops: {}", e))?;
 
     // Get active executions
     let mut executions = state
@@ -118,36 +98,25 @@ pub async fn get_incomplete_items(state: &StateManager) -> eyre::Result<(Vec<Pla
 
     executions.extend(rebasing_execs);
 
-    Ok((plans, specs, executions))
+    Ok((loops, executions))
 }
 
-/// Mark crashed executions as paused so they can be resumed
+/// Mark crashed items as paused so they can be resumed
 ///
-/// This transitions active executions to Paused state to indicate they
+/// This transitions active items to appropriate states to indicate they
 /// need to be resumed (rather than restarted from scratch).
 pub async fn mark_crashed_as_paused(state: &StateManager) -> eyre::Result<usize> {
-    let (plans, specs, executions) = get_incomplete_items(state).await?;
+    let (loops, executions) = get_incomplete_items(state).await?;
     let mut count = 0;
 
-    // Mark plans as ready (so they can be picked up again)
-    for mut plan in plans {
-        warn!(plan_id = %plan.id, "Marking crashed plan as ready for retry");
-        plan.set_status(PlanStatus::Ready);
+    // Mark loops as ready (so they can be picked up again)
+    for mut record in loops {
+        warn!(loop_id = %record.id, loop_type = %record.r#type, "Marking crashed loop as ready for retry");
+        record.set_status(LoopStatus::Ready);
         state
-            .update_plan(plan)
+            .update_loop(record)
             .await
-            .map_err(|e| eyre::eyre!("Failed to update plan: {}", e))?;
-        count += 1;
-    }
-
-    // Mark specs as pending (so they can be picked up again)
-    for mut spec in specs {
-        warn!(spec_id = %spec.id, "Marking crashed spec as pending for retry");
-        spec.set_status(SpecStatus::Pending);
-        state
-            .update_spec(spec)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to update spec: {}", e))?;
+            .map_err(|e| eyre::eyre!("Failed to update loop: {}", e))?;
         count += 1;
     }
 
@@ -189,7 +158,7 @@ pub async fn recover(state: &StateManager) -> eyre::Result<RecoveryStats> {
     let stats = scan_for_recovery(state).await?;
 
     // Mark crashed items as paused
-    if stats.plans_to_recover > 0 || stats.specs_to_recover > 0 || stats.executions_to_recover > 0 {
+    if stats.loops_to_recover > 0 || stats.executions_to_recover > 0 {
         mark_crashed_as_paused(state).await?;
     }
 
@@ -209,27 +178,25 @@ mod tests {
 
         let stats = scan_for_recovery(&manager).await.unwrap();
 
-        assert_eq!(stats.plans_to_recover, 0);
-        assert_eq!(stats.specs_to_recover, 0);
+        assert_eq!(stats.loops_to_recover, 0);
         assert_eq!(stats.executions_to_recover, 0);
 
         manager.shutdown().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_recovery_finds_in_progress_plan() {
+    async fn test_recovery_finds_in_progress_loop() {
         let temp = tempdir().unwrap();
         let manager = StateManager::spawn(temp.path()).unwrap();
 
-        // Create an in-progress plan
-        let mut plan = Plan::with_id("crashed-plan", "Crashed Plan", "/test.md");
-        plan.set_status(PlanStatus::InProgress);
-        manager.create_plan(plan).await.unwrap();
+        // Create an in-progress loop
+        let mut record = Loop::with_id("crashed-loop", "mytype", "Crashed Loop");
+        record.set_status(LoopStatus::InProgress);
+        manager.create_loop(record).await.unwrap();
 
         let stats = scan_for_recovery(&manager).await.unwrap();
 
-        assert_eq!(stats.plans_to_recover, 1);
-        assert_eq!(stats.specs_to_recover, 0);
+        assert_eq!(stats.loops_to_recover, 1);
         assert_eq!(stats.executions_to_recover, 0);
 
         manager.shutdown().await.unwrap();
@@ -241,14 +208,14 @@ mod tests {
         let manager = StateManager::spawn(temp.path()).unwrap();
 
         // Create a running execution
-        let mut exec = LoopExecution::with_id("crashed-exec", "ralph");
+        let mut exec = LoopExecution::with_id("crashed-exec", "mytype");
         exec.set_status(LoopExecutionStatus::Running);
         exec.increment_iteration();
         manager.create_execution(exec).await.unwrap();
 
         let stats = scan_for_recovery(&manager).await.unwrap();
 
-        assert_eq!(stats.plans_to_recover, 0);
+        assert_eq!(stats.loops_to_recover, 0);
         assert_eq!(stats.executions_to_recover, 1);
 
         manager.shutdown().await.unwrap();
@@ -260,7 +227,7 @@ mod tests {
         let manager = StateManager::spawn(temp.path()).unwrap();
 
         // Create running execution
-        let mut exec = LoopExecution::with_id("crashed-exec", "ralph");
+        let mut exec = LoopExecution::with_id("crashed-exec", "mytype");
         exec.set_status(LoopExecutionStatus::Running);
         manager.create_execution(exec).await.unwrap();
 
@@ -283,17 +250,17 @@ mod tests {
         let manager = StateManager::spawn(temp.path()).unwrap();
 
         // Create crashed state
-        let mut plan = Plan::with_id("plan-1", "Plan 1", "/p1.md");
-        plan.set_status(PlanStatus::InProgress);
-        manager.create_plan(plan).await.unwrap();
+        let mut record = Loop::with_id("loop-1", "mytype", "Loop 1");
+        record.set_status(LoopStatus::InProgress);
+        manager.create_loop(record).await.unwrap();
 
-        let mut exec = LoopExecution::with_id("exec-1", "phase");
+        let mut exec = LoopExecution::with_id("exec-1", "mytype");
         exec.set_status(LoopExecutionStatus::Rebasing);
         manager.create_execution(exec).await.unwrap();
 
         // Scan for incomplete work
         let stats = scan_for_recovery(&manager).await.unwrap();
-        assert_eq!(stats.plans_to_recover, 1);
+        assert_eq!(stats.loops_to_recover, 1);
         assert_eq!(stats.executions_to_recover, 1);
 
         // Mark crashed items as paused
@@ -301,8 +268,8 @@ mod tests {
         assert_eq!(count, 2);
 
         // Verify states were updated
-        let plan = manager.get_plan("plan-1").await.unwrap().unwrap();
-        assert_eq!(plan.status, PlanStatus::Ready);
+        let record = manager.get_loop("loop-1").await.unwrap().unwrap();
+        assert_eq!(record.status, LoopStatus::Ready);
 
         let exec = manager.get_execution("exec-1").await.unwrap().unwrap();
         assert_eq!(exec.status, LoopExecutionStatus::Paused);
@@ -320,8 +287,7 @@ mod tests {
 
         // Run recovery on empty store
         let stats = recover(&manager).await.unwrap();
-        assert_eq!(stats.plans_to_recover, 0);
-        assert_eq!(stats.specs_to_recover, 0);
+        assert_eq!(stats.loops_to_recover, 0);
         assert_eq!(stats.executions_to_recover, 0);
 
         manager.shutdown().await.unwrap();

@@ -5,7 +5,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::state::{AppState, ConfirmAction, ConfirmDialog, InteractionMode, LayoutMode, ResourceView, SortOrder};
+use super::state::{AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, View};
 
 /// TUI application
 #[derive(Debug)]
@@ -46,8 +46,9 @@ impl App {
         // Handle based on interaction mode
         match &self.state.interaction_mode {
             InteractionMode::Normal => self.handle_normal_key(key),
-            InteractionMode::Search(_) => self.handle_search_key(key),
+            InteractionMode::Filter(_) => self.handle_filter_key(key),
             InteractionMode::Command(_) => self.handle_command_key(key),
+            InteractionMode::TaskInput(_) => self.handle_task_input_key(key),
             InteractionMode::Confirm(_) => self.handle_confirm_key(key),
             InteractionMode::Help => self.handle_help_key(key),
         }
@@ -61,8 +62,7 @@ impl App {
                 return true; // Force quit
             }
             (KeyCode::Char('q'), _) => {
-                // Show confirmation if there are active loops
-                if self.state.metrics.ralphs_active > 0 {
+                if self.state.executions_active > 0 {
                     self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::quit());
                 } else {
                     self.state.should_quit = true;
@@ -76,112 +76,76 @@ impl App {
 
             // === Mode switching ===
             (KeyCode::Char('/'), _) => {
-                self.state.interaction_mode = InteractionMode::Search(String::new());
+                self.state.interaction_mode = InteractionMode::Filter(String::new());
             }
             (KeyCode::Char(':'), _) => {
                 self.state.interaction_mode = InteractionMode::Command(String::new());
             }
 
-            // === Navigation ===
+            // === Navigation (only in list views) ===
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                self.state.current_selection_mut().select_prev();
+                if let Some(sel) = self.state.current_selection_mut() {
+                    sel.select_prev();
+                }
             }
             (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                let max = self.state.current_items().len();
-                self.state.current_selection_mut().select_next(max);
+                let max = self.state.current_item_count();
+                if let Some(sel) = self.state.current_selection_mut() {
+                    sel.select_next(max);
+                }
             }
             (KeyCode::Char('g'), _) => {
-                self.state.current_selection_mut().select_first();
+                if let Some(sel) = self.state.current_selection_mut() {
+                    sel.select_first();
+                }
             }
             (KeyCode::Char('G'), _) => {
-                let max = self.state.current_items().len();
-                self.state.current_selection_mut().select_last(max);
+                let max = self.state.current_item_count();
+                if let Some(sel) = self.state.current_selection_mut() {
+                    sel.select_last(max);
+                }
             }
 
             // === Drill down / back ===
             (KeyCode::Enter, _) => {
-                self.state.drill_down();
+                self.handle_drill_down();
             }
             (KeyCode::Esc, _) => {
-                // Clear filter first, then navigate back, then show quit confirm
-                if self.state.filter.is_active() {
-                    self.state.filter.clear();
-                } else if !self.state.navigate_back() {
-                    // No more history, ask to quit
-                    if self.state.metrics.ralphs_active > 0 {
-                        self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::quit());
-                    } else {
-                        self.state.should_quit = true;
-                    }
-                }
+                self.handle_escape();
             }
 
-            // === Layout modes ===
+            // === Actions ===
+            (KeyCode::Char('l'), _) => {
+                // View logs for selected item
+                if let Some(id) = self.state.selected_item_id() {
+                    self.state.push_view(View::Logs { target_id: id });
+                }
+            }
             (KeyCode::Char('d'), _) => {
-                self.state.layout_mode = LayoutMode::Dashboard;
-            }
-            (KeyCode::Char(' '), _) => {
-                self.state.layout_mode = self.state.layout_mode.next();
-            }
-            (KeyCode::Char('f'), _) => {
-                self.state.layout_mode = LayoutMode::Focus;
-            }
-
-            // === Sort ===
-            (KeyCode::Char('s'), _) => {
-                self.state.sort_order = self.state.sort_order.next();
-            }
-
-            // === Refresh ===
-            (KeyCode::Char('r'), _) => {
-                // Force refresh by setting last_refresh to 0
-                self.state.last_refresh = 0;
-            }
-
-            // === Loop actions ===
-            (KeyCode::Char('p'), _) => {
-                // Pause selected loop
-                if let Some(item) = self.state.selected_item()
-                    && item.status == "running"
-                {
-                    self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
-                        ConfirmAction::PauseLoop(item.id.clone()),
-                        format!("Pause loop {}?", item.name),
-                    ));
-                }
+                // Describe selected item
+                self.handle_describe();
             }
             (KeyCode::Char('x'), _) => {
-                // Cancel selected loop
-                if let Some(item) = self.state.selected_item()
-                    && !["complete", "failed", "cancelled", "stopped"].contains(&item.status.as_str())
-                {
-                    self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
-                        ConfirmAction::CancelLoop(item.id.clone()),
-                        format!("Cancel loop {}?", item.name),
-                    ));
-                }
+                // Cancel selected execution
+                self.handle_cancel();
             }
-            (KeyCode::Char('R'), _) => {
-                // Restart selected loop
-                if let Some(item) = self.state.selected_item()
-                    && ["failed", "stopped"].contains(&item.status.as_str())
-                {
-                    self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
-                        ConfirmAction::RestartLoop(item.id.clone()),
-                        format!("Restart loop {}?", item.name),
-                    ));
-                }
+            (KeyCode::Char('p'), _) => {
+                // Pause selected execution
+                self.handle_pause();
+            }
+            (KeyCode::Char('r'), _) => {
+                // Resume selected execution
+                self.handle_resume();
             }
 
-            // === Number keys for quick jump ===
-            (KeyCode::Char(c), _) if c.is_ascii_digit() => {
-                let index = c.to_digit(10).unwrap() as usize;
-                if index > 0 {
-                    let max = self.state.current_items().len();
-                    if index <= max {
-                        self.state.current_selection_mut().selected_index = index - 1;
-                    }
-                }
+            // === New task ===
+            (KeyCode::Char('n'), _) if matches!(self.state.current_view, View::Executions) => {
+                self.state.interaction_mode = InteractionMode::TaskInput(String::new());
+            }
+
+            // === Logs view specific ===
+            (KeyCode::Char('f'), _) if matches!(self.state.current_view, View::Logs { .. }) => {
+                self.state.logs_follow = !self.state.logs_follow;
             }
 
             _ => {}
@@ -190,16 +154,157 @@ impl App {
         false
     }
 
-    /// Handle key in search mode
-    fn handle_search_key(&mut self, key: KeyEvent) -> bool {
+    /// Handle drill down (Enter key)
+    fn handle_drill_down(&mut self) {
+        match &self.state.current_view {
+            View::Records { .. } => {
+                // Drill into children for selected record or show describe
+                if let (Some(id), Some(loop_type)) = (self.state.selected_item_id(), self.state.selected_item_type()) {
+                    // Navigate to children records filtered by parent
+                    self.state.push_view(View::Records {
+                        type_filter: None,
+                        parent_filter: Some(id),
+                    });
+                    // Store the loop_type for context (available_types should have children)
+                    let _ = loop_type; // Used for context
+                }
+            }
+            View::Executions => {
+                // Show describe for selected execution
+                if let (Some(id), Some(loop_type)) = (self.state.selected_item_id(), self.state.selected_item_type()) {
+                    self.state.push_view(View::Describe {
+                        target_id: id,
+                        target_type: loop_type,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle escape key
+    fn handle_escape(&mut self) {
+        // Clear filter first if active
+        if !self.state.filter_text.is_empty() {
+            self.state.filter_text.clear();
+            return;
+        }
+
+        // Then try to pop view stack
+        if self.state.pop_view() {
+            return;
+        }
+
+        // If at root view, prompt to quit if executions are active
+        if self.state.executions_active > 0 {
+            self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::quit());
+        } else {
+            self.state.should_quit = true;
+        }
+    }
+
+    /// Handle describe action
+    fn handle_describe(&mut self) {
+        if let (Some(id), Some(loop_type)) = (self.state.selected_item_id(), self.state.selected_item_type()) {
+            self.state.push_view(View::Describe {
+                target_id: id,
+                target_type: loop_type,
+            });
+        }
+    }
+
+    /// Handle cancel action
+    fn handle_cancel(&mut self) {
+        if !matches!(self.state.current_view, View::Executions) {
+            return;
+        }
+
+        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+            let filtered = self.state.filtered_executions();
+            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
+                && !["complete", "failed", "cancelled", "stopped"].contains(&exec_item.status.as_str())
+            {
+                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::cancel_loop(id, &name));
+            }
+        }
+    }
+
+    /// Handle pause action
+    fn handle_pause(&mut self) {
+        if !matches!(self.state.current_view, View::Executions) {
+            return;
+        }
+
+        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+            let filtered = self.state.filtered_executions();
+            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
+                && exec_item.status == "running"
+            {
+                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::pause_loop(id, &name));
+            }
+        }
+    }
+
+    /// Handle resume action
+    fn handle_resume(&mut self) {
+        if !matches!(self.state.current_view, View::Executions) {
+            return;
+        }
+
+        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+            let filtered = self.state.filtered_executions();
+            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
+                && exec_item.status == "paused"
+            {
+                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
+                    ConfirmAction::ResumeLoop(id),
+                    format!("Resume {}?", name),
+                ));
+            }
+        }
+    }
+
+    /// Handle key in filter mode
+    fn handle_filter_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Esc => {
                 self.state.interaction_mode = InteractionMode::Normal;
             }
             KeyCode::Enter => {
-                // Apply the search filter
-                if let InteractionMode::Search(text) = &self.state.interaction_mode {
-                    self.state.filter.text = text.clone();
+                // Apply the filter
+                if let InteractionMode::Filter(text) = &self.state.interaction_mode {
+                    self.state.filter_text = text.clone();
+                }
+                self.state.interaction_mode = InteractionMode::Normal;
+            }
+            KeyCode::Backspace => {
+                if let Some(buf) = self.state.interaction_mode.input_buffer_mut() {
+                    buf.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(buf) = self.state.interaction_mode.input_buffer_mut() {
+                    buf.push(c);
+                }
+            }
+            _ => {}
+        }
+
+        false
+    }
+
+    /// Handle key in task input mode
+    fn handle_task_input_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.interaction_mode = InteractionMode::Normal;
+            }
+            KeyCode::Enter => {
+                // Submit the task (store it for runner to process)
+                if let InteractionMode::TaskInput(task) = &self.state.interaction_mode
+                    && !task.trim().is_empty()
+                {
+                    self.state.pending_task = Some(task.clone());
                 }
                 self.state.interaction_mode = InteractionMode::Normal;
             }
@@ -258,26 +363,19 @@ impl App {
                 if let InteractionMode::Confirm(dialog) = &self.state.interaction_mode
                     && dialog.selected_button
                 {
-                    // User confirmed - execute the action
+                    // User confirmed - queue action for runner to execute
                     match &dialog.action {
                         ConfirmAction::Quit => {
                             self.state.should_quit = true;
                         }
                         ConfirmAction::CancelLoop(id) => {
-                            // TODO: Send cancel command to StateManager
-                            self.state.set_error(format!("Cancel {} - not yet implemented", id));
+                            self.state.pending_action = Some(PendingAction::CancelLoop(id.clone()));
                         }
                         ConfirmAction::PauseLoop(id) => {
-                            // TODO: Send pause command to StateManager
-                            self.state.set_error(format!("Pause {} - not yet implemented", id));
+                            self.state.pending_action = Some(PendingAction::PauseLoop(id.clone()));
                         }
-                        ConfirmAction::RestartLoop(id) => {
-                            // TODO: Send restart command to StateManager
-                            self.state.set_error(format!("Restart {} - not yet implemented", id));
-                        }
-                        ConfirmAction::DeletePlan(id) => {
-                            // TODO: Send delete command to StateManager
-                            self.state.set_error(format!("Delete {} - not yet implemented", id));
+                        ConfirmAction::ResumeLoop(id) => {
+                            self.state.pending_action = Some(PendingAction::ResumeLoop(id.clone()));
                         }
                     }
                 }
@@ -319,76 +417,24 @@ impl App {
         }
 
         let command = parts[0];
-        let args: Vec<&str> = parts[1..].to_vec();
 
+        // Try view switching first (delegates to View::from_command which defines available views)
+        if let Some(view) = View::from_command(command, &self.state.available_types) {
+            self.state.navigate_to(view);
+            return;
+        }
+
+        // Handle other commands
         match command {
-            // View switching
-            "plans" | "specs" | "phases" | "ralphs" | "loops" | "metrics" | "costs" | "history" | "deps"
-            | "dependencies" => {
-                if let Some(view) = ResourceView::from_command(command) {
-                    self.state.navigate_to(view);
-
-                    // If there's an argument, use it as parent filter
-                    if !args.is_empty()
-                        && let Some(sel) = self.state.selection.get_mut(&view)
-                    {
-                        sel.parent_filter = Some(args[0].to_string());
-                    }
-                }
-            }
-
-            // Filtering
-            "filter" => {
-                if !args.is_empty() {
-                    self.state.filter.text = args.join(" ");
-                } else {
-                    self.state.filter.clear();
-                }
-            }
-
-            // Sorting
-            "sort" => {
-                if !args.is_empty() {
-                    match args[0] {
-                        "status" => self.state.sort_order = SortOrder::Status,
-                        "name" => self.state.sort_order = SortOrder::Name,
-                        "activity" => self.state.sort_order = SortOrder::Activity,
-                        "priority" => self.state.sort_order = SortOrder::Priority,
-                        _ => {
-                            self.state.set_error(format!("Unknown sort field: {}", args[0]));
-                        }
-                    }
-                }
-            }
-
-            // Loop actions
-            "pause" => {
-                if !args.is_empty() {
-                    self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
-                        ConfirmAction::PauseLoop(args[0].to_string()),
-                        format!("Pause loop {}?", args[0]),
-                    ));
-                }
-            }
-            "resume" => {
-                if !args.is_empty() {
-                    // TODO: Implement resume via StateManager
-                    self.state
-                        .set_error(format!("Resume {} - not yet implemented", args[0]));
-                }
-            }
-            "cancel" => {
-                if !args.is_empty() {
-                    self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
-                        ConfirmAction::CancelLoop(args[0].to_string()),
-                        format!("Cancel loop {}?", args[0]),
-                    ));
-                }
+            // Create new task - enter task input mode
+            "new" => {
+                self.state.navigate_to(View::Executions); // Switch to executions view
+                self.state.interaction_mode = InteractionMode::TaskInput(String::new());
             }
 
             // Quit
             "quit" | "q" => {
-                if self.state.metrics.ralphs_active > 0 {
+                if self.state.executions_active > 0 {
                     self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::quit());
                 } else {
                     self.state.should_quit = true;
@@ -414,7 +460,7 @@ mod tests {
     #[test]
     fn test_app_new() {
         let app = App::new();
-        assert_eq!(app.state().current_view, ResourceView::Plans);
+        assert!(matches!(app.state().current_view, View::Executions));
         assert!(matches!(app.state().interaction_mode, InteractionMode::Normal));
     }
 
@@ -443,13 +489,13 @@ mod tests {
     }
 
     #[test]
-    fn test_app_search_mode() {
+    fn test_app_filter_mode() {
         let mut app = App::new();
 
-        // Enter search mode
+        // Enter filter mode
         let key = KeyEvent::from(KeyCode::Char('/'));
         app.handle_key(key);
-        assert!(matches!(app.state().interaction_mode, InteractionMode::Search(_)));
+        assert!(matches!(app.state().interaction_mode, InteractionMode::Filter(_)));
 
         // Type some text
         app.handle_key(KeyEvent::from(KeyCode::Char('t')));
@@ -457,14 +503,14 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Char('s')));
         app.handle_key(KeyEvent::from(KeyCode::Char('t')));
 
-        if let InteractionMode::Search(text) = &app.state().interaction_mode {
+        if let InteractionMode::Filter(text) = &app.state().interaction_mode {
             assert_eq!(text, "test");
         }
 
         // Press Enter to apply
         app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(matches!(app.state().interaction_mode, InteractionMode::Normal));
-        assert_eq!(app.state().filter.text, "test");
+        assert_eq!(app.state().filter_text, "test");
     }
 
     #[test]
@@ -476,112 +522,28 @@ mod tests {
         app.handle_key(key);
         assert!(matches!(app.state().interaction_mode, InteractionMode::Command(_)));
 
-        // Type "specs"
-        for c in "specs".chars() {
+        // Type "records"
+        for c in "records".chars() {
             app.handle_key(KeyEvent::from(KeyCode::Char(c)));
         }
 
         // Press Enter to execute
         app.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert_eq!(app.state().current_view, ResourceView::Specs);
-    }
-
-    #[test]
-    fn test_app_navigation() {
-        let mut app = App::new();
-
-        // Add some mock items
-        app.state_mut().plans = vec![
-            super::super::state::ResourceItem {
-                id: "plan-1".to_string(),
-                name: "Plan 1".to_string(),
-                resource_type: "plan".to_string(),
-                status: "running".to_string(),
-                parent_id: None,
-                iteration: None,
-                progress: None,
-                last_activity: None,
-                needs_attention: false,
-                attention_reason: None,
-            },
-            super::super::state::ResourceItem {
-                id: "plan-2".to_string(),
-                name: "Plan 2".to_string(),
-                resource_type: "plan".to_string(),
-                status: "complete".to_string(),
-                parent_id: None,
-                iteration: None,
-                progress: None,
-                last_activity: None,
-                needs_attention: false,
-                attention_reason: None,
-            },
-        ];
-
-        // Initial selection is 0
-        assert_eq!(app.state().current_selection().selected_index, 0);
-
-        // Move down
-        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
-        assert_eq!(app.state().current_selection().selected_index, 1);
-
-        // Move up
-        app.handle_key(KeyEvent::from(KeyCode::Char('k')));
-        assert_eq!(app.state().current_selection().selected_index, 0);
-    }
-
-    #[test]
-    fn test_app_layout_toggle() {
-        let mut app = App::new();
-        assert_eq!(app.state().layout_mode, LayoutMode::Dashboard);
-
-        // Press space to cycle
-        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
-        assert_eq!(app.state().layout_mode, LayoutMode::Split);
-
-        // Press 'd' to go back to dashboard
-        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
-        assert_eq!(app.state().layout_mode, LayoutMode::Dashboard);
-
-        // Press 'f' for focus mode
-        app.handle_key(KeyEvent::from(KeyCode::Char('f')));
-        assert_eq!(app.state().layout_mode, LayoutMode::Focus);
+        assert!(matches!(app.state().current_view, View::Records { .. }));
     }
 
     #[test]
     fn test_execute_command_view_switch() {
         let mut app = App::new();
 
-        app.execute_command("specs".to_string());
-        assert_eq!(app.state().current_view, ResourceView::Specs);
+        app.execute_command("records".to_string());
+        assert!(matches!(app.state().current_view, View::Records { .. }));
 
-        app.execute_command("ralphs".to_string());
-        assert_eq!(app.state().current_view, ResourceView::Ralphs);
+        app.execute_command("loops".to_string());
+        assert!(matches!(app.state().current_view, View::Executions));
 
-        app.execute_command("metrics".to_string());
-        assert_eq!(app.state().current_view, ResourceView::Metrics);
-    }
-
-    #[test]
-    fn test_execute_command_filter() {
-        let mut app = App::new();
-
-        app.execute_command("filter test query".to_string());
-        assert_eq!(app.state().filter.text, "test query");
-
-        app.execute_command("filter".to_string());
-        assert!(app.state().filter.text.is_empty());
-    }
-
-    #[test]
-    fn test_execute_command_sort() {
-        let mut app = App::new();
-
-        app.execute_command("sort name".to_string());
-        assert_eq!(app.state().sort_order, SortOrder::Name);
-
-        app.execute_command("sort priority".to_string());
-        assert_eq!(app.state().sort_order, SortOrder::Priority);
+        app.execute_command("executions".to_string());
+        assert!(matches!(app.state().current_view, View::Executions));
     }
 
     #[test]

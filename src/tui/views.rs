@@ -7,23 +7,23 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 
-use super::app::App;
-use super::state::{ConfirmDialog, InteractionMode, LayoutMode, ResourceItem, ResourceView};
+use super::state::{AppState, ConfirmDialog, InteractionMode, View};
 
-/// Status colors based on the design spec (Appendix A)
+/// Status colors (k9s-inspired)
 mod colors {
     use ratatui::style::Color;
 
-    pub const RUNNING: Color = Color::Rgb(0, 255, 127);
-    pub const PENDING: Color = Color::Rgb(255, 215, 0);
-    pub const COMPLETE: Color = Color::Rgb(50, 205, 50);
-    pub const FAILED: Color = Color::Rgb(220, 20, 60);
-    pub const BLOCKED: Color = Color::Rgb(255, 69, 0);
-    pub const HEADER: Color = Color::Rgb(0, 255, 255);
-    pub const KEYBIND: Color = Color::Rgb(0, 255, 255);
+    pub const RUNNING: Color = Color::Rgb(0, 255, 127); // Spring green
+    pub const PENDING: Color = Color::Rgb(255, 215, 0); // Gold
+    pub const COMPLETE: Color = Color::Rgb(50, 205, 50); // Lime green
+    pub const FAILED: Color = Color::Rgb(220, 20, 60); // Crimson
+    pub const BLOCKED: Color = Color::Rgb(255, 69, 0); // Orange red
+    pub const HEADER: Color = Color::Rgb(0, 255, 255); // Cyan
+    pub const KEYBIND: Color = Color::Rgb(0, 255, 255); // Cyan
     pub const SELECTED_BG: Color = Color::Rgb(40, 40, 40);
+    pub const DIM: Color = Color::DarkGray;
 }
 
 /// Get color for a status string
@@ -31,477 +31,400 @@ fn status_color(status: &str) -> Color {
     match status {
         "running" => colors::RUNNING,
         "pending" => colors::PENDING,
-        "complete" => colors::COMPLETE,
+        "complete" | "completed" => colors::COMPLETE,
         "failed" => colors::FAILED,
         "blocked" => colors::BLOCKED,
         "paused" => Color::Yellow,
         "stopped" | "cancelled" => Color::DarkGray,
+        "rebasing" => Color::Magenta,
+        "in_progress" => colors::RUNNING,
+        "ready" => colors::PENDING,
+        "draft" => colors::DIM,
         _ => Color::Gray,
     }
 }
 
-/// Main render function
-pub fn render(app: &mut App, frame: &mut Frame) {
-    let state = app.state();
+/// Get status icon
+fn status_icon(status: &str) -> &'static str {
+    match status {
+        "running" | "in_progress" => "●",
+        "pending" | "ready" => "○",
+        "blocked" => "?",
+        "complete" | "completed" => "✓",
+        "failed" => "✗",
+        "cancelled" | "stopped" => "⊘",
+        "paused" => "◑",
+        "rebasing" => "↻",
+        "draft" => "◌",
+        _ => " ",
+    }
+}
 
-    // Create main layout
+/// Main render function
+pub fn render(state: &AppState, frame: &mut Frame) {
+    // Create main layout: header, content, footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Header
             Constraint::Min(0),    // Main content
-            Constraint::Length(3), // Footer/command bar
+            Constraint::Length(3), // Footer
         ])
         .split(frame.area());
 
-    // Render header
-    render_header(app, frame, chunks[0]);
+    // Render header (breadcrumb + metrics)
+    render_header(state, frame, chunks[0]);
 
-    // Render main content based on layout mode
-    match state.layout_mode {
-        LayoutMode::Dashboard => render_dashboard(app, frame, chunks[1]),
-        LayoutMode::Split => render_split(app, frame, chunks[1]),
-        LayoutMode::Grid => render_grid(app, frame, chunks[1]),
-        LayoutMode::Focus => render_focus(app, frame, chunks[1]),
+    // Render main content based on current view
+    match &state.current_view {
+        View::Records { .. } => render_records_table(state, frame, chunks[1]),
+        View::Executions => render_executions_table(state, frame, chunks[1]),
+        View::Logs { .. } => render_logs_view(state, frame, chunks[1]),
+        View::Describe { .. } => render_describe_view(state, frame, chunks[1]),
     }
 
-    // Render footer/command bar
-    render_footer(app, frame, chunks[2]);
+    // Render footer (context-sensitive keybinds or input)
+    render_footer(state, frame, chunks[2]);
 
-    // Render overlays (help, confirm dialog)
+    // Render overlays
     match &state.interaction_mode {
-        InteractionMode::Help => {
-            render_help_overlay(frame, frame.area());
-        }
-        InteractionMode::Confirm(dialog) => {
-            render_confirm_dialog(dialog, frame, frame.area());
-        }
+        InteractionMode::Help => render_help_overlay(frame, frame.area()),
+        InteractionMode::Confirm(dialog) => render_confirm_dialog(dialog, frame, frame.area()),
         _ => {}
     }
 }
 
-/// Render the header bar
-fn render_header(app: &App, frame: &mut Frame, area: Rect) {
-    let state = app.state();
-
-    let view_text = state.current_view.display_name();
-    let layout_text = match state.layout_mode {
-        LayoutMode::Dashboard => "Dashboard",
-        LayoutMode::Split => "Split",
-        LayoutMode::Grid => "Grid",
-        LayoutMode::Focus => "Focus",
-    };
-
-    let header = Paragraph::new(vec![Line::from(vec![
+/// Render header with breadcrumb and metrics
+fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
+    let breadcrumb = state.breadcrumb();
+    let mut spans = vec![
         Span::styled(
-            "TaskDaemon ",
+            " TaskDaemon ",
             Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
         ),
         Span::raw("│ "),
-        Span::styled(view_text, Style::default().fg(Color::Yellow)),
-        Span::raw(" │ "),
-        Span::styled(layout_text, Style::default().fg(Color::Magenta)),
-        Span::raw(" │ "),
-        Span::styled(
-            format!("{} plans", state.metrics.plans_total),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw(" │ "),
-        Span::styled(
-            format!("{} active", state.metrics.ralphs_active),
-            Style::default().fg(colors::RUNNING),
-        ),
-        Span::raw(" │ "),
-        Span::styled(
-            format!("{} complete", state.metrics.ralphs_complete),
+        Span::styled(breadcrumb, Style::default().fg(Color::Yellow)),
+    ];
+
+    // Add filter indicator if active
+    if !state.filter_text.is_empty() {
+        spans.push(Span::raw(" │ "));
+        spans.push(Span::styled(
+            format!("Filter: /{}", &state.filter_text),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+
+    // Add metrics
+    spans.push(Span::raw(" │ "));
+    spans.push(Span::styled(
+        format!("{} records", state.total_records),
+        Style::default().fg(Color::Cyan),
+    ));
+    spans.push(Span::raw(" │ "));
+    spans.push(Span::styled(
+        format!("{} active", state.executions_active),
+        Style::default().fg(colors::RUNNING),
+    ));
+    if state.executions_complete > 0 {
+        spans.push(Span::raw(" │ "));
+        spans.push(Span::styled(
+            format!("{} complete", state.executions_complete),
             Style::default().fg(colors::COMPLETE),
-        ),
-        Span::raw(" │ "),
-        Span::styled(
-            format!("{} failed", state.metrics.ralphs_failed),
+        ));
+    }
+    if state.executions_failed > 0 {
+        spans.push(Span::raw(" │ "));
+        spans.push(Span::styled(
+            format!("{} failed", state.executions_failed),
             Style::default().fg(colors::FAILED),
-        ),
-    ])])
-    .block(Block::default().borders(Borders::ALL).title(" Status "));
+        ));
+    }
+
+    let header = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
 
     frame.render_widget(header, area);
 }
 
-/// Render dashboard layout (sidebar + main)
-fn render_dashboard(app: &App, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(area);
+/// Render Records table (generic Loop records)
+fn render_records_table(state: &AppState, frame: &mut Frame, area: Rect) {
+    let filtered = state.filtered_records();
+    let selected_idx = state.records_selection.selected_index;
 
-    // Main resource list
-    render_resource_list(app, frame, chunks[0]);
-
-    // Preview/detail pane
-    render_preview(app, frame, chunks[1]);
-}
-
-/// Render split layout (two resource lists side by side)
-fn render_split(app: &App, frame: &mut Frame, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    render_resource_list(app, frame, chunks[0]);
-    render_preview(app, frame, chunks[1]);
-}
-
-/// Render grid layout (2x2 views)
-fn render_grid(app: &App, frame: &mut Frame, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    let top_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[0]);
-
-    let bottom_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[1]);
-
-    // Show different resource types in each quadrant
-    render_resource_list_for_view(app, frame, top_cols[0], ResourceView::Plans);
-    render_resource_list_for_view(app, frame, top_cols[1], ResourceView::Specs);
-    render_resource_list_for_view(app, frame, bottom_cols[0], ResourceView::Phases);
-    render_resource_list_for_view(app, frame, bottom_cols[1], ResourceView::Ralphs);
-}
-
-/// Render focus layout (full-screen single view)
-fn render_focus(app: &App, frame: &mut Frame, area: Rect) {
-    render_resource_list(app, frame, area);
-}
-
-/// Render the current resource list
-fn render_resource_list(app: &App, frame: &mut Frame, area: Rect) {
-    let state = app.state();
-    render_resource_list_for_view(app, frame, area, state.current_view);
-}
-
-/// Render a specific resource list
-fn render_resource_list_for_view(app: &App, frame: &mut Frame, area: Rect, view: ResourceView) {
-    let state = app.state();
-    let items = match view {
-        ResourceView::Plans => &state.plans,
-        ResourceView::Specs => &state.specs,
-        ResourceView::Phases => &state.phases,
-        ResourceView::Ralphs => &state.ralphs,
-        _ => {
-            // Analytics views have different rendering
-            render_analytics_view(app, frame, area, view);
-            return;
+    // Get type filter for title
+    let title = match &state.current_view {
+        View::Records {
+            type_filter: Some(t),
+            parent_filter: Some(p),
+        } => {
+            format!(" {} > {} ({}) ", t, &p[..8.min(p.len())], filtered.len())
         }
+        View::Records {
+            type_filter: Some(t),
+            parent_filter: None,
+        } => {
+            format!(" {} ({}) ", t, filtered.len())
+        }
+        View::Records {
+            type_filter: None,
+            parent_filter: Some(p),
+        } => {
+            format!(" Records > {} ({}) ", &p[..8.min(p.len())], filtered.len())
+        }
+        _ => format!(" Records ({}) ", filtered.len()),
     };
 
-    let selection = state.selection.get(&view).cloned().unwrap_or_default();
-    let is_current = view == state.current_view;
-
-    // Filter items if filter is active
-    let filtered_items: Vec<&ResourceItem> = items
-        .iter()
-        .filter(|item| {
-            // Apply text filter
-            if !state.filter.text.is_empty() && !item.name.to_lowercase().contains(&state.filter.text.to_lowercase()) {
-                return false;
-            }
-            // Apply status filter
-            if let Some(ref status) = state.filter.status_filter
-                && item.status != *status
-            {
-                return false;
-            }
-            // Apply attention filter
-            if state.filter.attention_only && !item.needs_attention {
-                return false;
-            }
-            // Apply parent filter
-            if let Some(ref parent) = selection.parent_filter
-                && item.parent_id.as_ref() != Some(parent)
-            {
-                return false;
-            }
-            true
-        })
-        .collect();
-
-    let list_items: Vec<ListItem> = filtered_items
+    let rows: Vec<Row> = filtered
         .iter()
         .enumerate()
-        .map(|(i, item)| {
-            let status_color = status_color(&item.status);
-            let icon = item.status_icon();
-
-            let mut spans = vec![
-                Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{} ", icon), Style::default().fg(status_color)),
-                Span::styled(
-                    format!("{:<20} ", item.truncated_name(20)),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[{:^8}] ", item.resource_type),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(format!("{:<10}", item.status), Style::default().fg(status_color)),
-            ];
-
-            if let Some(iter) = item.iteration {
-                spans.push(Span::styled(
-                    format!(" iter:{:<3}", iter),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-
-            if item.needs_attention {
-                spans.push(Span::styled(" !", Style::default().fg(colors::BLOCKED)));
-            }
-
-            let line = Line::from(spans);
-
-            if is_current && i == selection.selected_index {
-                ListItem::new(line).style(Style::default().bg(colors::SELECTED_BG).fg(Color::White))
+        .map(|(i, record)| {
+            let row_style = if i == selected_idx {
+                Style::default().bg(colors::SELECTED_BG)
             } else {
-                ListItem::new(line)
-            }
+                Style::default()
+            };
+
+            Row::new(vec![
+                format!("{} {}", status_icon(&record.status), &record.title),
+                record.loop_type.clone(),
+                record.status.clone(),
+                record.phases_progress.clone(),
+                record.created.clone(),
+            ])
+            .style(row_style)
         })
         .collect();
 
-    // Build title with filter info
-    let mut title = format!(" {} ", view.display_name());
-    if is_current && !state.filter.text.is_empty() {
-        title.push_str(&format!("[filter: {}] ", state.filter.text));
-    }
-    if selection.parent_filter.is_some() {
-        title.push_str("[filtered by parent] ");
-    }
+    let widths = [
+        Constraint::Min(30),    // NAME
+        Constraint::Length(12), // TYPE
+        Constraint::Length(12), // STATUS
+        Constraint::Length(8),  // PHASES
+        Constraint::Length(12), // CREATED
+    ];
 
-    let list = List::new(list_items)
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec!["NAME", "TYPE", "STATUS", "PHASES", "CREATED"])
+                .style(Style::default().add_modifier(Modifier::BOLD).fg(colors::HEADER)),
+        )
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(if is_current { Style::default().fg(colors::HEADER) } else { Style::default() }),
-        )
-        .highlight_style(Style::default().bg(colors::SELECTED_BG));
+                .border_style(Style::default().fg(colors::HEADER)),
+        );
 
-    frame.render_widget(list, area);
+    frame.render_widget(table, area);
 
-    // Show empty state message
-    if filtered_items.is_empty() {
-        let message = if items.is_empty() {
-            format!("No {} found.", view.display_name().to_lowercase())
-        } else {
-            "No items match current filter.".to_string()
-        };
-
-        let inner = area.inner(ratatui::layout::Margin {
-            horizontal: 2,
-            vertical: 2,
-        });
-
-        let empty = Paragraph::new(message)
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(ratatui::layout::Alignment::Center);
-
-        frame.render_widget(empty, inner);
+    if filtered.is_empty() {
+        render_empty_message(frame, area, "No records found.");
     }
 }
 
-/// Render analytics views (metrics, costs, history, deps)
-fn render_analytics_view(app: &App, frame: &mut Frame, area: Rect, view: ResourceView) {
-    let state = app.state();
+/// Render Executions table (running LoopExecutions)
+fn render_executions_table(state: &AppState, frame: &mut Frame, area: Rect) {
+    let filtered = state.filtered_executions();
+    let selected_idx = state.executions_selection.selected_index;
 
-    let content = match view {
-        ResourceView::Metrics => render_metrics_content(state),
-        ResourceView::Costs => render_costs_content(state),
-        ResourceView::History => render_history_content(state),
-        ResourceView::Dependencies => render_deps_content(state),
-        _ => vec![Line::from("Unknown view")],
-    };
+    let rows: Vec<Row> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, exec_item)| {
+            let row_style = if i == selected_idx {
+                Style::default().bg(colors::SELECTED_BG)
+            } else {
+                Style::default()
+            };
 
-    let paragraph = Paragraph::new(content)
+            Row::new(vec![
+                format!("{} {}", status_icon(&exec_item.status), &exec_item.name),
+                exec_item.loop_type.clone(),
+                exec_item.iteration.clone(),
+                exec_item.status.clone(),
+                exec_item.duration.clone(),
+            ])
+            .style(row_style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(30),    // NAME
+        Constraint::Length(12), // TYPE
+        Constraint::Length(8),  // ITER
+        Constraint::Length(12), // STATUS
+        Constraint::Length(10), // DURATION
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(vec!["NAME", "TYPE", "ITER", "STATUS", "DURATION"])
+                .style(Style::default().add_modifier(Modifier::BOLD).fg(colors::HEADER)),
+        )
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} ", view.display_name())),
+                .title(format!(" Executions ({}) ", filtered.len()))
+                .border_style(Style::default().fg(colors::HEADER)),
+        );
+
+    frame.render_widget(table, area);
+
+    if filtered.is_empty() {
+        render_empty_message(frame, area, "No running executions. Press <n> to create a new task.");
+    }
+}
+
+/// Render Logs view
+fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
+    let target_id = if let View::Logs { target_id } = &state.current_view {
+        target_id.clone()
+    } else {
+        return;
+    };
+
+    let lines: Vec<Line> = state
+        .logs
+        .iter()
+        .map(|entry| {
+            let prefix_style = if entry.is_error {
+                Style::default().fg(colors::FAILED)
+            } else if entry.is_stdout {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(colors::DIM)
+            };
+
+            let prefix = if entry.is_error {
+                format!("[iter {}] ERROR: ", entry.iteration)
+            } else if entry.is_stdout {
+                format!("[iter {}] STDOUT: ", entry.iteration)
+            } else {
+                format!("[iter {}] ", entry.iteration)
+            };
+
+            Line::from(vec![Span::styled(prefix, prefix_style), Span::raw(&entry.text)])
+        })
+        .collect();
+
+    // Add cursor if following
+    let mut display_lines = lines;
+    if state.logs_follow && !display_lines.is_empty() {
+        display_lines.push(Line::from(Span::styled(
+            "▌",
+            Style::default().add_modifier(Modifier::SLOW_BLINK),
+        )));
+    }
+
+    let follow_indicator = if state.logs_follow { " [following]" } else { "" };
+    let title = format!(" Logs: {}{} ", truncate_str(&target_id, 30), follow_indicator);
+
+    let logs = Paragraph::new(display_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(colors::HEADER)),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((state.logs_scroll as u16, 0));
+
+    frame.render_widget(logs, area);
+
+    if state.logs.is_empty() {
+        render_empty_message(frame, area, "No logs yet.");
+    }
+}
+
+/// Render Describe view
+fn render_describe_view(state: &AppState, frame: &mut Frame, area: Rect) {
+    let data = match &state.describe_data {
+        Some(d) => d,
+        None => {
+            render_empty_message(frame, area, "Loading...");
+            return;
+        }
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Name:        ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&data.title),
+        ]),
+        Line::from(vec![
+            Span::styled("Type:        ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&data.loop_type),
+        ]),
+        Line::from(vec![
+            Span::styled("Status:      ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(&data.status, Style::default().fg(status_color(&data.status))),
+        ]),
+    ];
+
+    if let Some(ref parent) = data.parent_id {
+        lines.push(Line::from(vec![
+            Span::styled("Parent:      ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(parent),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("Created:     ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(&data.created),
+    ]));
+
+    // Fields section
+    for (key, value) in &data.fields {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<12} ", key), Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(value),
+        ]));
+    }
+
+    // Children section
+    if !data.children.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            format!("Children: {}", data.children.len()),
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )]));
+        for child_id in &data.children {
+            lines.push(Line::from(vec![Span::raw("  • "), Span::raw(child_id)]));
+        }
+    }
+
+    // Execution summary
+    if let Some(ref exec) = data.execution {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Current Execution:",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )]));
+        lines.push(Line::from(vec![Span::raw("  Iteration: "), Span::raw(&exec.iteration)]));
+        lines.push(Line::from(vec![Span::raw("  Duration:  "), Span::raw(&exec.duration)]));
+        if !exec.progress.is_empty() {
+            lines.push(Line::from(vec![Span::raw("  Progress:  "), Span::raw(&exec.progress)]));
+        }
+    }
+
+    let title = format!(" Describe: {} ", truncate_str(&data.title, 30));
+
+    let describe = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(colors::HEADER)),
         )
         .wrap(Wrap { trim: true });
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(describe, area);
 }
 
-fn render_metrics_content(state: &super::state::AppState) -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![
-            Span::styled("Success Rate: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{:.1}%", state.metrics_data.success_rate * 100.0)),
-        ]),
-        Line::from(vec![
-            Span::styled("Avg Iterations: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{:.1}", state.metrics_data.avg_iterations_to_complete)),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "By Status:",
-            Style::default().add_modifier(Modifier::UNDERLINED),
-        )]),
-        Line::from(format!("  Active: {}", state.metrics.ralphs_active)),
-        Line::from(format!("  Complete: {}", state.metrics.ralphs_complete)),
-        Line::from(format!("  Failed: {}", state.metrics.ralphs_failed)),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Total Iterations: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{}", state.metrics.total_iterations)),
-        ]),
-        Line::from(vec![
-            Span::styled("Total API Calls: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{}", state.metrics.total_api_calls)),
-        ]),
-    ]
-}
-
-fn render_costs_content(state: &super::state::AppState) -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![
-            Span::styled("Total Cost: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(
-                format!("${:.2}", state.costs_data.total_cost_usd),
-                Style::default().fg(Color::Green),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Token Breakdown:",
-            Style::default().add_modifier(Modifier::UNDERLINED),
-        )]),
-        Line::from(format!("  Input: {}", state.costs_data.token_breakdown.input_tokens)),
-        Line::from(format!("  Output: {}", state.costs_data.token_breakdown.output_tokens)),
-        Line::from(format!(
-            "  Cache Read: {}",
-            state.costs_data.token_breakdown.cache_read_tokens
-        )),
-        Line::from(format!(
-            "  Cache Creation: {}",
-            state.costs_data.token_breakdown.cache_creation_tokens
-        )),
-    ]
-}
-
-fn render_history_content(state: &super::state::AppState) -> Vec<Line<'static>> {
-    if state.history_data.events.is_empty() {
-        return vec![Line::from("No events recorded yet.")];
-    }
-
-    state
-        .history_data
-        .events
-        .iter()
-        .take(20)
-        .map(|event| {
-            Line::from(format!(
-                "{}: {} - {}",
-                event.event_type.display_name(),
-                event.resource_name,
-                event.details
-            ))
-        })
-        .collect()
-}
-
-fn render_deps_content(_state: &super::state::AppState) -> Vec<Line<'static>> {
-    vec![
-        Line::from("Dependency graph visualization"),
-        Line::from("(ASCII art representation would go here)"),
-        Line::from(""),
-        Line::from("Use arrow keys to navigate nodes."),
-    ]
-}
-
-/// Render the preview/detail pane
-fn render_preview(app: &App, frame: &mut Frame, area: Rect) {
-    let state = app.state();
-
-    let content = if let Some(item) = state.selected_item() {
-        vec![
-            Line::from(vec![
-                Span::styled("ID: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&item.id),
-            ]),
-            Line::from(vec![
-                Span::styled("Name: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&item.name),
-            ]),
-            Line::from(vec![
-                Span::styled("Type: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&item.resource_type),
-            ]),
-            Line::from(vec![
-                Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(&item.status, Style::default().fg(status_color(&item.status))),
-            ]),
-            if let Some(parent) = &item.parent_id {
-                Line::from(vec![
-                    Span::styled("Parent: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(parent),
-                ])
-            } else {
-                Line::from("")
-            },
-            if let Some(iter) = item.iteration {
-                Line::from(vec![
-                    Span::styled("Iteration: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(iter.to_string()),
-                ])
-            } else {
-                Line::from("")
-            },
-            Line::from(""),
-            if let Some(progress) = &item.progress {
-                Line::from(vec![
-                    Span::styled("Progress: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(progress),
-                ])
-            } else {
-                Line::from("")
-            },
-            if item.needs_attention {
-                Line::from(vec![
-                    Span::styled("! ", Style::default().fg(colors::BLOCKED)),
-                    Span::styled(
-                        item.attention_reason.as_deref().unwrap_or("Needs attention"),
-                        Style::default().fg(colors::BLOCKED),
-                    ),
-                ])
-            } else {
-                Line::from("")
-            },
-        ]
-    } else {
-        vec![Line::from("No item selected")]
-    };
-
-    let preview = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title(" Preview "))
-        .wrap(Wrap { trim: true });
-
-    frame.render_widget(preview, area);
-}
-
-/// Render the footer bar (with command/search input)
-fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
-    let state = app.state();
-
+/// Render footer with context-sensitive keybinds
+fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
     let content = match &state.interaction_mode {
-        InteractionMode::Search(text) => Line::from(vec![
+        InteractionMode::Filter(text) => Line::from(vec![
             Span::styled("/", Style::default().fg(colors::KEYBIND)),
             Span::raw(text),
             Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
@@ -511,35 +434,62 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
             Span::raw(text),
             Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
         ]),
+        InteractionMode::TaskInput(text) => Line::from(vec![
+            Span::styled(
+                "New Task: ",
+                Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(text),
+            Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled("  (Enter to create, Esc to cancel)", Style::default().fg(colors::DIM)),
+        ]),
         _ => {
-            // Show error message if present, otherwise show keybinds
+            // Show error or context-sensitive keybinds
             if let Some(ref error) = state.error_message {
-                Line::from(vec![Span::styled(
-                    format!("Error: {}", error),
+                Line::from(Span::styled(
+                    format!(" Error: {}", error),
                     Style::default().fg(colors::FAILED),
-                )])
+                ))
             } else {
-                Line::from(vec![
-                    Span::styled(" q", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
-                    Span::raw(" Quit "),
-                    Span::styled(" ?", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
-                    Span::raw(" Help "),
-                    Span::styled(" jk", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
-                    Span::raw(" Navigate "),
-                    Span::styled(
-                        " Enter",
+                // Show keybinds based on current view
+                let keybinds = match &state.current_view {
+                    View::Records { .. } => vec![
+                        ("<Enter>", "Children"),
+                        ("<d>", "Describe"),
+                        ("<l>", "Logs"),
+                        ("<Esc>", "Back"),
+                    ],
+                    View::Executions => vec![
+                        ("<n>", "New Task"),
+                        ("<d>", "Describe"),
+                        ("<l>", "Logs"),
+                        ("<x>", "Cancel"),
+                    ],
+                    View::Logs { .. } => vec![("<Esc>", "Back"), ("<f>", "Follow")],
+                    View::Describe { .. } => vec![("<Esc>", "Back"), ("<l>", "Logs")],
+                };
+
+                let mut spans = vec![Span::raw(" ")];
+                for (key, action) in keybinds {
+                    spans.push(Span::styled(
+                        key,
                         Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" Drill down "),
-                    Span::styled(" /", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
-                    Span::raw(" Search "),
-                    Span::styled(" :", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
-                    Span::raw(" Command "),
-                    Span::styled(
-                        format!(" Sort:{}", state.sort_order.display_name()),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ])
+                    ));
+                    spans.push(Span::raw(format!(" {} ", action)));
+                }
+                spans.push(Span::raw("│ "));
+                spans.push(Span::styled(
+                    "<?>",
+                    Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" Help "));
+                spans.push(Span::styled(
+                    "<q>",
+                    Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" Quit"));
+
+                Line::from(spans)
             }
         }
     };
@@ -550,7 +500,7 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
 
 /// Render help overlay
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(70, 80, area);
+    let popup_area = centered_rect(60, 70, area);
     frame.render_widget(Clear, popup_area);
 
     let help_text = vec![
@@ -562,122 +512,40 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
+            "Global",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        key_line(":", "Command mode (:records, :executions, :<type>)"),
+        key_line("/", "Filter current view"),
+        key_line("?", "Toggle help"),
+        key_line("q", "Quit"),
+        key_line("Esc", "Back / Clear filter"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
             "Navigation",
             Style::default().add_modifier(Modifier::BOLD),
         )]),
-        Line::from(vec![
-            Span::styled("  j/↓ k/↑    ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Navigate up/down"),
-        ]),
-        Line::from(vec![
-            Span::styled("  g          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Go to top"),
-        ]),
-        Line::from(vec![
-            Span::styled("  G          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Go to bottom"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter      ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Drill down into selection"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Esc        ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Go back / Clear filter"),
-        ]),
-        Line::from(vec![
-            Span::styled("  1-9        ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Quick jump to item"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Modes",
-            Style::default().add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled("  /          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Search/filter mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Command mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("  ?          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Toggle help"),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Layout",
-            Style::default().add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled("  d          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Dashboard layout"),
-        ]),
-        Line::from(vec![
-            Span::styled("  Space      ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Cycle layout mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("  f          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Focus (full-screen) mode"),
-        ]),
+        key_line("j/↓", "Move down"),
+        key_line("k/↑", "Move up"),
+        key_line("g", "Go to top"),
+        key_line("G", "Go to bottom"),
+        key_line("Enter", "Drill into selected"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Actions",
             Style::default().add_modifier(Modifier::BOLD),
         )]),
-        Line::from(vec![
-            Span::styled("  r          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Refresh data"),
-        ]),
-        Line::from(vec![
-            Span::styled("  s          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Cycle sort order"),
-        ]),
-        Line::from(vec![
-            Span::styled("  p          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Pause selected loop"),
-        ]),
-        Line::from(vec![
-            Span::styled("  x          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Cancel selected loop"),
-        ]),
-        Line::from(vec![
-            Span::styled("  R          ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Restart failed loop"),
-        ]),
+        key_line("l", "View logs/progress"),
+        key_line("d", "Describe (full details)"),
+        key_line("x", "Cancel selected"),
+        key_line("p", "Pause selected"),
+        key_line("r", "Resume selected"),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Commands (:)",
+            "Logs View",
             Style::default().add_modifier(Modifier::BOLD),
         )]),
-        Line::from(vec![
-            Span::styled("  :plans     ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Show plans view"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :specs     ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Show specs view"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :ralphs    ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Show ralphs (loops) view"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :metrics   ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Show metrics view"),
-        ]),
-        Line::from(vec![
-            Span::styled("  :q         ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Quit"),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  q, Ctrl+c  ", Style::default().fg(colors::KEYBIND)),
-            Span::raw("Quit application"),
-        ]),
+        key_line("f", "Toggle follow mode"),
     ];
 
     let help = Paragraph::new(help_text)
@@ -690,6 +558,15 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: true });
 
     frame.render_widget(help, popup_area);
+}
+
+/// Helper to create a key binding line
+fn key_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{:<12}", key), Style::default().fg(colors::KEYBIND)),
+        Span::raw(desc),
+    ])
 }
 
 /// Render confirmation dialog
@@ -744,6 +621,20 @@ fn render_confirm_dialog(dialog: &ConfirmDialog, frame: &mut Frame, area: Rect) 
     frame.render_widget(dialog_widget, popup_area);
 }
 
+/// Render empty state message
+fn render_empty_message(frame: &mut Frame, area: Rect, message: &str) {
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 2,
+        vertical: 2,
+    });
+
+    let empty = Paragraph::new(message)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(ratatui::layout::Alignment::Center);
+
+    frame.render_widget(empty, inner);
+}
+
 /// Helper to create a centered rect
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_layout = Layout::default()
@@ -763,4 +654,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+/// Truncate a string for display
+fn truncate_str(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len { s } else { &s[..max_len] }
 }

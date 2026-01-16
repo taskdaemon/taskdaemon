@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::coordinator::{CoordRequest, CoordinatorHandle};
-use crate::domain::{LoopExecution, LoopExecutionStatus, Spec, SpecStatus};
+use crate::domain::{Loop, LoopExecution, LoopExecutionStatus};
 use crate::llm::LlmClient;
 use crate::r#loop::{LoopConfig, LoopEngine};
 use crate::scheduler::Scheduler;
@@ -193,20 +193,10 @@ impl LoopManager {
     }
 
     /// Poll for ready loops and spawn them
+    ///
+    /// The cascade system creates LoopExecution records when parent loops complete.
+    /// This method finds pending executions with satisfied dependencies and spawns them.
     async fn poll_and_spawn(&mut self) -> Result<()> {
-        // Find pending Specs with satisfied dependencies
-        let pending_specs = self
-            .state
-            .list_specs(None, Some("pending".to_string()))
-            .await
-            .context("Failed to list pending specs")?;
-
-        for spec in pending_specs {
-            if self.dependencies_satisfied(&spec).await? {
-                self.spawn_spec_loop(&spec).await?;
-            }
-        }
-
         // Find pending LoopExecutions with satisfied dependencies
         let pending_executions = self
             .state
@@ -223,21 +213,6 @@ impl LoopManager {
         Ok(())
     }
 
-    /// Check if a Spec's dependencies are satisfied
-    async fn dependencies_satisfied(&self, spec: &Spec) -> Result<bool> {
-        for dep_id in &spec.deps {
-            if let Some(dep_spec) = self.state.get_spec(dep_id).await? {
-                if dep_spec.status != SpecStatus::Complete {
-                    return Ok(false);
-                }
-            } else {
-                // Dependency not found - can't proceed
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
     /// Check if a LoopExecution's dependencies are satisfied
     async fn loop_deps_satisfied(&self, exec: &LoopExecution) -> Result<bool> {
         for dep_id in &exec.deps {
@@ -251,29 +226,6 @@ impl LoopManager {
             }
         }
         Ok(true)
-    }
-
-    /// Spawn a loop for a Spec
-    async fn spawn_spec_loop(&mut self, spec: &Spec) -> Result<()> {
-        // Create LoopExecution record
-        let mut exec = LoopExecution::new("spec", &spec.id);
-        exec.set_parent(&spec.id);
-
-        // Set context from spec
-        exec.set_context(serde_json::json!({
-            "spec_id": spec.id,
-            "title": spec.title,
-            "spec_file": spec.file,
-        }));
-
-        // Store the execution
-        self.state
-            .create_execution(exec.clone())
-            .await
-            .context("Failed to create execution record")?;
-
-        // Spawn the loop
-        self.spawn_loop(&exec).await
     }
 
     /// Spawn a loop execution as a tokio task
@@ -615,16 +567,16 @@ async fn run_loop_task(
 /// Validate a dependency graph for cycles
 ///
 /// Uses DFS to detect cycles. Returns Ok(()) if no cycles, Err with cycle info if found.
-pub fn validate_dependency_graph<'a>(specs: impl IntoIterator<Item = &'a Spec>) -> Result<(), Vec<String>> {
-    let spec_map: HashMap<&str, &Spec> = specs.into_iter().map(|s| (s.id.as_str(), s)).collect();
+pub fn validate_dependency_graph<'a>(loops: impl IntoIterator<Item = &'a Loop>) -> Result<(), Vec<String>> {
+    let loop_map: HashMap<&str, &Loop> = loops.into_iter().map(|l| (l.id.as_str(), l)).collect();
 
     let mut visited = HashSet::new();
     let mut rec_stack = HashSet::new();
     let mut cycle_path = Vec::new();
 
-    for spec_id in spec_map.keys() {
-        if !visited.contains(spec_id)
-            && has_cycle_dfs(spec_id, &spec_map, &mut visited, &mut rec_stack, &mut cycle_path)
+    for loop_id in loop_map.keys() {
+        if !visited.contains(loop_id)
+            && has_cycle_dfs(loop_id, &loop_map, &mut visited, &mut rec_stack, &mut cycle_path)
         {
             return Err(cycle_path);
         }
@@ -636,7 +588,7 @@ pub fn validate_dependency_graph<'a>(specs: impl IntoIterator<Item = &'a Spec>) 
 /// DFS helper for cycle detection
 fn has_cycle_dfs<'a>(
     node: &'a str,
-    graph: &HashMap<&'a str, &'a Spec>,
+    graph: &HashMap<&'a str, &'a Loop>,
     visited: &mut HashSet<&'a str>,
     rec_stack: &mut HashSet<&'a str>,
     cycle_path: &mut Vec<String>,
@@ -645,8 +597,8 @@ fn has_cycle_dfs<'a>(
     rec_stack.insert(node);
     cycle_path.push(node.to_string());
 
-    if let Some(spec) = graph.get(node) {
-        for dep_id in &spec.deps {
+    if let Some(record) = graph.get(node) {
+        for dep_id in &record.deps {
             if !visited.contains(dep_id.as_str()) {
                 if graph.contains_key(dep_id.as_str())
                     && has_cycle_dfs(dep_id.as_str(), graph, visited, rec_stack, cycle_path)
@@ -665,22 +617,22 @@ fn has_cycle_dfs<'a>(
     false
 }
 
-/// Topologically sort specs by dependencies
+/// Topologically sort loops by dependencies
 ///
-/// Returns specs in execution order (dependencies first).
+/// Returns loops in execution order (dependencies first).
 /// The returned Vec contains indices into the input slice.
-pub fn topological_sort(specs: &[Spec]) -> Result<Vec<usize>, Vec<String>> {
+pub fn topological_sort(loops: &[Loop]) -> Result<Vec<usize>, Vec<String>> {
     // First validate no cycles
-    validate_dependency_graph(specs)?;
+    validate_dependency_graph(loops)?;
 
-    // Build index map: id -> index in specs
-    let index_map: HashMap<&str, usize> = specs.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
+    // Build index map: id -> index in loops
+    let index_map: HashMap<&str, usize> = loops.iter().enumerate().map(|(i, l)| (l.id.as_str(), i)).collect();
 
     let mut visited = HashSet::new();
     let mut result = Vec::new();
 
-    for idx in 0..specs.len() {
-        topo_dfs_idx(idx, specs, &index_map, &mut visited, &mut result);
+    for idx in 0..loops.len() {
+        topo_dfs_idx(idx, loops, &index_map, &mut visited, &mut result);
     }
 
     Ok(result)
@@ -689,7 +641,7 @@ pub fn topological_sort(specs: &[Spec]) -> Result<Vec<usize>, Vec<String>> {
 /// DFS helper for topological sort (returns indices)
 fn topo_dfs_idx(
     idx: usize,
-    specs: &[Spec],
+    loops: &[Loop],
     index_map: &HashMap<&str, usize>,
     visited: &mut HashSet<usize>,
     result: &mut Vec<usize>,
@@ -700,10 +652,10 @@ fn topo_dfs_idx(
 
     visited.insert(idx);
 
-    let spec = &specs[idx];
-    for dep_id in &spec.deps {
+    let record = &loops[idx];
+    for dep_id in &record.deps {
         if let Some(&dep_idx) = index_map.get(dep_id.as_str()) {
-            topo_dfs_idx(dep_idx, specs, index_map, visited, result);
+            topo_dfs_idx(dep_idx, loops, index_map, visited, result);
         }
     }
     result.push(idx);
@@ -715,79 +667,79 @@ mod tests {
 
     #[test]
     fn test_cycle_detection_no_cycle() {
-        let specs = vec![
-            Spec::with_id("spec-1", "plan-1", "Spec 1", "/spec1.md"),
+        let loops = vec![
+            Loop::with_id("loop-1", "mytype", "Loop 1"),
             {
-                let mut s = Spec::with_id("spec-2", "plan-1", "Spec 2", "/spec2.md");
-                s.deps = vec!["spec-1".to_string()];
-                s
+                let mut l = Loop::with_id("loop-2", "mytype", "Loop 2");
+                l.deps = vec!["loop-1".to_string()];
+                l
             },
             {
-                let mut s = Spec::with_id("spec-3", "plan-1", "Spec 3", "/spec3.md");
-                s.deps = vec!["spec-1".to_string(), "spec-2".to_string()];
-                s
+                let mut l = Loop::with_id("loop-3", "mytype", "Loop 3");
+                l.deps = vec!["loop-1".to_string(), "loop-2".to_string()];
+                l
             },
         ];
 
-        let result = validate_dependency_graph(&specs);
+        let result = validate_dependency_graph(&loops);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_cycle_detection_with_cycle() {
-        let specs = vec![
+        let loops = vec![
             {
-                let mut s = Spec::with_id("spec-1", "plan-1", "Spec 1", "/spec1.md");
-                s.deps = vec!["spec-3".to_string()];
-                s
+                let mut l = Loop::with_id("loop-1", "mytype", "Loop 1");
+                l.deps = vec!["loop-3".to_string()];
+                l
             },
             {
-                let mut s = Spec::with_id("spec-2", "plan-1", "Spec 2", "/spec2.md");
-                s.deps = vec!["spec-1".to_string()];
-                s
+                let mut l = Loop::with_id("loop-2", "mytype", "Loop 2");
+                l.deps = vec!["loop-1".to_string()];
+                l
             },
             {
-                let mut s = Spec::with_id("spec-3", "plan-1", "Spec 3", "/spec3.md");
-                s.deps = vec!["spec-2".to_string()];
-                s
+                let mut l = Loop::with_id("loop-3", "mytype", "Loop 3");
+                l.deps = vec!["loop-2".to_string()];
+                l
             },
         ];
 
-        let result = validate_dependency_graph(&specs);
+        let result = validate_dependency_graph(&loops);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_cycle_detection_self_cycle() {
-        let specs = vec![{
-            let mut s = Spec::with_id("spec-1", "plan-1", "Spec 1", "/spec1.md");
-            s.deps = vec!["spec-1".to_string()];
-            s
+        let loops = vec![{
+            let mut l = Loop::with_id("loop-1", "mytype", "Loop 1");
+            l.deps = vec!["loop-1".to_string()];
+            l
         }];
 
-        let result = validate_dependency_graph(&specs);
+        let result = validate_dependency_graph(&loops);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_topological_sort_simple() {
-        let specs = vec![
-            Spec::with_id("spec-1", "plan-1", "Spec 1", "/spec1.md"),
+        let loops = vec![
+            Loop::with_id("loop-1", "mytype", "Loop 1"),
             {
-                let mut s = Spec::with_id("spec-2", "plan-1", "Spec 2", "/spec2.md");
-                s.deps = vec!["spec-1".to_string()];
-                s
+                let mut l = Loop::with_id("loop-2", "mytype", "Loop 2");
+                l.deps = vec!["loop-1".to_string()];
+                l
             },
             {
-                let mut s = Spec::with_id("spec-3", "plan-1", "Spec 3", "/spec3.md");
-                s.deps = vec!["spec-2".to_string()];
-                s
+                let mut l = Loop::with_id("loop-3", "mytype", "Loop 3");
+                l.deps = vec!["loop-2".to_string()];
+                l
             },
         ];
 
-        let sorted_indices = topological_sort(&specs).unwrap();
+        let sorted_indices = topological_sort(&loops).unwrap();
 
-        // spec-1 (index 0) should come before spec-2 (index 1), spec-2 before spec-3 (index 2)
+        // loop-1 (index 0) should come before loop-2 (index 1), loop-2 before loop-3 (index 2)
         let pos_1 = sorted_indices.iter().position(|&i| i == 0).unwrap();
         let pos_2 = sorted_indices.iter().position(|&i| i == 1).unwrap();
         let pos_3 = sorted_indices.iter().position(|&i| i == 2).unwrap();
@@ -800,26 +752,26 @@ mod tests {
     fn test_topological_sort_diamond() {
         // Diamond dependency: A <- B, A <- C, B <- D, C <- D
         // A = index 0, B = index 1, C = index 2, D = index 3
-        let specs = vec![
-            Spec::with_id("A", "plan-1", "A", "/a.md"),
+        let loops = vec![
+            Loop::with_id("A", "mytype", "A"),
             {
-                let mut s = Spec::with_id("B", "plan-1", "B", "/b.md");
-                s.deps = vec!["A".to_string()];
-                s
+                let mut l = Loop::with_id("B", "mytype", "B");
+                l.deps = vec!["A".to_string()];
+                l
             },
             {
-                let mut s = Spec::with_id("C", "plan-1", "C", "/c.md");
-                s.deps = vec!["A".to_string()];
-                s
+                let mut l = Loop::with_id("C", "mytype", "C");
+                l.deps = vec!["A".to_string()];
+                l
             },
             {
-                let mut s = Spec::with_id("D", "plan-1", "D", "/d.md");
-                s.deps = vec!["B".to_string(), "C".to_string()];
-                s
+                let mut l = Loop::with_id("D", "mytype", "D");
+                l.deps = vec!["B".to_string(), "C".to_string()];
+                l
             },
         ];
 
-        let sorted_indices = topological_sort(&specs).unwrap();
+        let sorted_indices = topological_sort(&loops).unwrap();
 
         let pos_a = sorted_indices.iter().position(|&i| i == 0).unwrap(); // A
         let pos_b = sorted_indices.iter().position(|&i| i == 1).unwrap(); // B
@@ -836,20 +788,20 @@ mod tests {
 
     #[test]
     fn test_topological_sort_empty() {
-        let specs: Vec<Spec> = vec![];
-        let sorted = topological_sort(&specs).unwrap();
+        let loops: Vec<Loop> = vec![];
+        let sorted = topological_sort(&loops).unwrap();
         assert!(sorted.is_empty());
     }
 
     #[test]
     fn test_topological_sort_no_deps() {
-        let specs = vec![
-            Spec::with_id("spec-1", "plan-1", "Spec 1", "/spec1.md"),
-            Spec::with_id("spec-2", "plan-1", "Spec 2", "/spec2.md"),
-            Spec::with_id("spec-3", "plan-1", "Spec 3", "/spec3.md"),
+        let loops = vec![
+            Loop::with_id("loop-1", "mytype", "Loop 1"),
+            Loop::with_id("loop-2", "mytype", "Loop 2"),
+            Loop::with_id("loop-3", "mytype", "Loop 3"),
         ];
 
-        let sorted = topological_sort(&specs).unwrap();
+        let sorted = topological_sort(&loops).unwrap();
         assert_eq!(sorted.len(), 3);
     }
 

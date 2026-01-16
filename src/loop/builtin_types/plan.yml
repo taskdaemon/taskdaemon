@@ -1,5 +1,6 @@
 # Plan Loop Type
 # Level 1: Takes user idea, produces Plan markdown using Rule of Five
+# No parent - this is a root loop type
 description: "Create or refine a Plan document using Rule of Five methodology"
 
 prompt-template: |

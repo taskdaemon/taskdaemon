@@ -18,6 +18,6 @@ pub use config::LoopConfig;
 pub use engine::{IterationResult, LoopEngine, LoopStatus};
 pub use manager::{LoopManager, LoopManagerConfig, LoopTaskResult, topological_sort, validate_dependency_graph};
 pub use metrics::{GlobalSummary, IterationTimer, LoopMetrics, LoopStats, TypeMetrics};
-pub use type_loader::{LoopType, LoopTypeLoader};
+pub use type_loader::{LoopLoader, LoopType};
 #[allow(unused_imports)]
 pub use validation::ValidationResult;

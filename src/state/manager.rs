@@ -6,7 +6,7 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
-use crate::domain::{Filter, FilterOp, IndexValue, LoopExecution, LoopExecutionStatus, Plan, Spec, Store};
+use crate::domain::{Filter, FilterOp, IndexValue, Loop, LoopExecution, LoopExecutionStatus, Store};
 
 use super::messages::{StateCommand, StateError, StateResponse};
 
@@ -52,21 +52,26 @@ impl StateManager {
         Ok(Self { tx })
     }
 
-    /// Create a new Plan
-    pub async fn create_plan(&self, plan: Plan) -> StateResponse<String> {
+    // === Loop operations (generic work units) ===
+
+    /// Create a new Loop record
+    pub async fn create_loop(&self, record: Loop) -> StateResponse<String> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StateCommand::CreatePlan { plan, reply: reply_tx })
+            .send(StateCommand::CreateLoop {
+                record,
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| StateError::ChannelError)?;
         reply_rx.await.map_err(|_| StateError::ChannelError)?
     }
 
-    /// Get a Plan by ID
-    pub async fn get_plan(&self, id: &str) -> StateResponse<Option<Plan>> {
+    /// Get a Loop record by ID
+    pub async fn get_loop(&self, id: &str) -> StateResponse<Option<Loop>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StateCommand::GetPlan {
+            .send(StateCommand::GetLoop {
                 id: id.to_string(),
                 reply: reply_tx,
             })
@@ -75,22 +80,12 @@ impl StateManager {
         reply_rx.await.map_err(|_| StateError::ChannelError)?
     }
 
-    /// Update a Plan
-    pub async fn update_plan(&self, plan: Plan) -> StateResponse<()> {
+    /// Update a Loop record
+    pub async fn update_loop(&self, record: Loop) -> StateResponse<()> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StateCommand::UpdatePlan { plan, reply: reply_tx })
-            .await
-            .map_err(|_| StateError::ChannelError)?;
-        reply_rx.await.map_err(|_| StateError::ChannelError)?
-    }
-
-    /// List Plans with optional status filter
-    pub async fn list_plans(&self, status_filter: Option<String>) -> StateResponse<Vec<Plan>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StateCommand::ListPlans {
-                status_filter,
+            .send(StateCommand::UpdateLoop {
+                record,
                 reply: reply_tx,
             })
             .await
@@ -98,56 +93,44 @@ impl StateManager {
         reply_rx.await.map_err(|_| StateError::ChannelError)?
     }
 
-    /// Create a new Spec
-    pub async fn create_spec(&self, spec: Spec) -> StateResponse<String> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StateCommand::CreateSpec { spec, reply: reply_tx })
-            .await
-            .map_err(|_| StateError::ChannelError)?;
-        reply_rx.await.map_err(|_| StateError::ChannelError)?
-    }
-
-    /// Get a Spec by ID
-    pub async fn get_spec(&self, id: &str) -> StateResponse<Option<Spec>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StateCommand::GetSpec {
-                id: id.to_string(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| StateError::ChannelError)?;
-        reply_rx.await.map_err(|_| StateError::ChannelError)?
-    }
-
-    /// Update a Spec
-    pub async fn update_spec(&self, spec: Spec) -> StateResponse<()> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StateCommand::UpdateSpec { spec, reply: reply_tx })
-            .await
-            .map_err(|_| StateError::ChannelError)?;
-        reply_rx.await.map_err(|_| StateError::ChannelError)?
-    }
-
-    /// List Specs with optional filters
-    pub async fn list_specs(
+    /// List Loop records with optional filters
+    pub async fn list_loops(
         &self,
-        parent_filter: Option<String>,
+        type_filter: Option<String>,
         status_filter: Option<String>,
-    ) -> StateResponse<Vec<Spec>> {
+        parent_filter: Option<String>,
+    ) -> StateResponse<Vec<Loop>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StateCommand::ListSpecs {
-                parent_filter,
+            .send(StateCommand::ListLoops {
+                type_filter,
                 status_filter,
+                parent_filter,
                 reply: reply_tx,
             })
             .await
             .map_err(|_| StateError::ChannelError)?;
         reply_rx.await.map_err(|_| StateError::ChannelError)?
     }
+
+    /// Get a Loop record by ID, returning error if not found
+    pub async fn get_loop_required(&self, id: &str) -> Result<Loop, StateError> {
+        self.get_loop(id)
+            .await?
+            .ok_or_else(|| StateError::NotFound(format!("Loop {}", id)))
+    }
+
+    /// List all Loop records for a given parent ID
+    pub async fn list_loops_for_parent(&self, parent_id: &str) -> StateResponse<Vec<Loop>> {
+        self.list_loops(None, None, Some(parent_id.to_string())).await
+    }
+
+    /// List all Loop records of a given type
+    pub async fn list_loops_by_type(&self, loop_type: &str) -> StateResponse<Vec<Loop>> {
+        self.list_loops(Some(loop_type.to_string()), None, None).await
+    }
+
+    // === LoopExecution operations ===
 
     /// Create a new LoopExecution
     pub async fn create_execution(&self, execution: LoopExecution) -> StateResponse<String> {
@@ -234,26 +217,7 @@ impl StateManager {
             .map_err(|_| StateError::ChannelError)
     }
 
-    // === Convenience methods for cascade logic ===
-
-    /// List all Specs for a given Plan ID
-    pub async fn list_specs_for_plan(&self, plan_id: &str) -> StateResponse<Vec<Spec>> {
-        self.list_specs(Some(plan_id.to_string()), None).await
-    }
-
-    /// Get a Plan by ID, returning error if not found
-    pub async fn get_plan_required(&self, id: &str) -> Result<Plan, StateError> {
-        self.get_plan(id)
-            .await?
-            .ok_or_else(|| StateError::NotFound(format!("Plan {}", id)))
-    }
-
-    /// Get a Spec by ID, returning error if not found
-    pub async fn get_spec_required(&self, id: &str) -> Result<Spec, StateError> {
-        self.get_spec(id)
-            .await?
-            .ok_or_else(|| StateError::NotFound(format!("Spec {}", id)))
-    }
+    // === Convenience methods ===
 
     /// Get aggregated metrics from all loop executions
     pub async fn get_metrics(&self) -> eyre::Result<DaemonMetrics> {
@@ -283,11 +247,60 @@ impl StateManager {
         self.create_execution(execution).await
     }
 
-    /// Get a LoopExecution for a specific Spec (by parent field)
-    pub async fn get_loop_execution_for_spec(&self, spec_id: &str) -> StateResponse<Option<LoopExecution>> {
-        // List executions and find one with matching parent
-        let executions = self.list_executions(None, Some("phase".to_string())).await?;
-        Ok(executions.into_iter().find(|e| e.parent.as_deref() == Some(spec_id)))
+    /// Get a LoopExecution for a specific record (by parent field)
+    pub async fn get_loop_execution_for_spec(&self, record_id: &str) -> StateResponse<Option<LoopExecution>> {
+        // List all executions and find one with matching parent
+        let executions = self.list_executions(None, None).await?;
+        Ok(executions.into_iter().find(|e| e.parent.as_deref() == Some(record_id)))
+    }
+
+    // === Execution control methods ===
+
+    /// Cancel a running execution (sets status to Stopped)
+    pub async fn cancel_execution(&self, id: &str) -> StateResponse<()> {
+        let mut execution = self
+            .get_execution(id)
+            .await?
+            .ok_or_else(|| StateError::NotFound(format!("Execution {}", id)))?;
+
+        if execution.is_terminal() {
+            return Err(StateError::StoreError("Cannot cancel a terminal execution".to_string()));
+        }
+
+        execution.set_status(LoopExecutionStatus::Stopped);
+        self.update_execution(execution).await
+    }
+
+    /// Pause a running execution
+    pub async fn pause_execution(&self, id: &str) -> StateResponse<()> {
+        let mut execution = self
+            .get_execution(id)
+            .await?
+            .ok_or_else(|| StateError::NotFound(format!("Execution {}", id)))?;
+
+        if execution.status != LoopExecutionStatus::Running {
+            return Err(StateError::StoreError("Can only pause running executions".to_string()));
+        }
+
+        execution.set_status(LoopExecutionStatus::Paused);
+        self.update_execution(execution).await
+    }
+
+    /// Resume a paused execution
+    pub async fn resume_execution(&self, id: &str) -> StateResponse<()> {
+        let mut execution = self
+            .get_execution(id)
+            .await?
+            .ok_or_else(|| StateError::NotFound(format!("Execution {}", id)))?;
+
+        if !execution.is_resumable() {
+            return Err(StateError::StoreError(
+                "Can only resume paused or blocked executions".to_string(),
+            ));
+        }
+
+        execution.set_status(LoopExecutionStatus::Running);
+        self.update_execution(execution).await
     }
 }
 
@@ -297,65 +310,35 @@ async fn actor_loop(mut store: Store, mut rx: mpsc::Receiver<StateCommand>) {
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
-            StateCommand::CreatePlan { plan, reply } => {
-                let result = store.create(plan).map_err(|e| StateError::StoreError(e.to_string()));
+            // Loop operations (generic work units)
+            StateCommand::CreateLoop { record, reply } => {
+                let result = store.create(record).map_err(|e| StateError::StoreError(e.to_string()));
                 let _ = reply.send(result);
             }
 
-            StateCommand::GetPlan { id, reply } => {
-                let result: StateResponse<Option<Plan>> =
+            StateCommand::GetLoop { id, reply } => {
+                let result: StateResponse<Option<Loop>> =
                     store.get(&id).map_err(|e| StateError::StoreError(e.to_string()));
                 let _ = reply.send(result);
             }
 
-            StateCommand::UpdatePlan { plan, reply } => {
-                let result = store.update(plan).map_err(|e| StateError::StoreError(e.to_string()));
+            StateCommand::UpdateLoop { record, reply } => {
+                let result = store.update(record).map_err(|e| StateError::StoreError(e.to_string()));
                 let _ = reply.send(result);
             }
 
-            StateCommand::ListPlans { status_filter, reply } => {
-                let filters = status_filter
-                    .map(|s| {
-                        vec![Filter {
-                            field: "status".to_string(),
-                            op: FilterOp::Eq,
-                            value: IndexValue::String(s),
-                        }]
-                    })
-                    .unwrap_or_default();
-
-                let result: StateResponse<Vec<Plan>> =
-                    store.list(&filters).map_err(|e| StateError::StoreError(e.to_string()));
-                let _ = reply.send(result);
-            }
-
-            StateCommand::CreateSpec { spec, reply } => {
-                let result = store.create(spec).map_err(|e| StateError::StoreError(e.to_string()));
-                let _ = reply.send(result);
-            }
-
-            StateCommand::GetSpec { id, reply } => {
-                let result: StateResponse<Option<Spec>> =
-                    store.get(&id).map_err(|e| StateError::StoreError(e.to_string()));
-                let _ = reply.send(result);
-            }
-
-            StateCommand::UpdateSpec { spec, reply } => {
-                let result = store.update(spec).map_err(|e| StateError::StoreError(e.to_string()));
-                let _ = reply.send(result);
-            }
-
-            StateCommand::ListSpecs {
-                parent_filter,
+            StateCommand::ListLoops {
+                type_filter,
                 status_filter,
+                parent_filter,
                 reply,
             } => {
                 let mut filters = Vec::new();
-                if let Some(parent) = parent_filter {
+                if let Some(loop_type) = type_filter {
                     filters.push(Filter {
-                        field: "parent".to_string(),
+                        field: "type".to_string(),
                         op: FilterOp::Eq,
-                        value: IndexValue::String(parent),
+                        value: IndexValue::String(loop_type),
                     });
                 }
                 if let Some(status) = status_filter {
@@ -365,8 +348,15 @@ async fn actor_loop(mut store: Store, mut rx: mpsc::Receiver<StateCommand>) {
                         value: IndexValue::String(status),
                     });
                 }
+                if let Some(parent) = parent_filter {
+                    filters.push(Filter {
+                        field: "parent".to_string(),
+                        op: FilterOp::Eq,
+                        value: IndexValue::String(parent),
+                    });
+                }
 
-                let result: StateResponse<Vec<Spec>> =
+                let result: StateResponse<Vec<Loop>> =
                     store.list(&filters).map_err(|e| StateError::StoreError(e.to_string()));
                 let _ = reply.send(result);
             }
@@ -433,10 +423,7 @@ async fn actor_loop(mut store: Store, mut rx: mpsc::Receiver<StateCommand>) {
 
             StateCommand::RebuildIndexes { reply } => {
                 let mut count = 0;
-                if let Ok(c) = store.rebuild_indexes::<Plan>() {
-                    count += c;
-                }
-                if let Ok(c) = store.rebuild_indexes::<Spec>() {
+                if let Ok(c) = store.rebuild_indexes::<Loop>() {
                     count += c;
                 }
                 if let Ok(c) = store.rebuild_indexes::<LoopExecution>() {
@@ -461,59 +448,33 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn test_state_manager_plan_crud() {
+    async fn test_state_manager_loop_crud() {
         let temp = tempdir().unwrap();
         let manager = StateManager::spawn(temp.path()).unwrap();
 
         // Create
-        let plan = Plan::with_id("test-plan", "Test Plan", "/test.md");
-        let id = manager.create_plan(plan.clone()).await.unwrap();
-        assert_eq!(id, "test-plan");
+        let record = Loop::with_id("test-loop", "mytype", "Test Loop");
+        let id = manager.create_loop(record.clone()).await.unwrap();
+        assert_eq!(id, "test-loop");
 
         // Get
-        let retrieved = manager.get_plan("test-plan").await.unwrap();
+        let retrieved = manager.get_loop("test-loop").await.unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().title, "Test Plan");
+        assert_eq!(retrieved.unwrap().title, "Test Loop");
 
         // Update
-        let mut updated = plan.clone();
-        updated.set_status(crate::domain::PlanStatus::Ready);
-        manager.update_plan(updated).await.unwrap();
+        let mut updated = record.clone();
+        updated.set_status(crate::domain::LoopStatus::Ready);
+        manager.update_loop(updated).await.unwrap();
 
-        let retrieved = manager.get_plan("test-plan").await.unwrap().unwrap();
-        assert_eq!(retrieved.status, crate::domain::PlanStatus::Ready);
+        let retrieved = manager.get_loop("test-loop").await.unwrap().unwrap();
+        assert_eq!(retrieved.status, crate::domain::LoopStatus::Ready);
 
         // List
-        let plans = manager.list_plans(None).await.unwrap();
-        assert_eq!(plans.len(), 1);
+        let loops = manager.list_loops(None, None, None).await.unwrap();
+        assert_eq!(loops.len(), 1);
 
         // Shutdown
-        manager.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_state_manager_spec_crud() {
-        let temp = tempdir().unwrap();
-        let manager = StateManager::spawn(temp.path()).unwrap();
-
-        // Create parent plan first
-        let plan = Plan::with_id("parent-plan", "Parent Plan", "/parent.md");
-        manager.create_plan(plan).await.unwrap();
-
-        // Create spec
-        let spec = Spec::with_id("test-spec", "parent-plan", "Test Spec", "/spec.md");
-        let id = manager.create_spec(spec).await.unwrap();
-        assert_eq!(id, "test-spec");
-
-        // Get
-        let retrieved = manager.get_spec("test-spec").await.unwrap();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().parent, "parent-plan");
-
-        // List by parent
-        let specs = manager.list_specs(Some("parent-plan".to_string()), None).await.unwrap();
-        assert_eq!(specs.len(), 1);
-
         manager.shutdown().await.unwrap();
     }
 
@@ -523,17 +484,17 @@ mod tests {
         let manager = StateManager::spawn(temp.path()).unwrap();
 
         // Create execution
-        let exec = LoopExecution::with_id("test-exec", "ralph");
+        let exec = LoopExecution::with_id("test-exec", "mytype");
         let id = manager.create_execution(exec).await.unwrap();
         assert_eq!(id, "test-exec");
 
         // Get
         let retrieved = manager.get_execution("test-exec").await.unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().loop_type, "ralph");
+        assert_eq!(retrieved.unwrap().loop_type, "mytype");
 
         // List by type
-        let execs = manager.list_executions(None, Some("ralph".to_string())).await.unwrap();
+        let execs = manager.list_executions(None, Some("mytype".to_string())).await.unwrap();
         assert_eq!(execs.len(), 1);
 
         manager.shutdown().await.unwrap();
@@ -544,7 +505,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let manager = StateManager::spawn(temp.path()).unwrap();
 
-        let result = manager.get_plan("nonexistent").await.unwrap();
+        let result = manager.get_loop("nonexistent").await.unwrap();
         assert!(result.is_none());
 
         manager.shutdown().await.unwrap();
@@ -555,19 +516,22 @@ mod tests {
         let temp = tempdir().unwrap();
         let manager = StateManager::spawn(temp.path()).unwrap();
 
-        // Create plans with different statuses
-        let mut plan1 = Plan::with_id("plan-1", "Plan 1", "/plan1.md");
-        plan1.set_status(crate::domain::PlanStatus::Draft);
-        manager.create_plan(plan1).await.unwrap();
+        // Create loops with different statuses
+        let mut loop1 = Loop::with_id("loop-1", "mytype", "Loop 1");
+        loop1.set_status(crate::domain::LoopStatus::Pending);
+        manager.create_loop(loop1).await.unwrap();
 
-        let mut plan2 = Plan::with_id("plan-2", "Plan 2", "/plan2.md");
-        plan2.set_status(crate::domain::PlanStatus::Ready);
-        manager.create_plan(plan2).await.unwrap();
+        let mut loop2 = Loop::with_id("loop-2", "mytype", "Loop 2");
+        loop2.set_status(crate::domain::LoopStatus::Ready);
+        manager.create_loop(loop2).await.unwrap();
 
         // List with filter
-        let draft_plans = manager.list_plans(Some("draft".to_string())).await.unwrap();
-        assert_eq!(draft_plans.len(), 1);
-        assert_eq!(draft_plans[0].id, "plan-1");
+        let pending_loops = manager
+            .list_loops(None, Some("pending".to_string()), None)
+            .await
+            .unwrap();
+        assert_eq!(pending_loops.len(), 1);
+        assert_eq!(pending_loops[0].id, "loop-1");
 
         manager.shutdown().await.unwrap();
     }

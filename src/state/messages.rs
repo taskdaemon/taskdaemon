@@ -6,7 +6,7 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::oneshot;
 
-use crate::domain::{LoopExecution, Plan, Spec};
+use crate::domain::{Loop, LoopExecution};
 
 /// Errors from state operations
 #[derive(Debug, Error)]
@@ -30,41 +30,24 @@ pub type StateResponse<T> = Result<T, StateError>;
 /// Commands sent to the StateManager actor
 #[derive(Debug)]
 pub enum StateCommand {
-    // Plan operations
-    CreatePlan {
-        plan: Plan,
+    // Loop operations (generic work units)
+    CreateLoop {
+        record: Loop,
         reply: oneshot::Sender<StateResponse<String>>,
     },
-    GetPlan {
+    GetLoop {
         id: String,
-        reply: oneshot::Sender<StateResponse<Option<Plan>>>,
+        reply: oneshot::Sender<StateResponse<Option<Loop>>>,
     },
-    UpdatePlan {
-        plan: Plan,
+    UpdateLoop {
+        record: Loop,
         reply: oneshot::Sender<StateResponse<()>>,
     },
-    ListPlans {
+    ListLoops {
+        type_filter: Option<String>,
         status_filter: Option<String>,
-        reply: oneshot::Sender<StateResponse<Vec<Plan>>>,
-    },
-
-    // Spec operations
-    CreateSpec {
-        spec: Spec,
-        reply: oneshot::Sender<StateResponse<String>>,
-    },
-    GetSpec {
-        id: String,
-        reply: oneshot::Sender<StateResponse<Option<Spec>>>,
-    },
-    UpdateSpec {
-        spec: Spec,
-        reply: oneshot::Sender<StateResponse<()>>,
-    },
-    ListSpecs {
         parent_filter: Option<String>,
-        status_filter: Option<String>,
-        reply: oneshot::Sender<StateResponse<Vec<Spec>>>,
+        reply: oneshot::Sender<StateResponse<Vec<Loop>>>,
     },
 
     // LoopExecution operations

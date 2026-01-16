@@ -1,11 +1,12 @@
 //! TUI event handling
+//!
+//! Async-compatible event handling for the TUI using tokio channels.
 
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
 use crossterm::event::{self, KeyEvent, MouseEvent};
 use eyre::Result;
+use tokio::sync::mpsc;
 
 /// Terminal events
 #[derive(Debug)]
@@ -23,20 +24,16 @@ pub enum Event {
 /// Event handler for the TUI
 pub struct EventHandler {
     /// Event receiver
-    rx: mpsc::Receiver<Event>,
-    /// Event sender (kept for potential future use)
-    #[allow(dead_code)]
-    tx: mpsc::Sender<Event>,
+    rx: mpsc::UnboundedReceiver<Event>,
 }
 
 impl EventHandler {
     /// Create a new event handler with the given tick rate
     pub fn new(tick_rate: Duration) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let event_tx = tx.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
 
-        // Spawn event polling thread
-        thread::spawn(move || {
+        // Spawn event polling task in a blocking thread
+        std::thread::spawn(move || {
             loop {
                 // Poll for events with timeout
                 if event::poll(tick_rate).unwrap_or(false) {
@@ -48,25 +45,25 @@ impl EventHandler {
                             _ => continue,
                         };
 
-                        if event_tx.send(event).is_err() {
+                        if tx.send(event).is_err() {
                             break;
                         }
                     }
                 } else {
                     // Send tick event
-                    if event_tx.send(Event::Tick).is_err() {
+                    if tx.send(Event::Tick).is_err() {
                         break;
                     }
                 }
             }
         });
 
-        Self { rx, tx }
+        Self { rx }
     }
 
-    /// Get the next event (blocking)
-    pub fn next(&self) -> Result<Event> {
-        Ok(self.rx.recv()?)
+    /// Get the next event (async)
+    pub async fn next(&mut self) -> Result<Event> {
+        self.rx.recv().await.ok_or_else(|| eyre::eyre!("Event channel closed"))
     }
 }
 

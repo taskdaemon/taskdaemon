@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
-use taskdaemon::domain::{Priority, Spec, SpecStatus};
-use taskdaemon::r#loop::LoopTypeLoader;
+use taskdaemon::domain::{Loop, LoopStatus, Priority};
+use taskdaemon::r#loop::LoopLoader;
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;
 use tempfile::TempDir;
@@ -150,54 +150,54 @@ async fn test_scheduler_sequential_requests() {
 // =============================================================================
 
 #[tokio::test]
-async fn test_state_manager_spec_lifecycle() {
+async fn test_state_manager_loop_lifecycle() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
 
-    // Create a spec (parent, title, file)
-    let spec = Spec::new("parent-plan-1", "Test task", "spec.md");
+    // Create a loop (type, title)
+    let record = Loop::new("mytype", "Test task");
 
     // Create it
-    state.create_spec(spec.clone()).await.expect("Failed to create spec");
+    state.create_loop(record.clone()).await.expect("Failed to create loop");
 
     // Read it back
     let retrieved = state
-        .get_spec(&spec.id)
+        .get_loop(&record.id)
         .await
-        .expect("Failed to get spec")
-        .expect("Spec should exist");
-    assert_eq!(retrieved.id, spec.id);
+        .expect("Failed to get loop")
+        .expect("Loop should exist");
+    assert_eq!(retrieved.id, record.id);
     assert_eq!(retrieved.title, "Test task");
 
     // Update status
     let mut updated = retrieved.clone();
-    updated.status = SpecStatus::Running;
-    state.update_spec(updated.clone()).await.expect("Failed to update spec");
+    updated.status = LoopStatus::InProgress;
+    state.update_loop(updated.clone()).await.expect("Failed to update loop");
 
     // Verify update
     let after_update = state
-        .get_spec(&spec.id)
+        .get_loop(&record.id)
         .await
-        .expect("Failed to get spec")
-        .expect("Spec should exist");
-    assert_eq!(after_update.status, SpecStatus::Running);
+        .expect("Failed to get loop")
+        .expect("Loop should exist");
+    assert_eq!(after_update.status, LoopStatus::InProgress);
 
-    // List all specs (no filter)
-    let specs = state.list_specs(None, None).await.expect("Failed to list specs");
-    assert_eq!(specs.len(), 1);
+    // List all loops (no filter)
+    let loops = state.list_loops(None, None, None).await.expect("Failed to list loops");
+    assert_eq!(loops.len(), 1);
 
     // List with status filter
-    let running_specs = state
-        .list_specs(None, Some("running".to_string()))
+    let in_progress_loops = state
+        .list_loops(None, Some("in_progress".to_string()), None)
         .await
-        .expect("Failed to list specs");
-    assert_eq!(running_specs.len(), 1);
+        .expect("Failed to list loops");
+    assert_eq!(in_progress_loops.len(), 1);
 
-    let pending_specs = state
-        .list_specs(None, Some("pending".to_string()))
+    let pending_loops = state
+        .list_loops(None, Some("pending".to_string()), None)
         .await
-        .expect("Failed to list specs");
-    assert_eq!(pending_specs.len(), 0);
+        .expect("Failed to list loops");
+    assert_eq!(pending_loops.len(), 0);
 }
 
 // =============================================================================
@@ -207,7 +207,7 @@ async fn test_state_manager_spec_lifecycle() {
 #[test]
 fn test_loop_type_loader_builtins() {
     let config = taskdaemon::config::LoopsConfig::default();
-    let loader = LoopTypeLoader::new(&config).expect("Failed to create loader");
+    let loader = LoopLoader::new(&config).expect("Failed to create loader");
 
     let configs = loader.to_configs();
 

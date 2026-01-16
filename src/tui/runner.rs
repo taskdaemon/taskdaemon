@@ -16,7 +16,7 @@ use crate::state::StateManager;
 use super::Tui;
 use super::app::App;
 use super::events::{Event, EventHandler};
-use super::state::{ResourceItem, ResourceView};
+use super::state::{DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, RecordItem, View};
 use super::views;
 
 /// How often to refresh data from StateManager
@@ -34,6 +34,8 @@ pub struct TuiRunner {
     event_handler: EventHandler,
     /// Last data refresh time
     last_refresh: Instant,
+    /// Default loop type for creating new loops (from config)
+    default_loop_type: String,
 }
 
 impl TuiRunner {
@@ -45,17 +47,21 @@ impl TuiRunner {
             state_manager: None,
             event_handler: EventHandler::new(Duration::from_millis(33)), // ~30 FPS
             last_refresh: Instant::now(),
+            default_loop_type: String::new(),
         }
     }
 
     /// Create a new TuiRunner with StateManager connection
-    pub fn with_state_manager(terminal: Tui, state_manager: StateManager) -> Self {
+    ///
+    /// `default_loop_type` specifies which loop type to create when user presses 'n'.
+    pub fn with_state_manager(terminal: Tui, state_manager: StateManager, default_loop_type: String) -> Self {
         Self {
             app: App::new(),
             terminal,
             state_manager: Some(state_manager),
             event_handler: EventHandler::new(Duration::from_millis(33)),
             last_refresh: Instant::now() - DATA_REFRESH_INTERVAL, // Force immediate refresh
+            default_loop_type,
         }
     }
 
@@ -68,10 +74,10 @@ impl TuiRunner {
 
         loop {
             // Draw the UI
-            self.terminal.draw(|frame| views::render(&mut self.app, frame))?;
+            self.terminal.draw(|frame| views::render(self.app.state(), frame))?;
 
             // Handle events
-            match self.event_handler.next()? {
+            match self.event_handler.next().await? {
                 Event::Tick => {
                     self.handle_tick().await?;
                 }
@@ -101,6 +107,16 @@ impl TuiRunner {
     async fn handle_tick(&mut self) -> Result<()> {
         self.app.state_mut().tick();
 
+        // Check for pending task to start
+        if let Some(task) = self.app.state_mut().pending_task.take() {
+            self.start_task(&task).await;
+        }
+
+        // Check for pending action (cancel/pause/resume)
+        if let Some(action) = self.app.state_mut().pending_action.take() {
+            self.execute_action(action).await;
+        }
+
         // Refresh data if interval has elapsed
         if self.state_manager.is_some() && self.last_refresh.elapsed() >= DATA_REFRESH_INTERVAL {
             self.refresh_data().await?;
@@ -108,6 +124,97 @@ impl TuiRunner {
         }
 
         Ok(())
+    }
+
+    /// Start a new loop with the configured default loop type
+    async fn start_task(&mut self, task: &str) {
+        if self.default_loop_type.is_empty() {
+            self.app
+                .state_mut()
+                .set_error("No default-type configured in loops section. Add 'default-type: <type>' to config.");
+            return;
+        }
+
+        let state_manager = match &self.state_manager {
+            Some(sm) => sm,
+            None => {
+                self.app.state_mut().set_error("No state manager - cannot create loop");
+                return;
+            }
+        };
+
+        debug!("Starting {} loop: {}", self.default_loop_type, task);
+
+        // Create a loop execution with the configured default type
+        let execution = crate::domain::LoopExecution::new(&self.default_loop_type, task);
+
+        match state_manager.create_execution(execution).await {
+            Ok(id) => {
+                debug!("Created {} loop {}", self.default_loop_type, id);
+                // Force a refresh to show the new loop
+                self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+            }
+            Err(e) => {
+                warn!("Failed to create loop: {}", e);
+                self.app.state_mut().set_error(format!("Failed to create task: {}", e));
+            }
+        }
+    }
+
+    /// Execute a pending action (cancel/pause/resume)
+    async fn execute_action(&mut self, action: PendingAction) {
+        let state_manager = match &self.state_manager {
+            Some(sm) => sm,
+            None => {
+                self.app
+                    .state_mut()
+                    .set_error("No state manager - cannot execute action");
+                return;
+            }
+        };
+
+        match action {
+            PendingAction::CancelLoop(id) => {
+                debug!("Cancelling loop: {}", id);
+                match state_manager.cancel_execution(&id).await {
+                    Ok(()) => {
+                        debug!("Cancelled loop {}", id);
+                        // Force a refresh to show updated status
+                        self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                    }
+                    Err(e) => {
+                        warn!("Failed to cancel loop: {}", e);
+                        self.app.state_mut().set_error(format!("Failed to cancel: {}", e));
+                    }
+                }
+            }
+            PendingAction::PauseLoop(id) => {
+                debug!("Pausing loop: {}", id);
+                match state_manager.pause_execution(&id).await {
+                    Ok(()) => {
+                        debug!("Paused loop {}", id);
+                        self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                    }
+                    Err(e) => {
+                        warn!("Failed to pause loop: {}", e);
+                        self.app.state_mut().set_error(format!("Failed to pause: {}", e));
+                    }
+                }
+            }
+            PendingAction::ResumeLoop(id) => {
+                debug!("Resuming loop: {}", id);
+                match state_manager.resume_execution(&id).await {
+                    Ok(()) => {
+                        debug!("Resumed loop {}", id);
+                        self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                    }
+                    Err(e) => {
+                        warn!("Failed to resume loop: {}", e);
+                        self.app.state_mut().set_error(format!("Failed to resume: {}", e));
+                    }
+                }
+            }
+        }
     }
 
     /// Handle key event
@@ -133,129 +240,73 @@ impl TuiRunner {
             None => return Ok(()),
         };
 
-        // Sync plans
-        match state_manager.list_plans(None).await {
-            Ok(plans) => {
-                let items: Vec<ResourceItem> = plans
+        // Sync Loop records
+        match state_manager.list_loops(None, None, None).await {
+            Ok(loops) => {
+                let items: Vec<RecordItem> = loops
                     .iter()
-                    .map(|p| ResourceItem {
-                        id: p.id.clone(),
-                        name: p.title.clone(),
-                        resource_type: "plan".to_string(),
-                        status: p.status.to_string(),
-                        parent_id: None,
-                        iteration: None,
-                        progress: None,
-                        last_activity: None,
-                        needs_attention: matches!(p.status, crate::domain::PlanStatus::Failed),
-                        attention_reason: if p.status == crate::domain::PlanStatus::Failed {
-                            Some("Plan failed".to_string())
+                    .map(|l| {
+                        let phases_progress = if !l.phases.is_empty() {
+                            let complete = l.phases.iter().filter(|p| p.is_complete()).count();
+                            format!("{}/{}", complete, l.phases.len())
                         } else {
-                            None
-                        },
-                    })
-                    .collect();
-
-                let state = self.app.state_mut();
-                state.metrics.plans_total = items.len();
-                state.metrics.plans_active = items.iter().filter(|p| p.status == "in_progress").count();
-                state.plans = items;
-            }
-            Err(e) => {
-                warn!("Failed to fetch plans: {}", e);
-                self.app.state_mut().set_error(format!("Failed to fetch plans: {}", e));
-            }
-        }
-
-        // Sync specs
-        let parent_filter = self
-            .app
-            .state()
-            .selection
-            .get(&ResourceView::Specs)
-            .and_then(|s| s.parent_filter.clone());
-
-        match state_manager.list_specs(parent_filter, None).await {
-            Ok(specs) => {
-                let items: Vec<ResourceItem> = specs
-                    .iter()
-                    .map(|s| {
-                        let phase_progress = if !s.phases.is_empty() {
-                            let complete = s.phases.iter().filter(|p| p.is_complete()).count();
-                            Some(format!("{}/{}", complete, s.phases.len()))
-                        } else {
-                            None
+                            "-".to_string()
                         };
 
-                        ResourceItem {
-                            id: s.id.clone(),
-                            name: s.title.clone(),
-                            resource_type: "spec".to_string(),
-                            status: s.status.to_string(),
-                            parent_id: Some(s.parent.clone()),
-                            iteration: None,
-                            progress: phase_progress,
-                            last_activity: None,
-                            needs_attention: matches!(
-                                s.status,
-                                crate::domain::SpecStatus::Blocked | crate::domain::SpecStatus::Failed
-                            ),
-                            attention_reason: match s.status {
-                                crate::domain::SpecStatus::Blocked => Some("Blocked".to_string()),
-                                crate::domain::SpecStatus::Failed => Some("Failed".to_string()),
-                                _ => None,
-                            },
+                        RecordItem {
+                            id: l.id.clone(),
+                            title: l.title.clone(),
+                            loop_type: l.r#type.clone(),
+                            status: l.status.to_string(),
+                            parent_id: l.parent.clone(),
+                            children_count: 0, // TODO: count children
+                            phases_progress,
+                            created: format_time_ago(l.created_at),
                         }
                     })
                     .collect();
 
                 let state = self.app.state_mut();
-                state.metrics.specs_total = items.len();
-                state.metrics.specs_running = items.iter().filter(|s| s.status == "running").count();
-                state.specs = items;
+                state.total_records = items.len();
+                state.records = items;
             }
             Err(e) => {
-                warn!("Failed to fetch specs: {}", e);
+                warn!("Failed to fetch loops: {}", e);
             }
         }
 
-        // Sync phases (derived from specs)
-        // Note: Phases are embedded in Specs, so we'd need to fetch full specs
-        // For now, phases remain empty until we implement full spec fetching
-        // In Phase 4, we'll add proper phase extraction from specs
-
-        // Sync loop executions (ralphs)
+        // Sync loop executions
         match state_manager.list_executions(None, None).await {
             Ok(executions) => {
-                let items: Vec<ResourceItem> = executions
+                let items: Vec<ExecutionItem> = executions
                     .iter()
-                    .map(|e| ResourceItem {
-                        id: e.id.clone(),
-                        name: format!("{} ({})", e.loop_type, &e.id[..8.min(e.id.len())]),
-                        resource_type: e.loop_type.clone(),
-                        status: e.status.to_string(),
-                        parent_id: e.parent.clone(),
-                        iteration: Some(e.iteration),
-                        progress: if e.progress.is_empty() {
-                            None
+                    .map(|e| {
+                        // Only show duration for running items
+                        let duration = if e.status == crate::domain::LoopExecutionStatus::Running {
+                            format_duration(e.created_at)
                         } else {
-                            Some(e.progress.lines().last().unwrap_or("").to_string())
-                        },
-                        last_activity: None,
-                        needs_attention: matches!(
-                            e.status,
-                            crate::domain::LoopExecutionStatus::Blocked | crate::domain::LoopExecutionStatus::Failed
-                        ),
-                        attention_reason: e.last_error.clone(),
+                            "-".to_string()
+                        };
+                        let progress = e.progress.lines().last().unwrap_or("").to_string();
+
+                        ExecutionItem {
+                            id: e.id.clone(),
+                            name: format!("{} ({})", e.loop_type, &e.id[..8.min(e.id.len())]),
+                            loop_type: e.loop_type.clone(),
+                            iteration: format!("{}/10", e.iteration), // TODO: get max from config
+                            status: e.status.to_string(),
+                            duration,
+                            parent_id: e.parent.clone(),
+                            progress,
+                        }
                     })
                     .collect();
 
                 let state = self.app.state_mut();
-                state.metrics.ralphs_active = items.iter().filter(|r| r.status == "running").count();
-                state.metrics.ralphs_complete = items.iter().filter(|r| r.status == "complete").count();
-                state.metrics.ralphs_failed = items.iter().filter(|r| r.status == "failed").count();
-                state.metrics.total_iterations = items.iter().filter_map(|r| r.iteration).map(|i| i as u64).sum();
-                state.ralphs = items;
+                state.executions_active = items.iter().filter(|r| r.status == "running").count();
+                state.executions_complete = items.iter().filter(|r| r.status == "complete").count();
+                state.executions_failed = items.iter().filter(|r| r.status == "failed").count();
+                state.executions = items;
             }
             Err(e) => {
                 warn!("Failed to fetch executions: {}", e);
@@ -267,25 +318,164 @@ impl TuiRunner {
 
         // Clamp selections to valid ranges
         let state = self.app.state_mut();
-        let plans_len = state.plans.len();
-        let specs_len = state.specs.len();
-        let phases_len = state.phases.len();
-        let ralphs_len = state.ralphs.len();
+        let records_len = state.records.len();
+        let executions_len = state.executions.len();
 
-        if let Some(sel) = state.selection.get_mut(&ResourceView::Plans) {
-            sel.clamp(plans_len);
-        }
-        if let Some(sel) = state.selection.get_mut(&ResourceView::Specs) {
-            sel.clamp(specs_len);
-        }
-        if let Some(sel) = state.selection.get_mut(&ResourceView::Phases) {
-            sel.clamp(phases_len);
-        }
-        if let Some(sel) = state.selection.get_mut(&ResourceView::Ralphs) {
-            sel.clamp(ralphs_len);
+        state.records_selection.clamp(records_len);
+        state.executions_selection.clamp(executions_len);
+
+        // Load view-specific data
+        self.load_view_data().await?;
+
+        Ok(())
+    }
+
+    /// Load data specific to the current view
+    async fn load_view_data(&mut self) -> Result<()> {
+        let state_manager = match &self.state_manager {
+            Some(sm) => sm,
+            None => return Ok(()),
+        };
+
+        let view = self.app.state().current_view.clone();
+
+        match view {
+            View::Logs { ref target_id } => {
+                // Load logs for the target (try execution first, then loop record)
+                if let Ok(Some(exec)) = state_manager.get_execution(target_id).await {
+                    let entries: Vec<LogEntry> = exec
+                        .progress
+                        .lines()
+                        .enumerate()
+                        .map(|(i, line)| {
+                            let is_error = line.contains("ERROR") || line.contains("error:");
+                            let is_stdout = line.contains("STDOUT:") || line.starts_with('>');
+                            LogEntry {
+                                iteration: (i / 10 + 1) as u32, // Rough estimate
+                                text: line.to_string(),
+                                is_error,
+                                is_stdout,
+                            }
+                        })
+                        .collect();
+
+                    self.app.state_mut().logs = entries;
+                }
+            }
+            View::Describe {
+                ref target_id,
+                ref target_type,
+            } => {
+                // Load describe data - try execution first, then loop record
+                let data = if let Ok(Some(exec)) = state_manager.get_execution(target_id).await {
+                    // It's an execution
+                    let duration = if exec.status == crate::domain::LoopExecutionStatus::Running {
+                        format_duration(exec.created_at)
+                    } else {
+                        "-".to_string()
+                    };
+
+                    Some(DescribeData {
+                        id: exec.id.clone(),
+                        loop_type: exec.loop_type.clone(),
+                        title: format!("{} execution", exec.loop_type),
+                        status: exec.status.to_string(),
+                        parent_id: exec.parent.clone(),
+                        created: format_timestamp(exec.created_at),
+                        updated: format_timestamp(exec.updated_at),
+                        fields: if let Some(ref err) = exec.last_error {
+                            vec![("Last Error".to_string(), err.clone())]
+                        } else {
+                            vec![]
+                        },
+                        children: vec![],
+                        execution: Some(ExecutionInfo {
+                            id: exec.id.clone(),
+                            iteration: format!("{}/10", exec.iteration),
+                            duration,
+                            progress: exec.progress.lines().last().unwrap_or("").to_string(),
+                        }),
+                    })
+                } else if let Ok(Some(record)) = state_manager.get_loop(target_id).await {
+                    // It's a Loop record
+                    Some(DescribeData {
+                        id: record.id.clone(),
+                        loop_type: record.r#type.clone(),
+                        title: record.title.clone(),
+                        status: record.status.to_string(),
+                        parent_id: record.parent.clone(),
+                        created: format_timestamp(record.created_at),
+                        updated: format_timestamp(record.updated_at),
+                        fields: vec![(
+                            "File".to_string(),
+                            record.file.clone().unwrap_or_else(|| "-".to_string()),
+                        )],
+                        children: vec![], // TODO: load children
+                        execution: None,
+                    })
+                } else {
+                    None
+                };
+
+                let _ = target_type; // Used for context in future
+
+                self.app.state_mut().describe_data = data;
+            }
+            _ => {}
         }
 
         Ok(())
+    }
+}
+
+/// Format a timestamp as a human-readable "time ago" string
+fn format_time_ago(timestamp_ms: i64) -> String {
+    let now = taskstore::now_ms();
+    let diff_ms = now - timestamp_ms;
+
+    if diff_ms < 0 {
+        return "just now".to_string();
+    }
+
+    let diff_secs = diff_ms / 1000;
+    let diff_mins = diff_secs / 60;
+    let diff_hours = diff_mins / 60;
+    let diff_days = diff_hours / 24;
+
+    if diff_days > 0 {
+        format!("{}d ago", diff_days)
+    } else if diff_hours > 0 {
+        format!("{}h ago", diff_hours)
+    } else if diff_mins > 0 {
+        format!("{}m ago", diff_mins)
+    } else {
+        "just now".to_string()
+    }
+}
+
+/// Format a duration from creation timestamp to now
+fn format_duration(created_at_ms: i64) -> String {
+    let now = taskstore::now_ms();
+    let diff_ms = now - created_at_ms;
+
+    if diff_ms < 0 {
+        return "0:00".to_string();
+    }
+
+    let total_secs = diff_ms / 1000;
+    let mins = total_secs / 60;
+    let secs = total_secs % 60;
+
+    format!("{}:{:02}", mins, secs)
+}
+
+/// Format a timestamp as ISO date string
+fn format_timestamp(timestamp_ms: i64) -> String {
+    use chrono::{TimeZone, Utc};
+    let dt = Utc.timestamp_millis_opt(timestamp_ms);
+    match dt {
+        chrono::LocalResult::Single(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        _ => "unknown".to_string(),
     }
 }
 
@@ -293,11 +483,34 @@ impl TuiRunner {
 mod tests {
     use super::*;
 
-    // Note: Full integration tests require a terminal, which is difficult in CI.
-    // These tests focus on the logic that can be tested without a terminal.
-
     #[test]
     fn test_data_refresh_interval() {
         assert_eq!(DATA_REFRESH_INTERVAL, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_format_time_ago() {
+        let now = taskstore::now_ms();
+
+        // Just now
+        assert_eq!(format_time_ago(now), "just now");
+
+        // Minutes ago
+        assert_eq!(format_time_ago(now - 5 * 60 * 1000), "5m ago");
+
+        // Hours ago
+        assert_eq!(format_time_ago(now - 2 * 60 * 60 * 1000), "2h ago");
+
+        // Days ago
+        assert_eq!(format_time_ago(now - 3 * 24 * 60 * 60 * 1000), "3d ago");
+    }
+
+    #[test]
+    fn test_format_duration() {
+        let now = taskstore::now_ms();
+
+        assert_eq!(format_duration(now), "0:00");
+        assert_eq!(format_duration(now - 65_000), "1:05");
+        assert_eq!(format_duration(now - 3_600_000), "60:00");
     }
 }

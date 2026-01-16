@@ -1,5 +1,6 @@
 # Ralph Loop Type
 # Generic loop for arbitrary tasks (the classic Ralph Wiggum pattern)
+# No parent - standalone loop type
 description: "Generic loop for arbitrary tasks - the classic Ralph Wiggum pattern"
 
 prompt-template: |

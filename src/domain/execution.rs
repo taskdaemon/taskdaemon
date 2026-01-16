@@ -47,16 +47,16 @@ impl std::fmt::Display for LoopExecutionStatus {
     }
 }
 
-/// Tracks the runtime state of a Ralph loop
+/// Tracks the runtime state of a loop execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopExecution {
-    /// Unique identifier (e.g., "019432-loop-phase-oauth-ep-p1")
+    /// Unique identifier
     pub id: String,
 
-    /// Loop type (e.g., "plan", "spec", "phase", "ralph")
+    /// Loop type name (matches a type loaded by LoopLoader)
     pub loop_type: String,
 
-    /// Parent record ID (Spec.id for phase loops, Plan.id for spec loops)
+    /// Parent record ID (depends on loop type hierarchy)
     pub parent: Option<String>,
 
     /// Execution dependencies (LoopExecution IDs that must complete first)

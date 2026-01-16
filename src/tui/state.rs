@@ -2,66 +2,80 @@
 //!
 //! Pure data structures for the TUI. No rendering logic here.
 //! Follows the k9s-style resource navigation pattern.
+//!
+//! Views are dynamic based on loaded loop types from YAML configuration.
 
-use std::collections::HashMap;
-
-/// Which resource type is currently displayed
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ResourceView {
+/// Which view is currently displayed (k9s-style)
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum View {
+    /// Loop records filtered by type (`:records` or `:<type>` e.g., `:plan`)
+    Records {
+        /// Filter to specific loop type (None = all records)
+        type_filter: Option<String>,
+        /// Filter to specific parent ID
+        parent_filter: Option<String>,
+    },
+    /// All running executions (`:loops` or `:executions`)
     #[default]
-    Plans,
-    Specs,
-    Phases,
-    Ralphs,
-    // TaskStore analytics views
-    Metrics,
-    Costs,
-    History,
-    Dependencies,
+    Executions,
+    /// Logs view for a specific resource (`l` key)
+    Logs { target_id: String },
+    /// Describe view with full details (`d` key)
+    Describe {
+        target_id: String,
+        /// The loop type of the target (for context)
+        target_type: String,
+    },
 }
 
-impl ResourceView {
-    /// Get the display name for this view
-    pub fn display_name(&self) -> &'static str {
+impl View {
+    /// Get the display name for the header
+    pub fn display_name(&self) -> String {
         match self {
-            Self::Plans => "Plans",
-            Self::Specs => "Specs",
-            Self::Phases => "Phases",
-            Self::Ralphs => "Ralphs",
-            Self::Metrics => "Metrics",
-            Self::Costs => "Costs",
-            Self::History => "History",
-            Self::Dependencies => "Dependencies",
+            Self::Records {
+                type_filter: Some(t), ..
+            } => format!("Records ({})", t),
+            Self::Records { type_filter: None, .. } => "Records".to_string(),
+            Self::Executions => "Executions".to_string(),
+            Self::Logs { .. } => "Logs".to_string(),
+            Self::Describe { .. } => "Describe".to_string(),
         }
     }
 
-    /// Get the command name for this view (used in command mode)
-    pub fn command_name(&self) -> &'static str {
-        match self {
-            Self::Plans => "plans",
-            Self::Specs => "specs",
-            Self::Phases => "phases",
-            Self::Ralphs => "ralphs",
-            Self::Metrics => "metrics",
-            Self::Costs => "costs",
-            Self::History => "history",
-            Self::Dependencies => "deps",
-        }
-    }
-
-    /// Parse a command name to a ResourceView
-    pub fn from_command(cmd: &str) -> Option<Self> {
+    /// Parse a command name to a View
+    ///
+    /// Built-in commands:
+    /// - `records` or `all` - show all Loop records
+    /// - `loops` or `executions` - show all LoopExecution records
+    ///
+    /// Dynamic commands (based on loaded loop types):
+    /// - Any loaded type name (e.g., `plan`, `spec`) filters Records by that type
+    pub fn from_command(cmd: &str, available_types: &[String]) -> Option<Self> {
         match cmd {
-            "plans" => Some(Self::Plans),
-            "specs" => Some(Self::Specs),
-            "phases" => Some(Self::Phases),
-            "ralphs" | "loops" => Some(Self::Ralphs),
-            "metrics" => Some(Self::Metrics),
-            "costs" => Some(Self::Costs),
-            "history" => Some(Self::History),
-            "deps" | "dependencies" => Some(Self::Dependencies),
-            _ => None,
+            // All records
+            "records" | "all" => Some(Self::Records {
+                type_filter: None,
+                parent_filter: None,
+            }),
+            // All executions
+            "loops" | "executions" => Some(Self::Executions),
+            // Check if it's a known loop type
+            _ => {
+                if available_types.iter().any(|t| t == cmd) {
+                    Some(Self::Records {
+                        type_filter: Some(cmd.to_string()),
+                        parent_filter: None,
+                    })
+                } else {
+                    None
+                }
+            }
         }
+    }
+
+    /// Check if this is a list view (can navigate)
+    pub fn is_list_view(&self) -> bool {
+        matches!(self, Self::Records { .. } | Self::Executions)
     }
 }
 
@@ -72,9 +86,11 @@ pub enum InteractionMode {
     #[default]
     Normal,
     /// Search/filter mode (/ key)
-    Search(String),
+    Filter(String),
     /// Command mode (: key)
     Command(String),
+    /// Task input mode (n key)
+    TaskInput(String),
     /// Confirmation dialog
     Confirm(ConfirmDialog),
     /// Help overlay
@@ -82,9 +98,9 @@ pub enum InteractionMode {
 }
 
 impl InteractionMode {
-    /// Check if in search mode
-    pub fn is_search(&self) -> bool {
-        matches!(self, Self::Search(_))
+    /// Check if in filter mode
+    pub fn is_filter(&self) -> bool {
+        matches!(self, Self::Filter(_))
     }
 
     /// Check if in command mode
@@ -95,7 +111,7 @@ impl InteractionMode {
     /// Get the input buffer if in an input mode
     pub fn input_buffer(&self) -> Option<&str> {
         match self {
-            Self::Search(s) | Self::Command(s) => Some(s),
+            Self::Filter(s) | Self::Command(s) | Self::TaskInput(s) => Some(s),
             _ => None,
         }
     }
@@ -103,552 +119,244 @@ impl InteractionMode {
     /// Get mutable input buffer
     pub fn input_buffer_mut(&mut self) -> Option<&mut String> {
         match self {
-            Self::Search(s) | Self::Command(s) => Some(s),
+            Self::Filter(s) | Self::Command(s) | Self::TaskInput(s) => Some(s),
             _ => None,
         }
     }
 }
 
-/// Layout modes (from neuraphage)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LayoutMode {
-    #[default]
-    Dashboard, // Sidebar + main view
-    Split, // Two resources side-by-side
-    Grid,  // 2x2 grid of resources
-    Focus, // Full-screen single resource
-}
-
-impl LayoutMode {
-    /// Cycle to next layout mode
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Dashboard => Self::Split,
-            Self::Split => Self::Grid,
-            Self::Grid => Self::Focus,
-            Self::Focus => Self::Dashboard,
-        }
-    }
-}
-
-/// Confirm dialog for destructive actions
+/// Confirmation dialog for dangerous actions
 #[derive(Debug, Clone)]
 pub struct ConfirmDialog {
-    pub action: ConfirmAction,
     pub message: String,
-    pub selected_button: bool, // false=No, true=Yes
+    pub action: ConfirmAction,
+    pub selected_button: bool, // false = No, true = Yes
 }
 
 impl ConfirmDialog {
     pub fn new(action: ConfirmAction, message: impl Into<String>) -> Self {
         Self {
-            action,
             message: message.into(),
-            selected_button: false, // Default to No (safe option)
+            action,
+            selected_button: false,
         }
     }
 
     pub fn quit() -> Self {
-        Self::new(ConfirmAction::Quit, "Are you sure you want to quit?")
+        Self::new(
+            ConfirmAction::Quit,
+            "There are running loops. Are you sure you want to quit?",
+        )
+    }
+
+    pub fn cancel_loop(id: String, name: &str) -> Self {
+        Self::new(ConfirmAction::CancelLoop(id), format!("Cancel {}?", name))
+    }
+
+    pub fn pause_loop(id: String, name: &str) -> Self {
+        Self::new(ConfirmAction::PauseLoop(id), format!("Pause {}?", name))
     }
 }
 
+/// Action to perform on confirm
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
+    Quit,
     CancelLoop(String),
     PauseLoop(String),
-    RestartLoop(String),
-    DeletePlan(String),
-    Quit,
+    ResumeLoop(String),
 }
 
-/// Selection state per view
-#[derive(Debug, Clone, Default)]
+/// Action pending execution by the runner
+#[derive(Debug, Clone)]
+pub enum PendingAction {
+    CancelLoop(String),
+    PauseLoop(String),
+    ResumeLoop(String),
+}
+
+/// Selection state for list views
+#[derive(Debug, Default, Clone)]
 pub struct SelectionState {
-    /// Currently selected item index
     pub selected_index: usize,
-    /// Scroll offset for the list
     pub scroll_offset: usize,
-    /// Filter by parent ID (e.g., show specs for a specific plan)
-    pub parent_filter: Option<String>,
 }
 
 impl SelectionState {
-    /// Ensure selection is within bounds
-    pub fn clamp(&mut self, max_items: usize) {
-        if max_items == 0 {
-            self.selected_index = 0;
-            self.scroll_offset = 0;
-        } else {
-            self.selected_index = self.selected_index.min(max_items - 1);
-            self.scroll_offset = self.scroll_offset.min(self.selected_index);
-        }
-    }
-
-    /// Move selection up
-    pub fn select_prev(&mut self) {
-        if self.selected_index > 0 {
-            self.selected_index -= 1;
-            if self.selected_index < self.scroll_offset {
-                self.scroll_offset = self.selected_index;
-            }
-        }
-    }
-
-    /// Move selection down
     pub fn select_next(&mut self, max_items: usize) {
-        if max_items > 0 && self.selected_index + 1 < max_items {
+        if max_items > 0 && self.selected_index < max_items - 1 {
             self.selected_index += 1;
         }
     }
 
-    /// Jump to top
-    pub fn select_first(&mut self) {
-        self.selected_index = 0;
-        self.scroll_offset = 0;
+    pub fn select_prev(&mut self) {
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+        }
     }
 
-    /// Jump to bottom
+    pub fn select_first(&mut self) {
+        self.selected_index = 0;
+    }
+
     pub fn select_last(&mut self, max_items: usize) {
         if max_items > 0 {
             self.selected_index = max_items - 1;
         }
     }
-}
 
-/// Filter state
-#[derive(Debug, Clone, Default)]
-pub struct FilterState {
-    /// Text filter (name contains)
-    pub text: String,
-    /// Status filter
-    pub status_filter: Option<String>,
-    /// Show only items needing attention
-    pub attention_only: bool,
-}
-
-impl FilterState {
-    /// Check if any filter is active
-    pub fn is_active(&self) -> bool {
-        !self.text.is_empty() || self.status_filter.is_some() || self.attention_only
-    }
-
-    /// Clear all filters
-    pub fn clear(&mut self) {
-        self.text.clear();
-        self.status_filter = None;
-        self.attention_only = false;
-    }
-}
-
-/// Sort order for resource lists
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SortOrder {
-    #[default]
-    Status,
-    Name,
-    Activity,
-    Priority,
-}
-
-impl SortOrder {
-    /// Cycle to next sort order
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Status => Self::Name,
-            Self::Name => Self::Activity,
-            Self::Activity => Self::Priority,
-            Self::Priority => Self::Status,
-        }
-    }
-
-    /// Display name for this sort order
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::Status => "Status",
-            Self::Name => "Name",
-            Self::Activity => "Activity",
-            Self::Priority => "Priority",
+    /// Ensure selection is within bounds
+    pub fn clamp(&mut self, max_items: usize) {
+        if max_items == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= max_items {
+            self.selected_index = max_items - 1;
         }
     }
 }
 
-/// Cached resource item for display
-#[derive(Debug, Clone)]
-pub struct ResourceItem {
-    /// Unique identifier
-    pub id: String,
-    /// Display name
-    pub name: String,
-    /// Resource type string (for display)
-    pub resource_type: String,
-    /// Status string
-    pub status: String,
-    /// Parent resource ID (if any)
-    pub parent_id: Option<String>,
-    /// Iteration count (for loops)
-    pub iteration: Option<u32>,
-    /// Progress text
-    pub progress: Option<String>,
-    /// Last activity description
-    pub last_activity: Option<String>,
-    /// Whether this item needs attention (blocked, failed, etc.)
-    pub needs_attention: bool,
-    /// Reason for needing attention
-    pub attention_reason: Option<String>,
-}
-
-impl ResourceItem {
-    /// Truncate name to fit in column width
-    pub fn truncated_name(&self, max_len: usize) -> String {
-        if self.name.len() <= max_len {
-            self.name.clone()
-        } else if max_len > 3 {
-            format!("{}...", &self.name[..max_len - 3])
-        } else {
-            self.name[..max_len].to_string()
-        }
-    }
-
-    /// Get the status icon
-    pub fn status_icon(&self) -> &'static str {
-        match self.status.as_str() {
-            "running" => "●",
-            "pending" => "○",
-            "blocked" => "?",
-            "complete" => "✓",
-            "failed" => "✗",
-            "cancelled" | "stopped" => "⊘",
-            "paused" => "◑",
-            _ => " ",
-        }
-    }
-}
-
-/// Snapshot of view state for navigation history
-#[derive(Debug, Clone)]
-pub struct ViewSnapshot {
-    pub view: ResourceView,
-    pub selection: SelectionState,
-}
-
-/// Global metrics summary
-#[derive(Debug, Clone, Default)]
-pub struct GlobalMetrics {
-    pub plans_total: usize,
-    pub plans_active: usize,
-    pub specs_total: usize,
-    pub specs_running: usize,
-    pub ralphs_active: usize,
-    pub ralphs_complete: usize,
-    pub ralphs_failed: usize,
-    pub total_iterations: u64,
-    pub total_api_calls: u64,
-    pub total_cost_usd: f64,
-}
-
-/// TaskStore analytics: Metrics view data
-#[derive(Debug, Clone, Default)]
-pub struct MetricsViewData {
-    pub by_loop_type: HashMap<String, TypeMetrics>,
-    pub by_status: HashMap<String, usize>,
-    pub iteration_histogram: Vec<(u32, usize)>, // (iteration_count, num_ralphs)
-    pub success_rate: f64,
-    pub avg_iterations_to_complete: f64,
-}
-
-/// Metrics for a specific loop type
-#[derive(Debug, Clone, Default)]
-pub struct TypeMetrics {
-    pub total: usize,
-    pub active: usize,
-    pub complete: usize,
-    pub failed: usize,
-    pub avg_iterations: f64,
-}
-
-/// TaskStore analytics: Cost breakdown view
-#[derive(Debug, Clone, Default)]
-pub struct CostsViewData {
-    pub total_cost_usd: f64,
-    pub by_plan: Vec<(String, f64)>,      // (plan_id, cost)
-    pub by_loop_type: Vec<(String, f64)>, // (loop_type, cost)
-    pub by_day: Vec<(String, f64)>,       // (date, cost)
-    pub token_breakdown: TokenBreakdown,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TokenBreakdown {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-}
-
-/// TaskStore analytics: Iteration history timeline
-#[derive(Debug, Clone, Default)]
-pub struct HistoryViewData {
-    pub events: Vec<HistoryEvent>,
-    pub filter_type: Option<String>,
-    pub filter_status: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HistoryEvent {
-    pub timestamp: i64,
-    pub event_type: HistoryEventType,
-    pub resource_id: String,
-    pub resource_name: String,
-    pub details: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryEventType {
-    PlanCreated,
-    PlanCompleted,
-    SpecStarted,
-    SpecCompleted,
-    SpecFailed,
-    RalphIteration,
-    RalphCompleted,
-    RalphFailed,
-    MainBranchUpdated,
-    MergeCompleted,
-}
-
-impl HistoryEventType {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::PlanCreated => "Plan Created",
-            Self::PlanCompleted => "Plan Completed",
-            Self::SpecStarted => "Spec Started",
-            Self::SpecCompleted => "Spec Completed",
-            Self::SpecFailed => "Spec Failed",
-            Self::RalphIteration => "Ralph Iteration",
-            Self::RalphCompleted => "Ralph Completed",
-            Self::RalphFailed => "Ralph Failed",
-            Self::MainBranchUpdated => "Main Updated",
-            Self::MergeCompleted => "Merge Completed",
-        }
-    }
-}
-
-/// TaskStore analytics: Dependency graph visualization
-#[derive(Debug, Clone, Default)]
-pub struct DependencyGraphData {
-    pub nodes: Vec<DependencyNode>,
-    pub edges: Vec<DependencyEdge>,
-    pub selected_node: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DependencyNode {
-    pub id: String,
-    pub name: String,
-    pub node_type: String, // "plan", "spec", "phase", "ralph"
-    pub status: String,
-    pub x: f32, // Layout position
-    pub y: f32,
-}
-
-#[derive(Debug, Clone)]
-pub struct DependencyEdge {
-    pub from: String,
-    pub to: String,
-    pub edge_type: String, // "parent", "depends_on", "spawned"
-}
-
-/// Main application state (pure data, no rendering)
+/// Main TUI application state
 #[derive(Debug)]
 pub struct AppState {
-    /// Current resource view
-    pub current_view: ResourceView,
-
-    /// Navigation history for Esc backtracking
-    pub view_history: Vec<ViewSnapshot>,
-
+    /// Current view
+    pub current_view: View,
+    /// View history for back navigation
+    pub view_stack: Vec<View>,
     /// Current interaction mode
     pub interaction_mode: InteractionMode,
-
-    /// Current layout mode
-    pub layout_mode: LayoutMode,
-
-    /// Cached resources by type
-    pub plans: Vec<ResourceItem>,
-    pub specs: Vec<ResourceItem>,
-    pub phases: Vec<ResourceItem>,
-    pub ralphs: Vec<ResourceItem>,
-
-    /// TaskStore analytics data
-    pub metrics_data: MetricsViewData,
-    pub costs_data: CostsViewData,
-    pub history_data: HistoryViewData,
-    pub deps_graph: DependencyGraphData,
-
-    /// Selection state per view
-    pub selection: HashMap<ResourceView, SelectionState>,
-
-    /// Global filter
-    pub filter: FilterState,
-
-    /// Sort order
-    pub sort_order: SortOrder,
-
-    /// Global metrics
-    pub metrics: GlobalMetrics,
-
-    /// Frame counter for animations
-    pub frame_counter: u64,
-
-    /// Should quit flag
+    /// Current filter text (for / filtering)
+    pub filter_text: String,
+    /// Should the app quit
     pub should_quit: bool,
-
-    /// Error message to display (if any)
+    /// Last error message
     pub error_message: Option<String>,
 
-    /// Last refresh timestamp
+    // === Cached data for display ===
+    /// Loop records (filtered by current view)
+    pub records: Vec<RecordItem>,
+    /// Loop executions
+    pub executions: Vec<ExecutionItem>,
+    /// Log entries for current target
+    pub logs: Vec<LogEntry>,
+    /// Describe data for current target
+    pub describe_data: Option<DescribeData>,
+
+    // === Selection state per view ===
+    pub records_selection: SelectionState,
+    pub executions_selection: SelectionState,
+
+    // === Metrics ===
+    pub total_records: usize,
+    pub executions_active: usize,
+    pub executions_complete: usize,
+    pub executions_failed: usize,
+
+    // === Available loop types (from config) ===
+    pub available_types: Vec<String>,
+
+    // === Logs view state ===
+    pub logs_follow: bool,
+    pub logs_scroll: usize,
+
+    // === Pending actions ===
+    pub pending_task: Option<String>,
+    pub pending_action: Option<PendingAction>,
+
+    // === Last data refresh ===
     pub last_refresh: i64,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new()
+        Self {
+            current_view: View::default(),
+            view_stack: Vec::new(),
+            interaction_mode: InteractionMode::default(),
+            filter_text: String::new(),
+            should_quit: false,
+            error_message: None,
+            records: Vec::new(),
+            executions: Vec::new(),
+            logs: Vec::new(),
+            describe_data: None,
+            records_selection: SelectionState::default(),
+            executions_selection: SelectionState::default(),
+            total_records: 0,
+            executions_active: 0,
+            executions_complete: 0,
+            executions_failed: 0,
+            available_types: Vec::new(),
+            logs_follow: true,
+            logs_scroll: 0,
+            pending_task: None,
+            pending_action: None,
+            last_refresh: 0,
+        }
     }
 }
 
 impl AppState {
-    /// Create a new AppState with default values
+    /// Create new AppState
     pub fn new() -> Self {
-        let mut selection = HashMap::new();
-        selection.insert(ResourceView::Plans, SelectionState::default());
-        selection.insert(ResourceView::Specs, SelectionState::default());
-        selection.insert(ResourceView::Phases, SelectionState::default());
-        selection.insert(ResourceView::Ralphs, SelectionState::default());
-        selection.insert(ResourceView::Metrics, SelectionState::default());
-        selection.insert(ResourceView::Costs, SelectionState::default());
-        selection.insert(ResourceView::History, SelectionState::default());
-        selection.insert(ResourceView::Dependencies, SelectionState::default());
-
-        Self {
-            current_view: ResourceView::Plans,
-            view_history: Vec::new(),
-            interaction_mode: InteractionMode::Normal,
-            layout_mode: LayoutMode::Dashboard,
-            plans: Vec::new(),
-            specs: Vec::new(),
-            phases: Vec::new(),
-            ralphs: Vec::new(),
-            metrics_data: MetricsViewData::default(),
-            costs_data: CostsViewData::default(),
-            history_data: HistoryViewData::default(),
-            deps_graph: DependencyGraphData::default(),
-            selection,
-            filter: FilterState::default(),
-            sort_order: SortOrder::default(),
-            metrics: GlobalMetrics::default(),
-            frame_counter: 0,
-            should_quit: false,
-            error_message: None,
-            last_refresh: 0,
-        }
+        Self::default()
     }
 
-    /// Get selection state for current view
-    pub fn current_selection(&self) -> &SelectionState {
-        self.selection
-            .get(&self.current_view)
-            .expect("selection state should exist for all views")
+    /// Navigate to a new view, pushing current to stack
+    pub fn navigate_to(&mut self, view: View) {
+        self.view_stack.push(self.current_view.clone());
+        self.current_view = view;
+        self.reset_selection();
+        self.filter_text.clear();
     }
 
-    /// Get mutable selection state for current view
-    pub fn current_selection_mut(&mut self) -> &mut SelectionState {
-        self.selection
-            .get_mut(&self.current_view)
-            .expect("selection state should exist for all views")
+    /// Push a view to the stack and switch to it
+    pub fn push_view(&mut self, view: View) {
+        self.navigate_to(view);
     }
 
-    /// Get items for current view
-    pub fn current_items(&self) -> &[ResourceItem] {
-        match self.current_view {
-            ResourceView::Plans => &self.plans,
-            ResourceView::Specs => &self.specs,
-            ResourceView::Phases => &self.phases,
-            ResourceView::Ralphs => &self.ralphs,
-            _ => &[], // Analytics views don't have resource items
-        }
-    }
-
-    /// Get the currently selected item
-    pub fn selected_item(&self) -> Option<&ResourceItem> {
-        let items = self.current_items();
-        let selection = self.current_selection();
-        items.get(selection.selected_index)
-    }
-
-    /// Push current view to history and navigate to new view
-    pub fn navigate_to(&mut self, view: ResourceView) {
-        if self.current_view != view {
-            // Save current state to history
-            let snapshot = ViewSnapshot {
-                view: self.current_view,
-                selection: self.current_selection().clone(),
-            };
-            self.view_history.push(snapshot);
-            self.current_view = view;
-        }
-    }
-
-    /// Navigate back to previous view
-    pub fn navigate_back(&mut self) -> bool {
-        if let Some(snapshot) = self.view_history.pop() {
-            self.current_view = snapshot.view;
-            self.selection.insert(snapshot.view, snapshot.selection);
+    /// Go back to previous view
+    pub fn pop_view(&mut self) -> bool {
+        if let Some(prev_view) = self.view_stack.pop() {
+            self.current_view = prev_view;
+            self.reset_selection();
+            self.filter_text.clear();
             true
         } else {
             false
         }
     }
 
-    /// Drill down from current selection (e.g., Plan -> Specs for that plan)
-    pub fn drill_down(&mut self) {
-        let selected = self.selected_item().cloned();
-        if let Some(item) = selected {
-            match self.current_view {
-                ResourceView::Plans => {
-                    // Navigate to specs filtered by this plan
-                    self.navigate_to(ResourceView::Specs);
-                    if let Some(selection) = self.selection.get_mut(&ResourceView::Specs) {
-                        selection.parent_filter = Some(item.id);
-                        selection.selected_index = 0;
-                        selection.scroll_offset = 0;
-                    }
-                }
-                ResourceView::Specs => {
-                    // Navigate to phases for this spec
-                    self.navigate_to(ResourceView::Phases);
-                    if let Some(selection) = self.selection.get_mut(&ResourceView::Phases) {
-                        selection.parent_filter = Some(item.id);
-                        selection.selected_index = 0;
-                        selection.scroll_offset = 0;
-                    }
-                }
-                ResourceView::Phases => {
-                    // Navigate to ralphs for this phase
-                    self.navigate_to(ResourceView::Ralphs);
-                    if let Some(selection) = self.selection.get_mut(&ResourceView::Ralphs) {
-                        selection.parent_filter = Some(item.id);
-                        selection.selected_index = 0;
-                        selection.scroll_offset = 0;
-                    }
-                }
-                _ => {}
-            }
+    /// Reset selection state for current view
+    fn reset_selection(&mut self) {
+        match &self.current_view {
+            View::Records { .. } => self.records_selection = SelectionState::default(),
+            View::Executions => self.executions_selection = SelectionState::default(),
+            _ => {}
         }
     }
 
-    /// Set error message (will be displayed in status bar)
-    pub fn set_error(&mut self, message: impl Into<String>) {
-        self.error_message = Some(message.into());
+    /// Get mutable selection state for current view
+    pub fn current_selection_mut(&mut self) -> Option<&mut SelectionState> {
+        match &self.current_view {
+            View::Records { .. } => Some(&mut self.records_selection),
+            View::Executions => Some(&mut self.executions_selection),
+            _ => None,
+        }
+    }
+
+    /// Get item count for current view
+    pub fn current_item_count(&self) -> usize {
+        match &self.current_view {
+            View::Records { .. } => self.filtered_records().len(),
+            View::Executions => self.filtered_executions().len(),
+            View::Logs { .. } => self.logs.len(),
+            View::Describe { .. } => 0,
+        }
+    }
+
+    /// Set an error message
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.error_message = Some(msg.into());
     }
 
     /// Clear error message
@@ -656,10 +364,171 @@ impl AppState {
         self.error_message = None;
     }
 
-    /// Tick the frame counter
-    pub fn tick(&mut self) {
-        self.frame_counter = self.frame_counter.wrapping_add(1);
+    /// Get the ID of the currently selected item
+    pub fn selected_item_id(&self) -> Option<String> {
+        match &self.current_view {
+            View::Records { .. } => {
+                let filtered = self.filtered_records();
+                filtered
+                    .get(self.records_selection.selected_index)
+                    .map(|r| r.id.clone())
+            }
+            View::Executions => {
+                let filtered = self.filtered_executions();
+                filtered
+                    .get(self.executions_selection.selected_index)
+                    .map(|e| e.id.clone())
+            }
+            _ => None,
+        }
     }
+
+    /// Get the name/title of the currently selected item
+    pub fn selected_item_name(&self) -> Option<String> {
+        match &self.current_view {
+            View::Records { .. } => {
+                let filtered = self.filtered_records();
+                filtered
+                    .get(self.records_selection.selected_index)
+                    .map(|r| r.title.clone())
+            }
+            View::Executions => {
+                let filtered = self.filtered_executions();
+                filtered
+                    .get(self.executions_selection.selected_index)
+                    .map(|e| e.name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the type of the currently selected item
+    pub fn selected_item_type(&self) -> Option<String> {
+        match &self.current_view {
+            View::Records { .. } => {
+                let filtered = self.filtered_records();
+                filtered
+                    .get(self.records_selection.selected_index)
+                    .map(|r| r.loop_type.clone())
+            }
+            View::Executions => {
+                let filtered = self.filtered_executions();
+                filtered
+                    .get(self.executions_selection.selected_index)
+                    .map(|e| e.loop_type.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Get breadcrumb string for header
+    pub fn breadcrumb(&self) -> String {
+        self.current_view.display_name()
+    }
+
+    /// Tick - called on each frame update
+    pub fn tick(&mut self) {
+        // Update logs scroll if following
+        if self.logs_follow && !self.logs.is_empty() {
+            self.logs_scroll = self.logs.len().saturating_sub(1);
+        }
+    }
+
+    /// Filter records by current filter text
+    pub fn filtered_records(&self) -> Vec<&RecordItem> {
+        if self.filter_text.is_empty() {
+            self.records.iter().collect()
+        } else {
+            let filter = self.filter_text.to_lowercase();
+            self.records
+                .iter()
+                .filter(|r| {
+                    r.title.to_lowercase().contains(&filter)
+                        || r.id.to_lowercase().contains(&filter)
+                        || r.loop_type.to_lowercase().contains(&filter)
+                })
+                .collect()
+        }
+    }
+
+    /// Filter executions by current filter text
+    pub fn filtered_executions(&self) -> Vec<&ExecutionItem> {
+        if self.filter_text.is_empty() {
+            self.executions.iter().collect()
+        } else {
+            let filter = self.filter_text.to_lowercase();
+            self.executions
+                .iter()
+                .filter(|e| {
+                    e.name.to_lowercase().contains(&filter)
+                        || e.id.to_lowercase().contains(&filter)
+                        || e.loop_type.to_lowercase().contains(&filter)
+                })
+                .collect()
+        }
+    }
+}
+
+/// Cached Loop record item for display
+#[derive(Debug, Clone)]
+pub struct RecordItem {
+    pub id: String,
+    pub title: String,
+    pub loop_type: String,
+    pub status: String,
+    pub parent_id: Option<String>,
+    pub children_count: usize,
+    pub phases_progress: String, // e.g., "2/4"
+    pub created: String,         // e.g., "2m ago"
+}
+
+/// Cached loop execution item for display
+#[derive(Debug, Clone)]
+pub struct ExecutionItem {
+    pub id: String,
+    pub name: String,
+    pub loop_type: String,
+    pub iteration: String, // e.g., "3/10"
+    pub status: String,
+    pub duration: String, // e.g., "2:15"
+    pub parent_id: Option<String>,
+    pub progress: String, // last line of progress
+}
+
+/// Log entry for the logs view
+#[derive(Debug, Clone)]
+pub struct LogEntry {
+    pub iteration: u32,
+    pub text: String,
+    pub is_error: bool,
+    pub is_stdout: bool,
+}
+
+/// Data for describe view
+#[derive(Debug, Clone)]
+pub struct DescribeData {
+    pub id: String,
+    pub loop_type: String,
+    pub title: String,
+    pub status: String,
+    pub parent_id: Option<String>,
+    pub created: String,
+    pub updated: String,
+    /// Key-value pairs for display
+    pub fields: Vec<(String, String)>,
+    /// Child records if any
+    pub children: Vec<String>,
+    /// Current execution info if running
+    pub execution: Option<ExecutionInfo>,
+}
+
+/// Execution info for describe view
+#[derive(Debug, Clone)]
+pub struct ExecutionInfo {
+    pub id: String,
+    pub iteration: String,
+    pub duration: String,
+    pub progress: String,
 }
 
 #[cfg(test)]
@@ -667,13 +536,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resource_view_from_command() {
-        assert_eq!(ResourceView::from_command("plans"), Some(ResourceView::Plans));
-        assert_eq!(ResourceView::from_command("specs"), Some(ResourceView::Specs));
-        assert_eq!(ResourceView::from_command("ralphs"), Some(ResourceView::Ralphs));
-        assert_eq!(ResourceView::from_command("loops"), Some(ResourceView::Ralphs));
-        assert_eq!(ResourceView::from_command("deps"), Some(ResourceView::Dependencies));
-        assert_eq!(ResourceView::from_command("invalid"), None);
+    fn test_view_from_command_builtins() {
+        let types = vec!["mytype".to_string()];
+        assert!(matches!(
+            View::from_command("records", &types),
+            Some(View::Records { type_filter: None, .. })
+        ));
+        assert!(matches!(View::from_command("loops", &types), Some(View::Executions)));
+        assert!(matches!(
+            View::from_command("executions", &types),
+            Some(View::Executions)
+        ));
+    }
+
+    #[test]
+    fn test_view_from_command_dynamic_type() {
+        let types = vec!["plan".to_string(), "spec".to_string()];
+
+        // Known types should work
+        let view = View::from_command("plan", &types);
+        assert!(matches!(view, Some(View::Records { type_filter: Some(t), .. }) if t == "plan"));
+
+        let view = View::from_command("spec", &types);
+        assert!(matches!(view, Some(View::Records { type_filter: Some(t), .. }) if t == "spec"));
+
+        // Unknown types should return None
+        assert!(View::from_command("unknown", &types).is_none());
     }
 
     #[test]
@@ -696,86 +584,29 @@ mod tests {
         selection.select_last(10);
         assert_eq!(selection.selected_index, 9);
 
-        // Jump to first
-        selection.select_first();
-        assert_eq!(selection.selected_index, 0);
-    }
-
-    #[test]
-    fn test_selection_state_clamp() {
-        let mut selection = SelectionState {
-            selected_index: 100,
-            scroll_offset: 50,
-            parent_filter: None,
-        };
-
-        selection.clamp(10);
+        // Can't go past end
+        selection.select_next(10);
         assert_eq!(selection.selected_index, 9);
-        assert!(selection.scroll_offset <= 9);
-
-        selection.clamp(0);
-        assert_eq!(selection.selected_index, 0);
-        assert_eq!(selection.scroll_offset, 0);
     }
 
     #[test]
     fn test_app_state_navigation() {
         let mut state = AppState::new();
-        assert_eq!(state.current_view, ResourceView::Plans);
-        assert!(state.view_history.is_empty());
 
-        // Navigate to specs
-        state.navigate_to(ResourceView::Specs);
-        assert_eq!(state.current_view, ResourceView::Specs);
-        assert_eq!(state.view_history.len(), 1);
+        // Navigate to records
+        state.navigate_to(View::Records {
+            type_filter: Some("mytype".to_string()),
+            parent_filter: None,
+        });
+        assert!(matches!(state.current_view, View::Records { .. }));
+        assert_eq!(state.view_stack.len(), 1);
 
-        // Navigate back
-        assert!(state.navigate_back());
-        assert_eq!(state.current_view, ResourceView::Plans);
-        assert!(state.view_history.is_empty());
+        // Go back
+        assert!(state.pop_view());
+        assert!(matches!(state.current_view, View::Executions));
+        assert_eq!(state.view_stack.len(), 0);
 
         // Can't go back further
-        assert!(!state.navigate_back());
-    }
-
-    #[test]
-    fn test_layout_mode_cycle() {
-        let mode = LayoutMode::Dashboard;
-        assert_eq!(mode.next(), LayoutMode::Split);
-        assert_eq!(mode.next().next(), LayoutMode::Grid);
-        assert_eq!(mode.next().next().next(), LayoutMode::Focus);
-        assert_eq!(mode.next().next().next().next(), LayoutMode::Dashboard);
-    }
-
-    #[test]
-    fn test_resource_item_truncation() {
-        let item = ResourceItem {
-            id: "test".to_string(),
-            name: "This is a very long resource name that needs truncation".to_string(),
-            resource_type: "plan".to_string(),
-            status: "running".to_string(),
-            parent_id: None,
-            iteration: None,
-            progress: None,
-            last_activity: None,
-            needs_attention: false,
-            attention_reason: None,
-        };
-
-        assert_eq!(item.truncated_name(10), "This is...");
-        assert_eq!(item.truncated_name(100), item.name);
-        assert_eq!(item.truncated_name(3), "Thi");
-    }
-
-    #[test]
-    fn test_filter_state() {
-        let mut filter = FilterState::default();
-        assert!(!filter.is_active());
-
-        filter.text = "test".to_string();
-        assert!(filter.is_active());
-
-        filter.clear();
-        assert!(!filter.is_active());
+        assert!(!state.pop_view());
     }
 }

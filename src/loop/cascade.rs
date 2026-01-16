@@ -1,148 +1,194 @@
-//! Cascade logic for Plan → Spec → Phase pipeline
+//! Cascade logic for loop type hierarchy
 //!
-//! When a loop completes, the cascade triggers the next stage:
-//! - Plan (Draft → Ready) triggers Spec decomposition loop
-//! - Spec decomposition completes → Specs created in TaskStore
-//! - Spec phases schedule Phase loops based on dependencies
+//! When a loop completes, the cascade triggers child loops based on
+//! the parent-child relationships defined in loop type configs.
+//! Child types declare their parent via the `parent` field in YAML.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use eyre::Result;
 use tracing::{debug, info, warn};
 
-use crate::domain::{LoopExecution, Plan, PlanStatus, Spec, SpecStatus};
+use crate::domain::{Loop, LoopExecution, LoopStatus};
 use crate::state::StateManager;
+
+use super::type_loader::LoopLoader;
 
 /// Handles cascade logic between loop levels
 pub struct CascadeHandler {
     state: Arc<StateManager>,
+    type_loader: Arc<RwLock<LoopLoader>>,
 }
 
 impl CascadeHandler {
     /// Create a new cascade handler
-    pub fn new(state: Arc<StateManager>) -> Self {
-        Self { state }
+    pub fn new(state: Arc<StateManager>, type_loader: Arc<RwLock<LoopLoader>>) -> Self {
+        Self { state, type_loader }
     }
 
-    /// Handle completion of a Plan loop
+    /// Get child loop types for a given parent type
+    fn get_child_types(&self, parent_type: &str) -> Vec<String> {
+        let loader = self.type_loader.read().unwrap();
+        loader
+            .children_of(parent_type)
+            .into_iter()
+            .map(|s: &str| s.to_string())
+            .collect()
+    }
+
+    /// Handle completion of a Loop record
     ///
-    /// When a Plan refinement loop completes (Plan is Ready), this spawns
-    /// a Spec decomposition loop to break down the Plan into Specs.
-    pub async fn on_plan_complete(&self, plan: &Plan) -> Result<Option<LoopExecution>> {
-        if plan.status != PlanStatus::Ready {
-            debug!(plan_id = %plan.id, status = ?plan.status, "Plan not ready, skipping cascade");
-            return Ok(None);
+    /// When a Loop becomes Ready, spawn child loops as defined by the type hierarchy.
+    pub async fn on_loop_ready(&self, record: &Loop) -> Result<Vec<LoopExecution>> {
+        if record.status != LoopStatus::Ready {
+            debug!(id = %record.id, status = ?record.status, "Loop not ready, skipping cascade");
+            return Ok(vec![]);
         }
 
-        info!(plan_id = %plan.id, "Plan ready, creating Spec decomposition loop");
-
-        // Create a Spec decomposition loop execution
-        let exec = LoopExecution::new("spec", &plan.id)
-            .with_context_value("plan-id", &plan.id)
-            .with_context_value("plan-file", &plan.file)
-            .with_context_value("plan-title", &plan.title);
-
-        self.state.create_loop_execution(exec.clone()).await?;
-
-        info!(exec_id = %exec.id, plan_id = %plan.id, "Created Spec decomposition loop");
-        Ok(Some(exec))
-    }
-
-    /// Handle completion of a Spec decomposition loop
-    ///
-    /// When the Spec decomposition loop completes, update the Plan status
-    /// to InProgress and check for ready Specs.
-    pub async fn on_spec_decomposition_complete(&self, plan_id: &str) -> Result<Vec<LoopExecution>> {
-        info!(plan_id, "Spec decomposition complete, scheduling ready Specs");
-
-        // Update Plan status to InProgress
-        if let Ok(Some(mut plan)) = self.state.get_plan(plan_id).await {
-            plan.set_status(PlanStatus::InProgress);
-            let _ = self.state.update_plan(plan).await;
+        // Find child loop types for this loop's type
+        let child_types = self.get_child_types(&record.r#type);
+        if child_types.is_empty() {
+            debug!(id = %record.id, loop_type = %record.r#type, "No child loop types defined");
+            return Ok(vec![]);
         }
 
-        // Find all Specs for this Plan that are ready
-        self.get_ready_specs(plan_id).await
+        info!(id = %record.id, child_types = ?child_types, "Loop ready, creating child loops");
+
+        let mut executions = Vec::new();
+        for child_type in child_types {
+            let exec = LoopExecution::new(&child_type, &record.id)
+                .with_context_value("parent-id", &record.id)
+                .with_context_value("parent-type", &record.r#type)
+                .with_context_value("parent-title", &record.title);
+
+            if let Some(file) = &record.file {
+                let exec = exec.with_context_value("parent-file", file);
+                self.state.create_loop_execution(exec.clone()).await?;
+                executions.push(exec);
+            } else {
+                self.state.create_loop_execution(exec.clone()).await?;
+                executions.push(exec);
+            }
+
+            info!(exec_id = %executions.last().unwrap().id, parent_id = %record.id, child_type = %child_type, "Created child loop");
+        }
+
+        Ok(executions)
     }
 
-    /// Get all Specs for a Plan that are ready to run (deps satisfied)
-    pub async fn get_ready_specs(&self, plan_id: &str) -> Result<Vec<LoopExecution>> {
-        // Get all Specs for this Plan
-        let specs = self.state.list_specs_for_plan(plan_id).await?;
+    /// Handle completion of decomposition (creates children)
+    ///
+    /// When decomposition completes, update the parent Loop status to InProgress
+    /// and find ready child Loops.
+    pub async fn on_decomposition_complete(&self, parent_id: &str) -> Result<Vec<LoopExecution>> {
+        info!(parent_id, "Decomposition complete, scheduling ready children");
 
-        // Get completed Spec IDs for dependency checking
-        let completed_ids: Vec<&str> = specs
+        // Update parent Loop status to InProgress
+        if let Ok(Some(mut parent)) = self.state.get_loop(parent_id).await {
+            parent.set_status(LoopStatus::InProgress);
+            let _ = self.state.update_loop(parent).await;
+        }
+
+        // Find all child Loops that are ready
+        self.get_ready_children(parent_id).await
+    }
+
+    /// Get all child Loops for a parent that are ready to run (deps satisfied)
+    pub async fn get_ready_children(&self, parent_id: &str) -> Result<Vec<LoopExecution>> {
+        // Get all child Loops for this parent
+        let children = self.state.list_loops_for_parent(parent_id).await?;
+
+        // Get completed child IDs for dependency checking
+        let completed_ids: Vec<&str> = children
             .iter()
-            .filter(|s| s.status == SpecStatus::Complete)
-            .map(|s| s.id.as_str())
+            .filter(|c| c.status == LoopStatus::Complete)
+            .map(|c| c.id.as_str())
             .collect();
 
-        // Find Specs that are ready (pending + deps satisfied)
+        // Find children that are ready (pending + deps satisfied)
         let mut ready_execs = Vec::new();
-        for spec in specs.iter() {
-            if spec.is_ready(&completed_ids)
-                && let Some(exec) = self.create_phase_loop_for_spec(spec).await?
-            {
-                ready_execs.push(exec);
+        for child in children.iter() {
+            if child.is_ready(&completed_ids) {
+                let child_execs = self.create_child_loops_for_record(child).await?;
+                ready_execs.extend(child_execs);
             }
         }
 
         Ok(ready_execs)
     }
 
-    /// Create a Phase loop execution for a Spec
-    async fn create_phase_loop_for_spec(&self, spec: &Spec) -> Result<Option<LoopExecution>> {
-        // Check if there's already a running loop for this Spec
-        let existing = self.state.get_loop_execution_for_spec(&spec.id).await?;
+    /// Create child loop executions for a Loop record based on type hierarchy
+    async fn create_child_loops_for_record(&self, record: &Loop) -> Result<Vec<LoopExecution>> {
+        // Check if there's already a running execution for this record
+        let existing = self.state.get_loop_execution_for_spec(&record.id).await?;
         if let Some(existing) = existing
             && !existing.is_terminal()
         {
-            debug!(spec_id = %spec.id, exec_id = %existing.id, "Loop already running for Spec");
-            return Ok(None);
+            debug!(record_id = %record.id, exec_id = %existing.id, "Execution already running for record");
+            return Ok(vec![]);
         }
 
-        // Get current phase
-        let current_phase_idx = spec.current_phase_index().unwrap_or(0);
-        let current_phase = spec.phases.get(current_phase_idx);
+        // Find child loop types for this record's type
+        let child_types = self.get_child_types(&record.r#type);
+        if child_types.is_empty() {
+            debug!(record_id = %record.id, loop_type = %record.r#type, "No child loop types defined");
+            return Ok(vec![]);
+        }
 
-        let exec = LoopExecution::new("phase", &spec.id)
-            .with_context_value("spec-id", &spec.id)
-            .with_context_value("spec-file", &spec.file)
-            .with_context_value("spec-title", &spec.title)
-            .with_context_value("phase-number", &(current_phase_idx + 1).to_string())
-            .with_context_value("total-phases", &spec.phases.len().to_string())
-            .with_context_value(
-                "phase-name",
-                current_phase.map(|p| p.name.as_str()).unwrap_or("Unknown"),
-            )
-            .with_context_value(
-                "phase-description",
-                current_phase.map(|p| p.description.as_str()).unwrap_or(""),
+        // Get current phase if record has phases
+        let current_phase_idx = record.current_phase_index().unwrap_or(0);
+        let current_phase = record.phases.get(current_phase_idx);
+
+        let mut executions = Vec::new();
+        for child_type in child_types {
+            let mut exec = LoopExecution::new(&child_type, &record.id)
+                .with_context_value("record-id", &record.id)
+                .with_context_value("record-type", &record.r#type)
+                .with_context_value("record-title", &record.title);
+
+            if let Some(file) = &record.file {
+                exec = exec.with_context_value("record-file", file);
+            }
+
+            // Add phase context if phases exist
+            if !record.phases.is_empty() {
+                exec = exec
+                    .with_context_value("phase-number", &(current_phase_idx + 1).to_string())
+                    .with_context_value("total-phases", &record.phases.len().to_string());
+
+                if let Some(phase) = current_phase {
+                    exec = exec
+                        .with_context_value("phase-name", &phase.name)
+                        .with_context_value("phase-description", &phase.description);
+                }
+            }
+
+            self.state.create_loop_execution(exec.clone()).await?;
+
+            info!(
+                exec_id = %exec.id,
+                record_id = %record.id,
+                child_type = %child_type,
+                phase = current_phase_idx + 1,
+                total = record.phases.len(),
+                "Created child loop for record"
             );
+            executions.push(exec);
+        }
 
-        self.state.create_loop_execution(exec.clone()).await?;
-
-        info!(
-            exec_id = %exec.id,
-            spec_id = %spec.id,
-            phase = current_phase_idx + 1,
-            total = spec.phases.len(),
-            "Created Phase loop for Spec"
-        );
-
-        Ok(Some(exec))
+        Ok(executions)
     }
 
-    /// Handle completion of a Phase loop
+    /// Handle completion of a child loop execution
     ///
-    /// When a Phase loop completes, mark the phase as complete and check
-    /// if there are more phases to run or if the Spec is complete.
-    pub async fn on_phase_complete(&self, exec: &LoopExecution) -> Result<Option<LoopExecution>> {
-        let spec_id = exec
+    /// When a child loop completes, mark the phase as complete (if applicable)
+    /// and check if there are more phases to run or if the record is complete.
+    pub async fn on_child_loop_complete(&self, exec: &LoopExecution) -> Result<Vec<LoopExecution>> {
+        let record_id = exec
             .context
-            .get("spec-id")
+            .get("record-id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| eyre::eyre!("Phase execution missing spec-id in context"))?;
+            .ok_or_else(|| eyre::eyre!("Child execution missing record-id in context"))?;
 
         let phase_number: usize = exec
             .context
@@ -153,78 +199,88 @@ impl CascadeHandler {
 
         let phase_idx = phase_number - 1;
 
-        // Update the Spec's phase status
-        let mut spec = self.state.get_spec_required(spec_id).await?;
-        spec.complete_phase(phase_idx);
+        // Update the record's phase status
+        let mut record = self.state.get_loop_required(record_id).await?;
 
-        if spec.all_phases_complete() {
-            // All phases done - mark Spec as Complete
-            spec.set_status(SpecStatus::Complete);
-            self.state.update_spec(spec.clone()).await?;
-            info!(spec_id, "All phases complete, Spec marked Complete");
-
-            // Check if all Specs for the Plan are complete
-            self.check_plan_completion(&spec.parent).await?;
-
-            // Wake any Specs that were blocked on this one
-            return self.wake_dependent_specs(&spec.id).await;
+        // Only complete phase if the record has phases
+        if !record.phases.is_empty() {
+            record.complete_phase(phase_idx);
         }
 
-        // More phases to run - create next Phase loop
-        self.state.update_spec(spec.clone()).await?;
-        self.create_phase_loop_for_spec(&spec).await
+        if record.all_phases_complete() || record.phases.is_empty() {
+            // All phases done (or no phases) - mark record as Complete
+            record.set_status(LoopStatus::Complete);
+            self.state.update_loop(record.clone()).await?;
+            info!(record_id, "All phases complete, record marked Complete");
+
+            // Check if all children for the parent are complete
+            if let Some(parent_id) = &record.parent {
+                self.check_parent_completion(parent_id).await?;
+            }
+
+            // Wake any records that were blocked on this one
+            return self.wake_dependent_records(&record.id).await;
+        }
+
+        // More phases to run - create next child loops
+        self.state.update_loop(record.clone()).await?;
+        self.create_child_loops_for_record(&record).await
     }
 
-    /// Wake Specs that depend on the completed Spec
-    async fn wake_dependent_specs(&self, completed_spec_id: &str) -> Result<Option<LoopExecution>> {
-        // Get the completed Spec to find its parent Plan
-        let completed_spec = self.state.get_spec_required(completed_spec_id).await?;
-        let plan_id = &completed_spec.parent;
+    /// Wake records that depend on the completed record
+    async fn wake_dependent_records(&self, completed_record_id: &str) -> Result<Vec<LoopExecution>> {
+        // Get the completed record to find its parent
+        let completed_record = self.state.get_loop_required(completed_record_id).await?;
+        let Some(parent_id) = &completed_record.parent else {
+            return Ok(vec![]);
+        };
 
-        // Get all Specs for this Plan
-        let specs = self.state.list_specs_for_plan(plan_id).await?;
+        // Get all siblings (children of the same parent)
+        let siblings = self.state.list_loops_for_parent(parent_id).await?;
 
-        // Get completed Spec IDs
-        let completed_ids: Vec<&str> = specs
+        // Get completed sibling IDs
+        let completed_ids: Vec<&str> = siblings
             .iter()
-            .filter(|s| s.status == SpecStatus::Complete)
+            .filter(|s| s.status == LoopStatus::Complete)
             .map(|s| s.id.as_str())
             .collect();
 
-        // Find first Spec that is now ready
-        for spec in specs.iter() {
-            if spec.status == SpecStatus::Pending && spec.deps.iter().all(|dep| completed_ids.contains(&dep.as_str())) {
+        // Find first sibling that is now ready
+        for sibling in siblings.iter() {
+            if sibling.status == LoopStatus::Pending
+                && sibling.deps.iter().all(|dep| completed_ids.contains(&dep.as_str()))
+            {
                 info!(
-                    spec_id = %spec.id,
-                    depends_on = %completed_spec_id,
-                    "Waking dependent Spec"
+                    record_id = %sibling.id,
+                    depends_on = %completed_record_id,
+                    "Waking dependent record"
                 );
-                return self.create_phase_loop_for_spec(spec).await;
+                return self.create_child_loops_for_record(sibling).await;
             }
         }
 
-        Ok(None)
+        Ok(vec![])
     }
 
-    /// Check if all Specs for a Plan are complete
-    async fn check_plan_completion(&self, plan_id: &str) -> Result<()> {
-        let specs = self.state.list_specs_for_plan(plan_id).await?;
+    /// Check if all children for a parent are complete
+    async fn check_parent_completion(&self, parent_id: &str) -> Result<()> {
+        let children = self.state.list_loops_for_parent(parent_id).await?;
 
-        // Check if all Specs are in terminal state
-        let all_complete = specs.iter().all(|s| s.status == SpecStatus::Complete);
-        let any_failed = specs.iter().any(|s| s.status == SpecStatus::Failed);
+        // Check if all children are in terminal state
+        let all_complete = children.iter().all(|c| c.status == LoopStatus::Complete);
+        let any_failed = children.iter().any(|c| c.status == LoopStatus::Failed);
 
-        if any_failed && let Ok(Some(mut plan)) = self.state.get_plan(plan_id).await {
-            plan.set_status(PlanStatus::Failed);
-            let _ = self.state.update_plan(plan).await;
-            warn!(plan_id, "Plan marked Failed due to Spec failure");
+        if any_failed && let Ok(Some(mut parent)) = self.state.get_loop(parent_id).await {
+            parent.set_status(LoopStatus::Failed);
+            let _ = self.state.update_loop(parent).await;
+            warn!(parent_id, "Parent marked Failed due to child failure");
         } else if all_complete
-            && !specs.is_empty()
-            && let Ok(Some(mut plan)) = self.state.get_plan(plan_id).await
+            && !children.is_empty()
+            && let Ok(Some(mut parent)) = self.state.get_loop(parent_id).await
         {
-            plan.set_status(PlanStatus::Complete);
-            let _ = self.state.update_plan(plan).await;
-            info!(plan_id, "All Specs complete, Plan marked Complete");
+            parent.set_status(LoopStatus::Complete);
+            let _ = self.state.update_loop(parent).await;
+            info!(parent_id, "All children complete, parent marked Complete");
         }
 
         Ok(())
@@ -240,50 +296,50 @@ mod tests {
     // These are placeholder tests for the logic patterns
 
     #[test]
-    fn test_spec_ready_check_no_deps() {
-        let spec = Spec::new("plan-1", "Test Spec", "/test.md");
+    fn test_loop_ready_check_no_deps() {
+        let record = Loop::new("mytype", "Test Record");
         let completed: Vec<&str> = vec![];
-        assert!(spec.is_ready(&completed));
+        assert!(record.is_ready(&completed));
     }
 
     #[test]
-    fn test_spec_ready_check_with_deps_satisfied() {
-        let mut spec = Spec::new("plan-1", "Test Spec", "/test.md");
-        spec.add_dependency("dep-1");
-        spec.add_dependency("dep-2");
+    fn test_loop_ready_check_with_deps_satisfied() {
+        let mut record = Loop::new("mytype", "Test Record");
+        record.add_dependency("dep-1");
+        record.add_dependency("dep-2");
 
         let completed: Vec<&str> = vec!["dep-1", "dep-2"];
-        assert!(spec.is_ready(&completed));
+        assert!(record.is_ready(&completed));
     }
 
     #[test]
-    fn test_spec_ready_check_with_deps_unsatisfied() {
-        let mut spec = Spec::new("plan-1", "Test Spec", "/test.md");
-        spec.add_dependency("dep-1");
-        spec.add_dependency("dep-2");
+    fn test_loop_ready_check_with_deps_unsatisfied() {
+        let mut record = Loop::new("mytype", "Test Record");
+        record.add_dependency("dep-1");
+        record.add_dependency("dep-2");
 
         let completed: Vec<&str> = vec!["dep-1"]; // Missing dep-2
-        assert!(!spec.is_ready(&completed));
+        assert!(!record.is_ready(&completed));
     }
 
     #[test]
     fn test_phase_completion_index() {
-        let mut spec = Spec::new("plan-1", "Test Spec", "/test.md");
-        spec.add_phase(Phase::new("Phase 1", "First"));
-        spec.add_phase(Phase::new("Phase 2", "Second"));
-        spec.add_phase(Phase::new("Phase 3", "Third"));
+        let mut record = Loop::new("mytype", "Test Record");
+        record.add_phase(Phase::new("Phase 1", "First"));
+        record.add_phase(Phase::new("Phase 2", "Second"));
+        record.add_phase(Phase::new("Phase 3", "Third"));
 
-        assert_eq!(spec.current_phase_index(), Some(0));
-        assert!(!spec.all_phases_complete());
+        assert_eq!(record.current_phase_index(), Some(0));
+        assert!(!record.all_phases_complete());
 
-        spec.complete_phase(0);
-        assert_eq!(spec.current_phase_index(), Some(1));
+        record.complete_phase(0);
+        assert_eq!(record.current_phase_index(), Some(1));
 
-        spec.complete_phase(1);
-        assert_eq!(spec.current_phase_index(), Some(2));
+        record.complete_phase(1);
+        assert_eq!(record.current_phase_index(), Some(2));
 
-        spec.complete_phase(2);
-        assert!(spec.all_phases_complete());
-        assert_eq!(spec.current_phase_index(), None);
+        record.complete_phase(2);
+        assert!(record.all_phases_complete());
+        assert_eq!(record.current_phase_index(), None);
     }
 }

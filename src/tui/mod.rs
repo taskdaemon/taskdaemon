@@ -1,10 +1,10 @@
 //! Terminal User Interface for TaskDaemon
 //!
 //! Provides a k9s-style real-time dashboard showing:
-//! - Plans, Specs, Phases, and Ralphs (loop executions)
+//! - Plans, Specs, and Loops (running executions)
 //! - Navigation with vim-style keybindings
-//! - Command mode for quick actions
-//! - TaskStore analytics views
+//! - Command mode for quick actions (:plans, :specs, :loops)
+//! - Filter mode for instant search (/)
 
 mod app;
 mod events;
@@ -15,7 +15,7 @@ mod views;
 pub use app::App;
 pub use events::{Event, EventHandler};
 pub use runner::TuiRunner;
-pub use state::{AppState, InteractionMode, LayoutMode, ResourceView};
+pub use state::{AppState, InteractionMode, View};
 
 use std::io::{self, Stdout};
 
@@ -55,33 +55,33 @@ pub async fn run(terminal: Tui) -> Result<()> {
 }
 
 /// Run the TUI with StateManager connection for live data
-pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
+///
+/// `default_loop_type` specifies which loop type to create when user presses 'n'.
+/// Should come from config. If empty, TUI will show an error when trying to create.
+pub async fn run_with_state(state_manager: StateManager, default_loop_type: String) -> Result<()> {
     let terminal = init()?;
 
-    // Ensure terminal is restored even on panic
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tokio::runtime::Handle::current().block_on(async {
-            let mut runner = TuiRunner::with_state_manager(terminal, state_manager);
-            runner.run().await
-        })
-    }));
-
-    restore()?;
-
-    match result {
-        Ok(inner_result) => inner_result,
-        Err(panic) => std::panic::resume_unwind(panic),
+    // Use a guard to ensure terminal is restored even on early return/error
+    struct TerminalGuard;
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            let _ = restore();
+        }
     }
+    let _guard = TerminalGuard;
+
+    let mut runner = TuiRunner::with_state_manager(terminal, state_manager, default_loop_type);
+    runner.run().await
 }
 
 /// Run the TUI in a way that can be used from both sync and async contexts
-pub fn run_blocking_with_state(state_manager: StateManager) -> Result<()> {
+pub fn run_blocking_with_state(state_manager: StateManager, default_loop_type: String) -> Result<()> {
     let terminal = init()?;
 
     let result = {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
-            let mut runner = TuiRunner::with_state_manager(terminal, state_manager);
+            let mut runner = TuiRunner::with_state_manager(terminal, state_manager, default_loop_type);
             runner.run().await
         })
     };

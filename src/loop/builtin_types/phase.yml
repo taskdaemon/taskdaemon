@@ -1,5 +1,6 @@
 # Phase Loop Type
 # Level 3: Takes a Spec phase, produces code/tests in git worktree
+parent: spec
 description: "Implement a single phase of a Spec in an isolated git worktree"
 
 prompt-template: |
