@@ -9,8 +9,10 @@ mod config;
 mod core;
 mod handle;
 mod messages;
+mod persistence;
 
 pub use config::CoordinatorConfig;
 pub use core::Coordinator;
 pub use handle::CoordinatorHandle;
 pub use messages::{CoordMessage, CoordRequest, CoordinatorMetrics, QueryPayload};
+pub use persistence::{EventStore, PersistedEvent, PersistedEventType};

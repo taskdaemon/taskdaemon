@@ -1,0 +1,455 @@
+//! Coordinator event persistence for crash recovery
+//!
+//! Persists coordination events (alerts, queries, shares) to disk for recovery
+//! after crashes or restarts.
+
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use eyre::Result;
+use serde::{Deserialize, Serialize};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
+
+/// Type of persisted event
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PersistedEventType {
+    /// Alert/broadcast event
+    Alert,
+    /// Query request
+    Query,
+    /// Data sharing event
+    Share,
+}
+
+impl std::fmt::Display for PersistedEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Alert => write!(f, "Alert"),
+            Self::Query => write!(f, "Query"),
+            Self::Share => write!(f, "Share"),
+        }
+    }
+}
+
+/// Persisted coordinator event for crash recovery
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedEvent {
+    /// Unique event ID
+    pub id: String,
+    /// Type of event
+    pub event_type: PersistedEventType,
+    /// Source execution ID
+    pub from_exec_id: String,
+    /// Target execution ID (None for broadcasts)
+    pub to_exec_id: Option<String>,
+    /// Event payload (JSON)
+    pub payload: String,
+    /// Unix timestamp when created
+    pub created_at: i64,
+    /// Unix timestamp when resolved (None if pending)
+    pub resolved_at: Option<i64>,
+}
+
+/// Get current Unix timestamp in seconds
+fn now_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+impl PersistedEvent {
+    /// Create a new persisted event
+    pub fn new(
+        event_type: PersistedEventType,
+        from_exec_id: impl Into<String>,
+        to_exec_id: Option<String>,
+        payload: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: Uuid::now_v7().to_string(),
+            event_type,
+            from_exec_id: from_exec_id.into(),
+            to_exec_id,
+            payload: payload.into(),
+            created_at: now_timestamp(),
+            resolved_at: None,
+        }
+    }
+
+    /// Create an alert event
+    pub fn alert(from_exec_id: impl Into<String>, event_type_name: &str, payload: impl Into<String>) -> Self {
+        Self::new(
+            PersistedEventType::Alert,
+            from_exec_id,
+            None,
+            serde_json::json!({
+                "event_type": event_type_name,
+                "data": payload.into()
+            })
+            .to_string(),
+        )
+    }
+
+    /// Create a query event
+    pub fn query(from_exec_id: impl Into<String>, to_exec_id: impl Into<String>, question: &str) -> Self {
+        Self::new(
+            PersistedEventType::Query,
+            from_exec_id,
+            Some(to_exec_id.into()),
+            serde_json::json!({ "question": question }).to_string(),
+        )
+    }
+
+    /// Create a share event
+    pub fn share(
+        from_exec_id: impl Into<String>,
+        to_exec_id: impl Into<String>,
+        share_type: &str,
+        data: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            PersistedEventType::Share,
+            from_exec_id,
+            Some(to_exec_id.into()),
+            serde_json::json!({
+                "share_type": share_type,
+                "data": data.into()
+            })
+            .to_string(),
+        )
+    }
+
+    /// Check if event is resolved
+    pub fn is_resolved(&self) -> bool {
+        self.resolved_at.is_some()
+    }
+
+    /// Mark event as resolved
+    pub fn resolve(&mut self) {
+        self.resolved_at = Some(now_timestamp());
+    }
+}
+
+/// Coordinator event store for persistence
+pub struct EventStore {
+    store_path: PathBuf,
+}
+
+impl EventStore {
+    /// Create a new event store
+    pub fn new(store_path: impl Into<PathBuf>) -> Self {
+        Self {
+            store_path: store_path.into(),
+        }
+    }
+
+    /// Get the events file path
+    fn events_file(&self) -> PathBuf {
+        self.store_path.join("coordinator_events.jsonl")
+    }
+
+    /// Ensure the store directory exists
+    async fn ensure_dir(&self) -> Result<()> {
+        fs::create_dir_all(&self.store_path).await?;
+        Ok(())
+    }
+
+    /// Persist an event
+    pub async fn persist(&self, event: &PersistedEvent) -> Result<()> {
+        self.ensure_dir().await?;
+
+        let events_file = self.events_file();
+        let line = serde_json::to_string(event)? + "\n";
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&events_file)
+            .await?;
+
+        file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
+
+        Ok(())
+    }
+
+    /// Mark an event as resolved
+    pub async fn resolve(&self, event_id: &str) -> Result<bool> {
+        let events_file = self.events_file();
+
+        if !events_file.exists() {
+            return Ok(false);
+        }
+
+        let content = fs::read_to_string(&events_file).await?;
+
+        let mut events: Vec<PersistedEvent> = content
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+
+        let mut found = false;
+        for event in &mut events {
+            if event.id == event_id {
+                event.resolve();
+                found = true;
+            }
+        }
+
+        if found {
+            let new_content: String = events
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap() + "\n")
+                .collect();
+
+            fs::write(&events_file, new_content).await?;
+        }
+
+        Ok(found)
+    }
+
+    /// Get all unresolved events for crash recovery
+    pub async fn get_unresolved(&self) -> Result<Vec<PersistedEvent>> {
+        let events_file = self.events_file();
+
+        if !events_file.exists() {
+            return Ok(vec![]);
+        }
+
+        let content = fs::read_to_string(&events_file).await?;
+        let events: Vec<PersistedEvent> = content
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .filter(|e: &PersistedEvent| !e.is_resolved())
+            .collect();
+
+        Ok(events)
+    }
+
+    /// Get all events (resolved and unresolved)
+    pub async fn get_all(&self) -> Result<Vec<PersistedEvent>> {
+        let events_file = self.events_file();
+
+        if !events_file.exists() {
+            return Ok(vec![]);
+        }
+
+        let content = fs::read_to_string(&events_file).await?;
+        let events: Vec<PersistedEvent> = content
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+
+        Ok(events)
+    }
+
+    /// Get events for a specific execution
+    pub async fn get_for_exec(&self, exec_id: &str) -> Result<Vec<PersistedEvent>> {
+        let all = self.get_all().await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| e.from_exec_id == exec_id || e.to_exec_id.as_deref() == Some(exec_id))
+            .collect())
+    }
+
+    /// Clean up old resolved events (older than specified hours)
+    pub async fn cleanup_old(&self, hours: i64) -> Result<usize> {
+        let events_file = self.events_file();
+
+        if !events_file.exists() {
+            return Ok(0);
+        }
+
+        let cutoff = now_timestamp() - (hours * 3600);
+        let content = fs::read_to_string(&events_file).await?;
+
+        let events: Vec<PersistedEvent> = content
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+
+        let original_count = events.len();
+
+        // Keep events that are either unresolved or resolved recently
+        let kept: Vec<_> = events
+            .into_iter()
+            .filter(|e| !e.is_resolved() || e.resolved_at.unwrap_or(0) > cutoff)
+            .collect();
+
+        let removed_count = original_count - kept.len();
+
+        if removed_count > 0 {
+            let new_content: String = kept.iter().map(|e| serde_json::to_string(e).unwrap() + "\n").collect();
+
+            fs::write(&events_file, new_content).await?;
+        }
+
+        Ok(removed_count)
+    }
+
+    /// Clear all events (for testing)
+    pub async fn clear(&self) -> Result<()> {
+        let events_file = self.events_file();
+
+        if events_file.exists() {
+            fs::remove_file(&events_file).await?;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_persist_and_get_unresolved() {
+        let temp = tempdir().unwrap();
+        let store = EventStore::new(temp.path());
+
+        let event1 = PersistedEvent::alert("exec-001", "test_event", "data1");
+        let event2 = PersistedEvent::query("exec-001", "exec-002", "What is the status?");
+
+        store.persist(&event1).await.unwrap();
+        store.persist(&event2).await.unwrap();
+
+        let unresolved = store.get_unresolved().await.unwrap();
+        assert_eq!(unresolved.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_event() {
+        let temp = tempdir().unwrap();
+        let store = EventStore::new(temp.path());
+
+        let event = PersistedEvent::alert("exec-001", "test_event", "data");
+        let event_id = event.id.clone();
+
+        store.persist(&event).await.unwrap();
+
+        // Should have 1 unresolved
+        let unresolved = store.get_unresolved().await.unwrap();
+        assert_eq!(unresolved.len(), 1);
+
+        // Resolve it
+        let found = store.resolve(&event_id).await.unwrap();
+        assert!(found);
+
+        // Should have 0 unresolved
+        let unresolved = store.get_unresolved().await.unwrap();
+        assert_eq!(unresolved.len(), 0);
+
+        // All should still show 1
+        let all = store.get_all().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].is_resolved());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_nonexistent() {
+        let temp = tempdir().unwrap();
+        let store = EventStore::new(temp.path());
+
+        let found = store.resolve("nonexistent").await.unwrap();
+        assert!(!found);
+    }
+
+    #[tokio::test]
+    async fn test_get_for_exec() {
+        let temp = tempdir().unwrap();
+        let store = EventStore::new(temp.path());
+
+        // Create events involving different executions
+        let event1 = PersistedEvent::alert("exec-001", "event1", "data1");
+        let event2 = PersistedEvent::query("exec-001", "exec-002", "question");
+        let event3 = PersistedEvent::share("exec-003", "exec-002", "type", "data");
+
+        store.persist(&event1).await.unwrap();
+        store.persist(&event2).await.unwrap();
+        store.persist(&event3).await.unwrap();
+
+        // exec-001 should see 2 events (sender of alert and query)
+        let exec1_events = store.get_for_exec("exec-001").await.unwrap();
+        assert_eq!(exec1_events.len(), 2);
+
+        // exec-002 should see 2 events (target of query and share)
+        let exec2_events = store.get_for_exec("exec-002").await.unwrap();
+        assert_eq!(exec2_events.len(), 2);
+
+        // exec-003 should see 1 event (sender of share)
+        let exec3_events = store.get_for_exec("exec-003").await.unwrap();
+        assert_eq!(exec3_events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_old() {
+        let temp = tempdir().unwrap();
+        let store = EventStore::new(temp.path());
+
+        // Create and resolve an event
+        let mut event = PersistedEvent::alert("exec-001", "old_event", "data");
+        // Make it look old (resolved 48 hours ago)
+        event.resolved_at = Some(now_timestamp() - 48 * 3600);
+
+        store.persist(&event).await.unwrap();
+
+        // Create a fresh unresolved event
+        let event2 = PersistedEvent::alert("exec-002", "new_event", "data");
+        store.persist(&event2).await.unwrap();
+
+        // Cleanup events older than 24 hours
+        let removed = store.cleanup_old(24).await.unwrap();
+        assert_eq!(removed, 1);
+
+        // Only unresolved event should remain
+        let all = store.get_all().await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].from_exec_id, "exec-002");
+    }
+
+    #[tokio::test]
+    async fn test_clear() {
+        let temp = tempdir().unwrap();
+        let store = EventStore::new(temp.path());
+
+        store
+            .persist(&PersistedEvent::alert("exec-001", "event", "data"))
+            .await
+            .unwrap();
+
+        let all = store.get_all().await.unwrap();
+        assert_eq!(all.len(), 1);
+
+        store.clear().await.unwrap();
+
+        let all = store.get_all().await.unwrap();
+        assert_eq!(all.len(), 0);
+    }
+
+    #[test]
+    fn test_event_type_display() {
+        assert_eq!(PersistedEventType::Alert.to_string(), "Alert");
+        assert_eq!(PersistedEventType::Query.to_string(), "Query");
+        assert_eq!(PersistedEventType::Share.to_string(), "Share");
+    }
+
+    #[test]
+    fn test_persisted_event_constructors() {
+        let alert = PersistedEvent::alert("exec-1", "test", "payload");
+        assert_eq!(alert.event_type, PersistedEventType::Alert);
+        assert!(alert.to_exec_id.is_none());
+
+        let query = PersistedEvent::query("exec-1", "exec-2", "question?");
+        assert_eq!(query.event_type, PersistedEventType::Query);
+        assert_eq!(query.to_exec_id, Some("exec-2".to_string()));
+
+        let share = PersistedEvent::share("exec-1", "exec-2", "type", "data");
+        assert_eq!(share.event_type, PersistedEventType::Share);
+        assert_eq!(share.to_exec_id, Some("exec-2".to_string()));
+    }
+}

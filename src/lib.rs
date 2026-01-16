@@ -35,6 +35,7 @@ pub mod scheduler;
 pub mod state;
 pub mod tools;
 pub mod tui;
+pub mod validation;
 pub mod watcher;
 pub mod worktree;
 
@@ -45,7 +46,8 @@ pub mod r#loop;
 // Re-export commonly used types
 pub use config::{Config, LlmConfig};
 pub use coordinator::{
-    CoordMessage, CoordRequest, Coordinator, CoordinatorConfig, CoordinatorHandle, CoordinatorMetrics,
+    CoordMessage, CoordRequest, Coordinator, CoordinatorConfig, CoordinatorHandle, CoordinatorMetrics, EventStore,
+    PersistedEvent, PersistedEventType,
 };
 pub use domain::{
     DomainId, Filter, FilterOp, IndexValue, LoopExecution, LoopExecutionStatus, Phase, PhaseStatus, Plan, PlanStatus,
@@ -61,5 +63,6 @@ pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};
 pub use state::{RecoveryStats, StateCommand, StateError, StateManager, StateResponse, recover, scan_for_recovery};
 pub use tools::{Tool, ToolContext, ToolError, ToolExecutor, ToolResult};
+pub use validation::{PassResult, PlanRefinementContext, ReviewPass};
 pub use watcher::{MainWatcher, WatcherConfig};
-pub use worktree::{WorktreeConfig, WorktreeError, WorktreeInfo, WorktreeManager};
+pub use worktree::{MergeResult, WorktreeConfig, WorktreeError, WorktreeInfo, WorktreeManager, merge_to_main};
