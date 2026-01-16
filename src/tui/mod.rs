@@ -1,20 +1,23 @@
 //! Terminal User Interface for TaskDaemon
 //!
-//! Provides a real-time dashboard showing:
-//! - Running loops with status
-//! - Progress updates and metrics
-//! - Resource utilization
+//! Provides a k9s-style real-time dashboard showing:
+//! - Plans, Specs, Phases, and Ralphs (loop executions)
+//! - Navigation with vim-style keybindings
+//! - Command mode for quick actions
+//! - TaskStore analytics views
 
 mod app;
 mod events;
+mod runner;
+pub mod state;
 mod views;
 
-pub use app::{App, AppMode};
+pub use app::App;
 pub use events::{Event, EventHandler};
-pub use views::render;
+pub use runner::TuiRunner;
+pub use state::{AppState, InteractionMode, LayoutMode, ResourceView};
 
 use std::io::{self, Stdout};
-use std::time::Duration;
 
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
@@ -22,6 +25,8 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_ra
 use eyre::Result;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+
+use crate::state::StateManager;
 
 /// Terminal type alias
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -43,29 +48,56 @@ pub fn restore() -> Result<()> {
     Ok(())
 }
 
-/// Run the TUI application
-pub async fn run(mut terminal: Tui) -> Result<()> {
-    let mut app = App::new();
-    let event_handler = EventHandler::new(Duration::from_millis(100));
+/// Run the TUI application (standalone mode, no StateManager)
+pub async fn run(terminal: Tui) -> Result<()> {
+    let mut runner = TuiRunner::new(terminal);
+    runner.run().await
+}
 
-    loop {
-        // Draw the UI
-        terminal.draw(|frame| views::render(&mut app, frame))?;
+/// Run the TUI with StateManager connection for live data
+pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
+    let terminal = init()?;
 
-        // Handle events
-        match event_handler.next()? {
-            Event::Tick => {
-                app.tick();
-            }
-            Event::Key(key_event) => {
-                if app.handle_key(key_event) {
-                    break;
-                }
-            }
-            Event::Mouse(_) => {}
-            Event::Resize(_, _) => {}
-        }
+    // Ensure terminal is restored even on panic
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut runner = TuiRunner::with_state_manager(terminal, state_manager);
+            runner.run().await
+        })
+    }));
+
+    restore()?;
+
+    match result {
+        Ok(inner_result) => inner_result,
+        Err(panic) => std::panic::resume_unwind(panic),
     }
+}
 
-    Ok(())
+/// Run the TUI in a way that can be used from both sync and async contexts
+pub fn run_blocking_with_state(state_manager: StateManager) -> Result<()> {
+    let terminal = init()?;
+
+    let result = {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            let mut runner = TuiRunner::with_state_manager(terminal, state_manager);
+            runner.run().await
+        })
+    };
+
+    restore()?;
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_module_exports() {
+        // Verify that all public types are accessible
+        let _: fn() -> App = App::new;
+        let _: fn() -> AppState = AppState::new;
+    }
 }
