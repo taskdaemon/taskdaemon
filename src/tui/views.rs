@@ -464,6 +464,7 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                         ("<d>", "Describe"),
                         ("<l>", "Logs"),
                         ("<x>", "Cancel"),
+                        ("<D>", "Delete"),
                     ],
                     View::Logs { .. } => vec![("<Esc>", "Back"), ("<f>", "Follow")],
                     View::Describe { .. } => vec![("<Esc>", "Back"), ("<l>", "Logs")],
@@ -540,6 +541,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         key_line("x", "Cancel selected"),
         key_line("p", "Pause selected"),
         key_line("r", "Resume selected"),
+        key_line("D", "Delete selected"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Logs View",

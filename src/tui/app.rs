@@ -137,6 +137,10 @@ impl App {
                 // Resume selected execution
                 self.handle_resume();
             }
+            (KeyCode::Char('D'), _) => {
+                // Delete selected execution
+                self.handle_delete();
+            }
 
             // === New task ===
             (KeyCode::Char('n'), _) if matches!(self.state.current_view, View::Executions) => {
@@ -264,6 +268,17 @@ impl App {
         }
     }
 
+    /// Handle delete action
+    fn handle_delete(&mut self) {
+        if !matches!(self.state.current_view, View::Executions) {
+            return;
+        }
+
+        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+            self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::delete_execution(id, &name));
+        }
+    }
+
     /// Handle key in filter mode
     fn handle_filter_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
@@ -376,6 +391,9 @@ impl App {
                         }
                         ConfirmAction::ResumeLoop(id) => {
                             self.state.pending_action = Some(PendingAction::ResumeLoop(id.clone()));
+                        }
+                        ConfirmAction::DeleteExecution(id) => {
+                            self.state.pending_action = Some(PendingAction::DeleteExecution(id.clone()));
                         }
                     }
                 }

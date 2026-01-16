@@ -214,6 +214,19 @@ impl TuiRunner {
                     }
                 }
             }
+            PendingAction::DeleteExecution(id) => {
+                debug!("Deleting execution: {}", id);
+                match state_manager.delete_execution(&id).await {
+                    Ok(()) => {
+                        debug!("Deleted execution {}", id);
+                        self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                    }
+                    Err(e) => {
+                        warn!("Failed to delete execution: {}", e);
+                        self.app.state_mut().set_error(format!("Failed to delete: {}", e));
+                    }
+                }
+            }
         }
     }
 

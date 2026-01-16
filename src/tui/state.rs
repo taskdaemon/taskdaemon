@@ -156,6 +156,13 @@ impl ConfirmDialog {
     pub fn pause_loop(id: String, name: &str) -> Self {
         Self::new(ConfirmAction::PauseLoop(id), format!("Pause {}?", name))
     }
+
+    pub fn delete_execution(id: String, name: &str) -> Self {
+        Self::new(
+            ConfirmAction::DeleteExecution(id),
+            format!("Delete {}? This removes it from view.", name),
+        )
+    }
 }
 
 /// Action to perform on confirm
@@ -165,6 +172,7 @@ pub enum ConfirmAction {
     CancelLoop(String),
     PauseLoop(String),
     ResumeLoop(String),
+    DeleteExecution(String),
 }
 
 /// Action pending execution by the runner
@@ -173,6 +181,7 @@ pub enum PendingAction {
     CancelLoop(String),
     PauseLoop(String),
     ResumeLoop(String),
+    DeleteExecution(String),
 }
 
 /// Selection state for list views
