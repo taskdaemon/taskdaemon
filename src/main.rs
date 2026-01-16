@@ -26,10 +26,13 @@ fn setup_logging(verbose: bool) -> Result<()> {
 
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
-    // Setup tracing subscriber
+    // Setup tracing subscriber - write to log file, not stdout/stderr
     let level = if verbose { tracing::Level::DEBUG } else { tracing::Level::INFO };
+    let log_file = fs::File::create(log_dir.join("taskdaemon.log")).context("Failed to create log file")?;
 
     tracing_subscriber::fmt()
+        .with_writer(log_file)
+        .with_ansi(false)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()))
         .init();
 
