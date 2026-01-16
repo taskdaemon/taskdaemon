@@ -11,17 +11,9 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::info;
 
-mod cli;
-mod config;
-mod llm;
-mod progress;
-mod tools;
-
-#[path = "loop/mod.rs"]
-mod r#loop;
-
-use cli::Cli;
-use config::Config;
+// Use the library crate
+use taskdaemon::cli::Cli;
+use taskdaemon::config::Config;
 
 fn setup_logging() -> Result<()> {
     // Create log directory
@@ -56,7 +48,7 @@ fn main() -> Result<()> {
         config.llm.provider, config.llm.model
     );
 
-    // TODO: Implement CLI command dispatch in Phase 3
+    // TODO: Implement CLI command dispatch in later phases
     // For now, just print config info
     println!("TaskDaemon v{}", env!("CARGO_PKG_VERSION"));
     println!("  LLM: {} ({})", config.llm.provider, config.llm.model);

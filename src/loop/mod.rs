@@ -6,10 +6,12 @@
 
 mod config;
 mod engine;
+mod manager;
 mod validation;
 
 pub use config::LoopConfig;
 #[allow(unused_imports)]
 pub use engine::{IterationResult, LoopEngine, LoopStatus};
+pub use manager::{LoopManager, LoopManagerConfig, LoopTaskResult, topological_sort, validate_dependency_graph};
 #[allow(unused_imports)]
 pub use validation::ValidationResult;

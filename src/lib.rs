@@ -50,7 +50,10 @@ pub use domain::{
     Priority, Record, Spec, SpecStatus, Store,
 };
 pub use llm::{AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError};
-pub use r#loop::{IterationResult, LoopConfig, LoopEngine, LoopStatus};
+pub use r#loop::{
+    IterationResult, LoopConfig, LoopEngine, LoopManager, LoopManagerConfig, LoopStatus, LoopTaskResult,
+    topological_sort, validate_dependency_graph,
+};
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};
 pub use state::{RecoveryStats, StateCommand, StateError, StateManager, StateResponse, recover, scan_for_recovery};
