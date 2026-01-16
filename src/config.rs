@@ -86,7 +86,13 @@ impl Config {
     fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(&path).context("Failed to read config file")?;
 
-        let config: Self = serde_yaml::from_str(&content).context("Failed to parse config file")?;
+        let mut config: Self = serde_yaml::from_str(&content).context("Failed to parse config file")?;
+
+        // Post-process: Apply defaults for empty values that serde can't handle
+        // (serde's #[serde(default)] only applies when field is MISSING, not empty)
+        if config.loops.default_type.is_empty() {
+            config.loops.default_type = "plan".to_string();
+        }
 
         tracing::info!("Loaded config from: {}", path.as_ref().display());
         Ok(config)
