@@ -209,11 +209,14 @@ impl CascadeHandler {
 
         if record.all_phases_complete() || record.phases.is_empty() {
             // All phases done (or no phases) - mark record as Complete
-            record.set_status(LoopStatus::Complete);
+            // But only if it's not already in a terminal state (e.g., Failed)
+            if record.status != LoopStatus::Failed {
+                record.set_status(LoopStatus::Complete);
+                info!(record_id, "All phases complete, record marked Complete");
+            }
             self.state.update_loop(record.clone()).await?;
-            info!(record_id, "All phases complete, record marked Complete");
 
-            // Check if all children for the parent are complete
+            // Check if all children for the parent are complete (or any failed)
             if let Some(parent_id) = &record.parent {
                 self.check_parent_completion(parent_id).await?;
             }

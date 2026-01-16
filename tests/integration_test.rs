@@ -417,52 +417,12 @@ async fn test_cascade_ralph_is_leaf() {
     assert!(children.is_empty(), "Ralph should not spawn any children");
 }
 
-#[tokio::test]
-async fn test_cascade_completion_bubbles_up() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let (state, _cascade) = create_cascade_handler(&temp_dir).await;
-
-    // Create the hierarchy: Plan -> Spec -> Phase -> Ralph
-    let mut plan = Loop::new("plan", "Root Plan");
-    plan.set_status(LoopStatus::InProgress);
-    state.create_loop(plan.clone()).await.expect("Failed to create plan");
-
-    let mut spec = Loop::new("spec", "Child Spec");
-    spec.parent = Some(plan.id.clone());
-    spec.set_status(LoopStatus::InProgress);
-    state.create_loop(spec.clone()).await.expect("Failed to create spec");
-
-    let mut phase = Loop::new("phase", "Child Phase");
-    phase.parent = Some(spec.id.clone());
-    phase.set_status(LoopStatus::InProgress);
-    state.create_loop(phase.clone()).await.expect("Failed to create phase");
-
-    let mut ralph = Loop::new("ralph", "Child Ralph");
-    ralph.parent = Some(phase.id.clone());
-    ralph.set_status(LoopStatus::Complete);
-    state.create_loop(ralph.clone()).await.expect("Failed to create ralph");
-
-    // Manually check completion bubbling
-    // When Ralph completes, Phase should complete (only child)
-    // When Phase completes, Spec should complete (only child)
-    // When Spec completes, Plan should complete (only child)
-
-    // For this test, we verify the hierarchy is correctly set up
-    let children_of_phase = state.list_loops_for_parent(&phase.id).await.expect("Failed to list");
-    assert_eq!(children_of_phase.len(), 1);
-    assert_eq!(children_of_phase[0].id, ralph.id);
-
-    let children_of_spec = state.list_loops_for_parent(&spec.id).await.expect("Failed to list");
-    assert_eq!(children_of_spec.len(), 1);
-    assert_eq!(children_of_spec[0].id, phase.id);
-
-    let children_of_plan = state.list_loops_for_parent(&plan.id).await.expect("Failed to list");
-    assert_eq!(children_of_plan.len(), 1);
-    assert_eq!(children_of_plan[0].id, spec.id);
-}
+// NOTE: test_cascade_completion_bubbles_up was deleted during SDET audit.
+// It only verified list_loops_for_parent worked, never actually triggered cascade.
+// test_cascade_full_completion_propagation (below) is the real test for this behavior.
 
 #[tokio::test]
-async fn test_cascade_failure_bubbles_up() {
+async fn test_failed_child_is_not_ready() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let (state, cascade) = create_cascade_handler(&temp_dir).await;
 
@@ -833,41 +793,60 @@ async fn test_cascade_full_failure_propagation() {
     let (state, cascade) = create_cascade_handler(&temp_dir).await;
 
     // Create hierarchy: Plan -> Spec -> Phase -> Ralph
-    let mut plan = Loop::new("plan", "Test Plan");
+    let mut plan = Loop::new("plan", "Failure Test Plan");
     plan.set_status(LoopStatus::InProgress);
     state.create_loop(plan.clone()).await.expect("create");
 
-    let mut spec = Loop::new("spec", "Test Spec");
+    let mut spec = Loop::new("spec", "Failure Test Spec");
     spec.parent = Some(plan.id.clone());
     spec.set_status(LoopStatus::InProgress);
     state.create_loop(spec.clone()).await.expect("create");
 
-    let mut phase = Loop::new("phase", "Test Phase");
+    let mut phase = Loop::new("phase", "Failure Test Phase");
     phase.parent = Some(spec.id.clone());
     phase.set_status(LoopStatus::InProgress);
     state.create_loop(phase.clone()).await.expect("create");
 
-    let mut ralph = Loop::new("ralph", "Test Ralph");
+    let mut ralph = Loop::new("ralph", "Failure Test Ralph");
     ralph.parent = Some(phase.id.clone());
-    ralph.set_status(LoopStatus::Failed); // Ralph fails!
+    ralph.set_status(LoopStatus::InProgress);
     state.create_loop(ralph.clone()).await.expect("create");
 
-    // Manually trigger check_parent_completion via get_ready_children
-    // which internally checks completion status
-    let _ = cascade.get_ready_children(&phase.id).await;
+    // Create execution for ralph (needed to trigger on_child_loop_complete)
+    let exec = taskdaemon::domain::LoopExecution::new("ralph", &ralph.id)
+        .with_context_value("record-id", &ralph.id)
+        .with_context_value("phase-number", "1");
+    state.create_loop_execution(exec.clone()).await.expect("create exec");
 
-    // The cascade handler's check_parent_completion should propagate failure up
-    // But we need to explicitly call it - let's use the on_decomposition_complete
-    // which triggers ready children check
+    // Mark ralph as FAILED (simulating a failed implementation)
+    let mut ralph_updated = state.get_loop(&ralph.id).await.expect("get").expect("exists");
+    ralph_updated.set_status(LoopStatus::Failed);
+    state.update_loop(ralph_updated).await.expect("update");
 
-    // Actually, check_parent_completion is private, so let's verify the state
-    // after setting up the failure condition
-    // The failure propagation happens when we explicitly check parent completion
+    // Trigger cascade completion check - this should propagate failure up
+    cascade.on_child_loop_complete(&exec).await.expect("cascade complete");
 
-    // For this test, verify the hierarchy state allows failure detection
-    let children = state.list_loops_for_parent(&phase.id).await.expect("list");
-    let any_failed = children.iter().any(|c| c.status == LoopStatus::Failed);
-    assert!(any_failed, "Should detect failed child");
+    // Verify failure bubbled up through all levels
+    let phase_after = state.get_loop(&phase.id).await.expect("get").expect("exists");
+    assert_eq!(
+        phase_after.status,
+        LoopStatus::Failed,
+        "Phase should be Failed (child failed)"
+    );
+
+    let spec_after = state.get_loop(&spec.id).await.expect("get").expect("exists");
+    assert_eq!(
+        spec_after.status,
+        LoopStatus::Failed,
+        "Spec should be Failed (child failed)"
+    );
+
+    let plan_after = state.get_loop(&plan.id).await.expect("get").expect("exists");
+    assert_eq!(
+        plan_after.status,
+        LoopStatus::Failed,
+        "Plan should be Failed (child failed)"
+    );
 }
 
 #[tokio::test]
