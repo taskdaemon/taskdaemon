@@ -257,8 +257,12 @@ impl LoopManager {
             return Ok(());
         }
 
-        // Acquire semaphore permit
-        let permit = self.semaphore.clone().acquire_owned().await?;
+        // Wait for scheduler slot (handles rate limiting and priority queuing)
+        // TODO: Extract priority from parent Spec/Plan once we wire that up
+        self.scheduler
+            .wait_for_slot(&exec.id, crate::domain::Priority::Normal)
+            .await
+            .context("Failed to acquire scheduler slot")?;
 
         // Create/verify worktree
         let worktree_info = self
@@ -288,6 +292,7 @@ impl LoopManager {
         let llm = self.llm.clone();
         let state = self.state.clone();
         let worktree_path = worktree_info.path.clone();
+        let scheduler = self.scheduler.clone();
 
         let handle = tokio::spawn(async move {
             // Use with_coordinator to wire the coordinator handle into the engine
@@ -295,8 +300,8 @@ impl LoopManager {
 
             let result = run_loop_task(engine, state).await;
 
-            // Release permit when done
-            drop(permit);
+            // Mark scheduler slot as complete (releases slot for next queued request)
+            scheduler.complete(&exec_id).await;
 
             result
         });
