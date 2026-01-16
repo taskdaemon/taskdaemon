@@ -330,6 +330,43 @@ async fn cmd_metrics(loop_type: Option<&str>, format: OutputFormat) -> Result<()
 async fn run_daemon(config: &Config) -> Result<()> {
     info!("Daemon starting...");
 
+    // ============================================================
+    // EARLY VALIDATION - Fail fast with clear error messages
+    // ============================================================
+
+    // Validate LLM API key is set
+    if std::env::var(&config.llm.api_key_env).is_err() {
+        return Err(eyre::eyre!(
+            "LLM API key not found. Set the {} environment variable.",
+            config.llm.api_key_env
+        ));
+    }
+
+    // Validate we're in a git repository
+    let repo_root = std::env::current_dir().context("Failed to get current directory")?;
+    if !repo_root.join(".git").exists() {
+        return Err(eyre::eyre!(
+            "Not a git repository: {}. TaskDaemon requires a git repo.",
+            repo_root.display()
+        ));
+    }
+
+    // Ensure worktree directory is creatable
+    let worktree_dir = &config.git.worktree_dir;
+    if let Err(e) = fs::create_dir_all(worktree_dir) {
+        return Err(eyre::eyre!(
+            "Cannot create worktree directory {}: {}",
+            worktree_dir.display(),
+            e
+        ));
+    }
+
+    info!("Startup validation passed");
+
+    // ============================================================
+    // INITIALIZATION
+    // ============================================================
+
     // Initialize components
     let store_path = PathBuf::from(&config.storage.taskstore_dir);
     if !store_path.exists() {
@@ -347,9 +384,6 @@ async fn run_daemon(config: &Config) -> Result<()> {
         loop_configs.len(),
         loop_configs.keys().collect::<Vec<_>>()
     );
-
-    // Get repo root for MainWatcher and LoopManager
-    let repo_root = std::env::current_dir().context("Failed to get current directory")?;
 
     // Initialize coordinator for inter-loop communication (with event persistence)
     let coordinator = Coordinator::with_persistence(Default::default(), &store_path);

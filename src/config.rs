@@ -32,6 +32,21 @@ pub struct Config {
 }
 
 impl Config {
+    /// Validate configuration before use
+    ///
+    /// Checks that required environment variables and paths are set correctly.
+    /// Call this early in startup to fail fast with clear error messages.
+    pub fn validate(&self) -> Result<()> {
+        // Check LLM API key environment variable is set
+        if std::env::var(&self.llm.api_key_env).is_err() {
+            return Err(eyre::eyre!(
+                "LLM API key not found. Set the {} environment variable.",
+                self.llm.api_key_env
+            ));
+        }
+        Ok(())
+    }
+
     /// Load configuration with fallback chain
     pub fn load(config_path: Option<&PathBuf>) -> Result<Self> {
         // If explicit config path provided, try to load it
