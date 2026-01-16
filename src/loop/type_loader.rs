@@ -7,10 +7,28 @@
 //! 3. Project-specific (.taskdaemon/loops/*.yml)
 //!
 //! Later definitions override earlier ones with the same name.
+//!
+//! ## Inheritance
+//!
+//! Loop types can extend other types using the `extends` field:
+//! ```yaml
+//! extends: ralph
+//! prompt-template: |
+//!   Custom prompt...
+//! ```
+//!
+//! Inherited fields are merged with the child type's fields, with child values
+//! taking precedence.
+//!
+//! ## Hot-Reload
+//!
+//! The loader supports hot-reloading via `reload()` method, allowing config
+//! changes without daemon restart.
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,6 +40,10 @@ use crate::config::LoopsConfig;
 /// A loop type definition as loaded from YAML
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopType {
+    /// Parent type to extend (inheritance)
+    #[serde(default)]
+    pub extends: Option<String>,
+
     /// Human-readable description
     #[serde(default)]
     pub description: String,
@@ -59,6 +81,71 @@ pub struct LoopType {
     pub tools: Vec<String>,
 }
 
+impl LoopType {
+    /// Merge another LoopType as a parent (inheritance)
+    ///
+    /// Child values take precedence over parent values.
+    /// Vectors (inputs, outputs, tools) are merged.
+    pub fn merge_parent(&mut self, parent: &LoopType) {
+        // Use parent description if child is empty
+        if self.description.is_empty() {
+            self.description = parent.description.clone();
+        }
+
+        // Merge prompt template: child takes precedence if non-empty
+        // (prompt_template is required, so this is mostly for safety)
+
+        // Use parent validation_command if child uses default
+        if self.validation_command == default_validation_command() {
+            self.validation_command = parent.validation_command.clone();
+        }
+
+        // Use parent success_exit_code if child uses default
+        if self.success_exit_code == 0 {
+            self.success_exit_code = parent.success_exit_code;
+        }
+
+        // Use parent max_iterations if child uses default
+        if self.max_iterations == default_max_iterations() {
+            self.max_iterations = parent.max_iterations;
+        }
+
+        // Use parent iteration_timeout_ms if child uses default
+        if self.iteration_timeout_ms == default_iteration_timeout() {
+            self.iteration_timeout_ms = parent.iteration_timeout_ms;
+        }
+
+        // Merge inputs: add parent inputs that child doesn't have
+        for input in &parent.inputs {
+            if !self.inputs.contains(input) {
+                self.inputs.push(input.clone());
+            }
+        }
+
+        // Merge outputs: add parent outputs that child doesn't have
+        for output in &parent.outputs {
+            if !self.outputs.contains(output) {
+                self.outputs.push(output.clone());
+            }
+        }
+
+        // Merge tools: child tools + parent tools not in child
+        let default = default_tools();
+        let child_is_default = self.tools == default;
+        if child_is_default {
+            // Use parent tools if child has defaults
+            self.tools = parent.tools.clone();
+        } else {
+            // Add parent tools that child doesn't have
+            for tool in &parent.tools {
+                if !self.tools.contains(tool) {
+                    self.tools.push(tool.clone());
+                }
+            }
+        }
+    }
+}
+
 fn default_validation_command() -> String {
     "otto ci".to_string()
 }
@@ -90,33 +177,113 @@ const BUILTIN_SPEC: &str = include_str!("builtin_types/spec.yml");
 const BUILTIN_PHASE: &str = include_str!("builtin_types/phase.yml");
 const BUILTIN_RALPH: &str = include_str!("builtin_types/ralph.yml");
 
-/// Loader for loop type definitions
+/// Tracked file for hot-reload detection
+#[derive(Debug, Clone)]
+struct TrackedFile {
+    path: PathBuf,
+    modified: SystemTime,
+}
+
+/// Loader for loop type definitions with hot-reload support
 pub struct LoopTypeLoader {
-    /// Loaded loop types by name
+    /// Loaded loop types by name (before inheritance resolution)
+    raw_types: HashMap<String, LoopType>,
+
+    /// Resolved loop types by name (after inheritance)
     types: HashMap<String, LoopType>,
+
+    /// Tracked files for hot-reload
+    tracked_files: Vec<TrackedFile>,
+
+    /// Configuration used for loading
+    config: LoopsConfig,
 }
 
 impl LoopTypeLoader {
     /// Create a new loader using the given configuration
     pub fn new(config: &LoopsConfig) -> Result<Self> {
-        let mut loader = Self { types: HashMap::new() };
+        let mut loader = Self {
+            raw_types: HashMap::new(),
+            types: HashMap::new(),
+            tracked_files: Vec::new(),
+            config: config.clone(),
+        };
+
+        loader.load_all()?;
+        Ok(loader)
+    }
+
+    /// Load all types from configured sources
+    fn load_all(&mut self) -> Result<()> {
+        self.raw_types.clear();
+        self.tracked_files.clear();
 
         // Load builtin types first (if enabled)
-        if config.use_builtin() {
-            loader.load_builtins()?;
+        if self.config.use_builtin() {
+            self.load_builtins()?;
         }
 
         // Load from configured paths (later overrides earlier)
-        for path in config.expanded_paths() {
+        for path in self.config.expanded_paths() {
             if path.exists() {
-                loader.load_from_directory(&path)?;
+                self.load_from_directory(&path)?;
             } else {
                 debug!(?path, "Loop type directory does not exist, skipping");
             }
         }
 
-        info!(count = loader.types.len(), "Loaded loop types");
-        Ok(loader)
+        // Resolve inheritance
+        self.resolve_inheritance()?;
+
+        info!(count = self.types.len(), "Loaded loop types");
+        Ok(())
+    }
+
+    /// Check if any tracked files have been modified
+    pub fn has_changes(&self) -> bool {
+        for tracked in &self.tracked_files {
+            if let Ok(metadata) = fs::metadata(&tracked.path)
+                && let Ok(modified) = metadata.modified()
+                && modified > tracked.modified
+            {
+                debug!(path = ?tracked.path, "File modified");
+                return true;
+            }
+        }
+
+        // Also check for new files in tracked directories
+        for path in self.config.expanded_paths() {
+            if path.exists()
+                && path.is_dir()
+                && let Ok(entries) = fs::read_dir(&path)
+            {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let file_path = entry.path();
+                    if file_path
+                        .extension()
+                        .map(|e| e == "yml" || e == "yaml")
+                        .unwrap_or(false)
+                        && !self.tracked_files.iter().any(|t| t.path == file_path)
+                    {
+                        debug!(path = ?file_path, "New file detected");
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Reload all types (hot-reload)
+    pub fn reload(&mut self) -> Result<bool> {
+        if !self.has_changes() {
+            return Ok(false);
+        }
+
+        info!("Hot-reloading loop type configurations");
+        self.load_all()?;
+        Ok(true)
     }
 
     /// Load the builtin loop types
@@ -133,7 +300,7 @@ impl LoopTypeLoader {
     fn load_builtin_type(&mut self, name: &str, yaml_content: &str) -> Result<()> {
         let loop_type: LoopType =
             serde_yaml::from_str(yaml_content).with_context(|| format!("Failed to parse builtin type: {}", name))?;
-        self.types.insert(name.to_string(), loop_type);
+        self.raw_types.insert(name.to_string(), loop_type);
         Ok(())
     }
 
@@ -159,12 +326,22 @@ impl LoopTypeLoader {
     fn load_from_file(&mut self, path: &Path) -> Result<()> {
         let content = fs::read_to_string(path).with_context(|| format!("Failed to read: {}", path.display()))?;
 
+        // Track file for hot-reload
+        if let Ok(metadata) = fs::metadata(path)
+            && let Ok(modified) = metadata.modified()
+        {
+            self.tracked_files.push(TrackedFile {
+                path: path.to_path_buf(),
+                modified,
+            });
+        }
+
         // The file can contain a map of name -> definition, or just a definition
         // Try parsing as a map first (like taskdaemon.yml format)
         if let Ok(map) = serde_yaml::from_str::<HashMap<String, LoopType>>(&content) {
             for (name, loop_type) in map {
                 debug!(?path, name, "Loaded loop type");
-                self.types.insert(name, loop_type);
+                self.raw_types.insert(name, loop_type);
             }
             return Ok(());
         }
@@ -179,9 +356,65 @@ impl LoopTypeLoader {
             .ok_or_else(|| eyre::eyre!("Invalid filename: {}", path.display()))?;
 
         debug!(?path, name, "Loaded loop type");
-        self.types.insert(name.to_string(), loop_type);
+        self.raw_types.insert(name.to_string(), loop_type);
 
         Ok(())
+    }
+
+    /// Resolve inheritance for all types
+    fn resolve_inheritance(&mut self) -> Result<()> {
+        self.types.clear();
+
+        // Clone raw_types since we need to iterate and look up parents
+        let raw = self.raw_types.clone();
+
+        for (name, raw_type) in &raw {
+            let resolved = self.resolve_single_inheritance(name, raw_type, &raw, &mut vec![])?;
+            self.types.insert(name.clone(), resolved);
+        }
+
+        Ok(())
+    }
+
+    /// Resolve inheritance for a single type (handles chains)
+    fn resolve_single_inheritance(
+        &self,
+        name: &str,
+        loop_type: &LoopType,
+        all_raw: &HashMap<String, LoopType>,
+        visited: &mut Vec<String>,
+    ) -> Result<LoopType> {
+        // Cycle detection
+        if visited.contains(&name.to_string()) {
+            return Err(eyre::eyre!(
+                "Inheritance cycle detected: {} -> {}",
+                visited.join(" -> "),
+                name
+            ));
+        }
+        visited.push(name.to_string());
+
+        let mut resolved = loop_type.clone();
+
+        if let Some(parent_name) = &loop_type.extends {
+            if let Some(parent_raw) = all_raw.get(parent_name) {
+                // Recursively resolve parent's inheritance
+                let parent = self.resolve_single_inheritance(parent_name, parent_raw, all_raw, visited)?;
+                resolved.merge_parent(&parent);
+                debug!(name, extends = %parent_name, "Resolved loop type inheritance");
+            } else {
+                warn!(
+                    name,
+                    extends = %parent_name,
+                    "Parent loop type not found, ignoring extends"
+                );
+            }
+        }
+
+        // Clear extends field in resolved type
+        resolved.extends = None;
+
+        Ok(resolved)
     }
 
     /// Get a loop type by name
@@ -333,5 +566,70 @@ prompt-template: "Do something"
         assert_eq!(loop_type.iteration_timeout_ms, 300_000);
         assert_eq!(loop_type.success_exit_code, 0);
         assert!(!loop_type.tools.is_empty()); // Default tools
+    }
+
+    #[test]
+    fn test_loop_type_with_extends() {
+        let yaml = r#"
+extends: ralph
+prompt-template: "Custom prompt"
+"#;
+
+        let loop_type: LoopType = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(loop_type.extends, Some("ralph".to_string()));
+        assert_eq!(loop_type.prompt_template, "Custom prompt");
+    }
+
+    #[test]
+    fn test_merge_parent() {
+        let parent_yaml = r#"
+prompt-template: "Parent prompt"
+validation-command: "make test"
+max-iterations: 50
+inputs:
+  - input1
+  - input2
+tools:
+  - read_file
+  - custom_tool
+"#;
+
+        let child_yaml = r#"
+extends: parent
+prompt-template: "Child prompt"
+inputs:
+  - input3
+"#;
+
+        let parent: LoopType = serde_yaml::from_str(parent_yaml).unwrap();
+        let mut child: LoopType = serde_yaml::from_str(child_yaml).unwrap();
+
+        child.merge_parent(&parent);
+
+        // Child prompt takes precedence
+        assert_eq!(child.prompt_template, "Child prompt");
+        // Validation command comes from parent (child used default)
+        assert_eq!(child.validation_command, "make test");
+        // Max iterations from parent
+        assert_eq!(child.max_iterations, 50);
+        // Inputs merged
+        assert!(child.inputs.contains(&"input1".to_string()));
+        assert!(child.inputs.contains(&"input2".to_string()));
+        assert!(child.inputs.contains(&"input3".to_string()));
+        // Tools from parent (child used default)
+        assert!(child.tools.contains(&"read_file".to_string()));
+        assert!(child.tools.contains(&"custom_tool".to_string()));
+    }
+
+    #[test]
+    fn test_has_changes_no_files() {
+        let config = LoopsConfig {
+            paths: vec!["builtin".to_string()],
+        };
+        let loader = LoopTypeLoader::new(&config).unwrap();
+
+        // No external files tracked, so no changes
+        assert!(!loader.has_changes());
     }
 }
