@@ -160,20 +160,20 @@ Working directory: {}"#,
     /// Print help message
     fn print_help(&self) {
         println!();
-        println!("{}", "Available Commands:".bright_cyan());
-        println!("  {:14} Show this help", "/help".yellow());
-        println!("  {:14} Exit the REPL", "/quit".yellow());
-        println!("  {:14} Clear conversation history", "/clear".yellow());
-        println!("  {:14} Show conversation history", "/history".yellow());
+        println!("{}", "Commands:".bold().underline());
+        println!("  {:14} Show this help", "/help".bold());
+        println!("  {:14} Exit the REPL", "/quit".bold());
+        println!("  {:14} Clear conversation history", "/clear".bold());
+        println!("  {:14} Show conversation history", "/history".bold());
         println!();
-        println!("{}", "Available Tools:".bright_cyan());
-        println!("  {:14} Read file contents", "read_file".yellow());
-        println!("  {:14} Write content to a file", "write_file".yellow());
-        println!("  {:14} Edit file with search/replace", "edit_file".yellow());
-        println!("  {:14} List directory contents", "list_directory".yellow());
-        println!("  {:14} Find files by pattern", "glob".yellow());
-        println!("  {:14} Search file contents", "grep".yellow());
-        println!("  {:14} Run a shell command", "run_command".yellow());
+        println!("{}", "Tools:".bold().underline());
+        println!("  {:14} Read file contents", "read_file".bold());
+        println!("  {:14} Write content to a file", "write_file".bold());
+        println!("  {:14} Edit file with search/replace", "edit_file".bold());
+        println!("  {:14} List directory contents", "list_directory".bold());
+        println!("  {:14} Find files by pattern", "glob".bold());
+        println!("  {:14} Search file contents", "grep".bold());
+        println!("  {:14} Run a shell command", "run_command".bold());
         println!();
     }
 
