@@ -12,10 +12,12 @@ use tracing::{info, warn};
 
 use taskdaemon::cli::{Cli, Command, DaemonCommand, OutputFormat, generate_after_help};
 use taskdaemon::config::Config;
+use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
 use taskdaemon::r#loop::LoopTypeLoader;
 use taskdaemon::state::StateManager;
 use taskdaemon::tui;
+use taskdaemon::watcher::{MainWatcher, WatcherConfig};
 
 fn setup_logging(verbose: bool) -> Result<()> {
     // Create log directory
@@ -336,10 +338,28 @@ async fn run_daemon(config: &Config) -> Result<()> {
     let loader = LoopTypeLoader::new(&config.loops)?;
     info!("Loaded {} loop types", loader.len());
 
-    // TODO: Initialize full orchestration:
-    // - Coordinator for inter-loop communication
+    // Initialize coordinator for inter-loop communication
+    let coordinator = Coordinator::new(Default::default());
+    let coordinator_tx = coordinator.sender();
+
+    // Spawn coordinator task
+    let coord_handle = tokio::spawn(coordinator.run());
+    info!("Coordinator started");
+
+    // Initialize and spawn MainWatcher for git main branch monitoring
+    let repo_root = std::env::current_dir().context("Failed to get current directory")?;
+    let watcher_config = WatcherConfig::default();
+    let main_watcher = MainWatcher::new(watcher_config, repo_root, coordinator_tx);
+
+    let watcher_handle = tokio::spawn(async move {
+        if let Err(e) = main_watcher.run().await {
+            tracing::error!(error = %e, "MainWatcher error");
+        }
+    });
+    info!("MainWatcher started");
+
+    // TODO: Initialize remaining orchestration:
     // - Scheduler for queue management
-    // - MainWatcher for git changes
     // - LoopManager for running loops
 
     info!("Daemon running. Press Ctrl+C to stop.");
@@ -349,6 +369,10 @@ async fn run_daemon(config: &Config) -> Result<()> {
 
     warn!("Shutdown signal received");
     info!("Daemon shutting down...");
+
+    // Cleanup - abort watcher and coordinator tasks
+    watcher_handle.abort();
+    coord_handle.abort();
 
     Ok(())
 }

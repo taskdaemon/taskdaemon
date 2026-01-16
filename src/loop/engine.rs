@@ -197,10 +197,18 @@ impl LoopEngine {
     ///
     /// Returns Some(IterationResult) if the loop should stop, None to continue.
     async fn poll_coordinator_messages(&mut self) -> Option<IterationResult> {
-        let coord_handle = self.coord_handle.as_ref()?;
+        // Collect all pending messages first to avoid borrow conflicts
+        let messages: Vec<CoordMessage> = {
+            let coord_handle = self.coord_handle.as_ref()?;
+            let mut msgs = Vec::new();
+            while let Some(msg) = coord_handle.try_recv() {
+                msgs.push(msg);
+            }
+            msgs
+        };
 
-        // Non-blocking poll for messages
-        while let Some(msg) = coord_handle.try_recv() {
+        // Process collected messages
+        for msg in messages {
             match msg {
                 CoordMessage::Stop { from_exec_id, reason } => {
                     info!(
@@ -223,9 +231,10 @@ impl LoopEngine {
                         "Loop {} received query {} from {}: {}",
                         self.exec_id, query_id, from_exec_id, question
                     );
-                    if let Err(e) = coord_handle
-                        .reply_query(&query_id, &format!("Loop {} cannot answer queries yet", self.exec_id))
-                        .await
+                    if let Some(ref coord_handle) = self.coord_handle
+                        && let Err(e) = coord_handle
+                            .reply_query(&query_id, &format!("Loop {} cannot answer queries yet", self.exec_id))
+                            .await
                     {
                         warn!("Failed to reply to query: {}", e);
                     }
@@ -252,9 +261,32 @@ impl LoopEngine {
                             "Loop {} received main_updated notification from {}: {}",
                             self.exec_id, from_exec_id, data
                         );
-                        // Set status to rebasing - actual rebase handling will be implemented in Phase 2
-                        self.status = LoopStatus::Rebasing;
-                        // For now, just log - actual rebase handling comes in Phase 2 (2.3)
+
+                        // Extract new SHA from notification data
+                        let new_sha = data.get("new_sha").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let branch = data
+                            .get("branch")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("main")
+                            .to_string();
+
+                        // Perform rebase
+                        match self.handle_rebase(&branch, new_sha.as_deref()).await {
+                            Ok(()) => {
+                                info!("Loop {} rebase successful, resuming", self.exec_id);
+                                self.status = LoopStatus::Running;
+                            }
+                            Err(e) => {
+                                warn!("Loop {} rebase failed: {}", self.exec_id, e);
+                                self.status = LoopStatus::Blocked {
+                                    reason: format!("Rebase conflict: {}", e),
+                                };
+                                // Return interruption so the loop can handle the blocked state
+                                return Some(IterationResult::Interrupted {
+                                    reason: format!("Rebase failed: {}", e),
+                                });
+                            }
+                        }
                     } else {
                         info!(
                             "Loop {} received notification '{}' from {}: {}",
@@ -266,6 +298,53 @@ impl LoopEngine {
         }
 
         None
+    }
+
+    /// Handle rebase when main branch is updated
+    ///
+    /// This pauses the loop, performs a git rebase onto the updated main branch,
+    /// and resumes execution. If rebase conflicts occur, the loop enters Blocked state.
+    async fn handle_rebase(&mut self, branch: &str, _new_sha: Option<&str>) -> eyre::Result<()> {
+        self.status = LoopStatus::Rebasing;
+
+        info!("Loop {} rebasing onto {}", self.exec_id, branch);
+
+        // Fetch latest from remote (in case we haven't already)
+        let fetch_output = tokio::process::Command::new("git")
+            .args(["fetch", "origin", branch])
+            .current_dir(&self.worktree)
+            .output()
+            .await?;
+
+        if !fetch_output.status.success() {
+            let stderr = String::from_utf8_lossy(&fetch_output.stderr);
+            warn!("Git fetch warning: {}", stderr);
+            // Don't fail on fetch errors - we may be able to rebase locally
+        }
+
+        // Attempt rebase onto origin/branch
+        let remote_branch = format!("origin/{}", branch);
+        let rebase_output = tokio::process::Command::new("git")
+            .args(["rebase", &remote_branch])
+            .current_dir(&self.worktree)
+            .output()
+            .await?;
+
+        if !rebase_output.status.success() {
+            let stderr = String::from_utf8_lossy(&rebase_output.stderr);
+
+            // Abort the failed rebase to return to a clean state
+            let _ = tokio::process::Command::new("git")
+                .args(["rebase", "--abort"])
+                .current_dir(&self.worktree)
+                .output()
+                .await;
+
+            return Err(eyre::eyre!("Rebase failed: {}", stderr));
+        }
+
+        info!("Loop {} rebase complete", self.exec_id);
+        Ok(())
     }
 
     /// Run a single iteration
