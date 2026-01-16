@@ -101,52 +101,91 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     }
 }
 
-/// Render header with breadcrumb and metrics
+/// Render header with view tabs and metrics
 fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
-    let breadcrumb = state.breadcrumb();
-    let mut spans = vec![
-        Span::styled(
-            " TaskDaemon ",
-            Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("│ "),
-        Span::styled(breadcrumb, Style::default().fg(Color::Yellow)),
+    // Build left side: TaskDaemon + view tabs
+    let mut left_spans = vec![Span::styled(
+        " TaskDaemon ",
+        Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
+    )];
+
+    // View tabs - show all three with current one highlighted
+    let view_tabs = [
+        ("REPL", matches!(state.current_view, View::Repl)),
+        ("Executions", matches!(state.current_view, View::Executions)),
+        ("Records", matches!(state.current_view, View::Records { .. })),
     ];
+
+    left_spans.push(Span::raw("│ "));
+    for (i, (name, is_active)) in view_tabs.iter().enumerate() {
+        if i > 0 {
+            left_spans.push(Span::styled(" · ", Style::default().fg(colors::DIM)));
+        }
+        if *is_active {
+            left_spans.push(Span::styled(
+                *name,
+                Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            left_spans.push(Span::styled(*name, Style::default().fg(colors::DIM)));
+        }
+    }
 
     // Add filter indicator if active
     if !state.filter_text.is_empty() {
-        spans.push(Span::raw(" │ "));
-        spans.push(Span::styled(
-            format!("Filter: /{}", &state.filter_text),
+        left_spans.push(Span::raw(" │ "));
+        left_spans.push(Span::styled(
+            format!("/{}", &state.filter_text),
             Style::default().fg(Color::Magenta),
         ));
     }
 
-    // Add metrics
-    spans.push(Span::raw(" │ "));
-    spans.push(Span::styled(
-        format!("{} records", state.total_records),
-        Style::default().fg(Color::Cyan),
-    ));
-    spans.push(Span::raw(" │ "));
-    spans.push(Span::styled(
-        format!("{} active", state.executions_active),
-        Style::default().fg(colors::RUNNING),
-    ));
+    // Build right side: metrics
+    let mut right_parts: Vec<String> = Vec::new();
+    right_parts.push(format!("{} records", state.total_records));
+    right_parts.push(format!("{} active", state.executions_active));
     if state.executions_complete > 0 {
-        spans.push(Span::raw(" │ "));
-        spans.push(Span::styled(
-            format!("{} complete", state.executions_complete),
-            Style::default().fg(colors::COMPLETE),
-        ));
+        right_parts.push(format!("{} complete", state.executions_complete));
     }
     if state.executions_failed > 0 {
-        spans.push(Span::raw(" │ "));
-        spans.push(Span::styled(
-            format!("{} failed", state.executions_failed),
-            Style::default().fg(colors::FAILED),
-        ));
+        right_parts.push(format!("{} failed", state.executions_failed));
     }
+
+    // Calculate widths for right-justification
+    // Inner width = area width - 2 (borders)
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let left_width: usize = left_spans.iter().map(|s| s.width()).sum();
+    let right_text = right_parts.join(" │ ");
+    let right_width = right_text.len() + 1; // +1 for trailing space
+
+    // Calculate padding between left and right
+    let padding = inner_width.saturating_sub(left_width + right_width);
+
+    // Build the complete line
+    let mut spans = left_spans;
+    if padding > 0 {
+        spans.push(Span::raw(" ".repeat(padding)));
+    }
+
+    // Add right-side metrics with colors
+    for (i, part) in right_parts.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" │ ", Style::default().fg(colors::DIM)));
+        }
+        let color = if part.contains("records") {
+            Color::Cyan
+        } else if part.contains("active") {
+            colors::RUNNING
+        } else if part.contains("complete") {
+            colors::COMPLETE
+        } else if part.contains("failed") {
+            colors::FAILED
+        } else {
+            Color::White
+        };
+        spans.push(Span::styled(part.clone(), Style::default().fg(color)));
+    }
+    spans.push(Span::raw(" "));
 
     let header = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
 
