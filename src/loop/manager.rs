@@ -455,26 +455,32 @@ async fn run_loop_task(mut engine: LoopEngine, state: StateManager) -> LoopTaskR
 
     match engine.run().await {
         Ok(crate::r#loop::IterationResult::Complete { iterations }) => {
-            // Update state to complete
+            // Update state to complete with progress
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Complete);
+                exec.iteration = engine.current_iteration();
+                exec.progress = engine.get_progress();
                 let _ = state.update_execution(exec).await;
             }
             LoopTaskResult::Complete { exec_id, iterations }
         }
         Ok(crate::r#loop::IterationResult::Interrupted { reason: _ }) => {
-            // Update state to stopped
+            // Update state to stopped with progress
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Stopped);
+                exec.iteration = engine.current_iteration();
+                exec.progress = engine.get_progress();
                 let _ = state.update_execution(exec).await;
             }
             LoopTaskResult::Stopped { exec_id }
         }
         Ok(crate::r#loop::IterationResult::Error { message, .. }) => {
-            // Update state to failed
+            // Update state to failed with progress
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Failed);
                 exec.set_error(&message);
+                exec.iteration = engine.current_iteration();
+                exec.progress = engine.get_progress();
                 let _ = state.update_execution(exec).await;
             }
             LoopTaskResult::Failed {
@@ -487,6 +493,8 @@ async fn run_loop_task(mut engine: LoopEngine, state: StateManager) -> LoopTaskR
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Failed);
                 exec.set_error("Unexpected loop result");
+                exec.iteration = engine.current_iteration();
+                exec.progress = engine.get_progress();
                 let _ = state.update_execution(exec).await;
             }
             LoopTaskResult::Failed {
@@ -495,10 +503,12 @@ async fn run_loop_task(mut engine: LoopEngine, state: StateManager) -> LoopTaskR
             }
         }
         Err(e) => {
-            // Update state to failed
+            // Update state to failed with progress
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Failed);
                 exec.set_error(e.to_string());
+                exec.iteration = engine.current_iteration();
+                exec.progress = engine.get_progress();
                 let _ = state.update_execution(exec).await;
             }
             LoopTaskResult::Failed {

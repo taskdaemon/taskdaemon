@@ -126,6 +126,19 @@ impl LoopEngine {
         }
     }
 
+    /// Get the accumulated progress text
+    ///
+    /// This returns the progress text that should be persisted to LoopExecution
+    /// for crash recovery.
+    pub fn get_progress(&self) -> String {
+        self.progress.get_progress()
+    }
+
+    /// Get the current iteration number
+    pub fn current_iteration(&self) -> u32 {
+        self.iteration
+    }
+
     /// Run the loop until completion or max iterations
     pub async fn run(&mut self) -> eyre::Result<IterationResult> {
         info!(
