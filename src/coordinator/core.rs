@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 use super::config::CoordinatorConfig;
 use super::handle::CoordinatorHandle;
 use super::messages::{CoordMessage, CoordRequest, CoordinatorMetrics};
+use super::persistence::{EventStore, PersistedEvent};
 
 /// Pending query tracking
 struct PendingQuery {
@@ -68,13 +69,31 @@ pub struct Coordinator {
     config: CoordinatorConfig,
     tx: mpsc::Sender<CoordRequest>,
     rx: mpsc::Receiver<CoordRequest>,
+    /// Optional event store for persistence
+    event_store: Option<EventStore>,
 }
 
 impl Coordinator {
     /// Create a new Coordinator with the given configuration
     pub fn new(config: CoordinatorConfig) -> Self {
         let (tx, rx) = mpsc::channel(config.channel_buffer);
-        Self { config, tx, rx }
+        Self {
+            config,
+            tx,
+            rx,
+            event_store: None,
+        }
+    }
+
+    /// Create a new Coordinator with event persistence
+    pub fn with_persistence(config: CoordinatorConfig, store_path: impl Into<std::path::PathBuf>) -> Self {
+        let (tx, rx) = mpsc::channel(config.channel_buffer);
+        Self {
+            config,
+            tx,
+            rx,
+            event_store: Some(EventStore::new(store_path)),
+        }
     }
 
     /// Get a sender for creating handles
@@ -127,11 +146,13 @@ impl Coordinator {
     /// This consumes the Coordinator and runs until shutdown is requested.
     pub async fn run(mut self) {
         let coord_tx = self.tx.clone();
+        let event_store = self.event_store.take();
 
         // Internal state
         let mut registry: HashMap<String, mpsc::Sender<CoordMessage>> = HashMap::new();
         let mut subscriptions: HashMap<String, HashSet<String>> = HashMap::new();
         let mut pending_queries: HashMap<String, PendingQuery> = HashMap::new();
+        let mut pending_event_ids: HashMap<String, String> = HashMap::new(); // query_id -> event_id
         let mut rate_limiter = RateLimiter::new(self.config.rate_limit_per_sec, Duration::from_secs(1));
 
         // Metrics
@@ -180,6 +201,14 @@ impl Coordinator {
                         "Broadcasting alert"
                     );
 
+                    // Persist the alert event for crash recovery
+                    if let Some(ref store) = event_store {
+                        let event = PersistedEvent::alert(&from_exec_id, &event_type, data.to_string());
+                        if let Err(e) = store.persist(&event).await {
+                            warn!("Failed to persist alert event: {}", e);
+                        }
+                    }
+
                     // Broadcast to subscribers
                     if let Some(subscribers) = subscriptions.get(&event_type) {
                         let msg = CoordMessage::Notification {
@@ -220,6 +249,18 @@ impl Coordinator {
                         target_exec_id = %target_exec_id,
                         "Sending query"
                     );
+
+                    // Persist the query event for crash recovery
+                    if let Some(ref store) = event_store {
+                        let event = PersistedEvent::query(&from_exec_id, &target_exec_id, &question);
+                        let event_id = event.id.clone();
+                        if let Err(e) = store.persist(&event).await {
+                            warn!("Failed to persist query event: {}", e);
+                        } else {
+                            // Track event_id to resolve later
+                            pending_event_ids.insert(query_id.clone(), event_id);
+                        }
+                    }
 
                     // Send query to target
                     if let Some(tx) = registry.get(&target_exec_id) {
@@ -268,6 +309,14 @@ impl Coordinator {
                     if let Some(pending) = pending_queries.remove(&query_id) {
                         let _ = pending.reply_tx.send(Ok(answer));
                         metrics.pending_queries = pending_queries.len();
+
+                        // Resolve the persisted event
+                        if let Some(event_id) = pending_event_ids.remove(&query_id)
+                            && let Some(ref store) = event_store
+                            && let Err(e) = store.resolve(&event_id).await
+                        {
+                            warn!("Failed to resolve query event: {}", e);
+                        }
                     }
                 }
 
@@ -277,6 +326,14 @@ impl Coordinator {
                     if let Some(pending) = pending_queries.remove(&query_id) {
                         let _ = pending.reply_tx.send(Err(eyre::eyre!("Query cancelled")));
                         metrics.pending_queries = pending_queries.len();
+
+                        // Resolve the persisted event (even though cancelled)
+                        if let Some(event_id) = pending_event_ids.remove(&query_id)
+                            && let Some(ref store) = event_store
+                            && let Err(e) = store.resolve(&event_id).await
+                        {
+                            warn!("Failed to resolve cancelled query event: {}", e);
+                        }
                     }
                 }
 
@@ -286,6 +343,14 @@ impl Coordinator {
                         let _ = pending.reply_tx.send(Err(eyre::eyre!("Query timeout")));
                         metrics.pending_queries = pending_queries.len();
                         metrics.query_timeouts += 1;
+
+                        // Resolve the persisted event (even though timed out)
+                        if let Some(event_id) = pending_event_ids.remove(&query_id)
+                            && let Some(ref store) = event_store
+                            && let Err(e) = store.resolve(&event_id).await
+                        {
+                            warn!("Failed to resolve timed out query event: {}", e);
+                        }
                     }
                 }
 
@@ -308,6 +373,15 @@ impl Coordinator {
                         share_type = %share_type,
                         "Sharing data"
                     );
+
+                    // Persist the share event for crash recovery
+                    if let Some(ref store) = event_store {
+                        let event =
+                            PersistedEvent::share(&from_exec_id, &target_exec_id, &share_type, data.to_string());
+                        if let Err(e) = store.persist(&event).await {
+                            warn!("Failed to persist share event: {}", e);
+                        }
+                    }
 
                     if let Some(tx) = registry.get(&target_exec_id) {
                         let msg = CoordMessage::Share {

@@ -338,8 +338,8 @@ async fn run_daemon(config: &Config) -> Result<()> {
     let loader = LoopTypeLoader::new(&config.loops)?;
     info!("Loaded {} loop types", loader.len());
 
-    // Initialize coordinator for inter-loop communication
-    let coordinator = Coordinator::new(Default::default());
+    // Initialize coordinator for inter-loop communication (with event persistence)
+    let coordinator = Coordinator::with_persistence(Default::default(), &store_path);
     let coordinator_tx = coordinator.sender();
 
     // Spawn coordinator task
