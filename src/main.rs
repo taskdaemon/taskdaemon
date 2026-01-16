@@ -343,15 +343,33 @@ async fn cmd_list_loops(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Show metrics
+/// Show metrics from the daemon's TaskStore
 async fn cmd_metrics(loop_type: Option<&str>, format: OutputFormat) -> Result<()> {
-    // TODO: Connect to daemon or TaskStore for actual metrics
+    let config = Config::load(None)?;
+    let store_path = PathBuf::from(&config.storage.taskstore_dir);
 
-    let metrics = serde_json::json!({
-        "status": "Metrics collection not implemented",
-        "filter": loop_type,
-        "note": "Run the daemon to collect metrics"
-    });
+    if !store_path.exists() {
+        match format {
+            OutputFormat::Json => {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": "No TaskStore found. Has the daemon run?"})
+                );
+            }
+            OutputFormat::Text | OutputFormat::Table => {
+                println!("No TaskStore found. Has the daemon run?");
+            }
+        }
+        return Ok(());
+    }
+
+    let state = StateManager::spawn(&store_path)?;
+    let metrics = state.get_metrics().await?;
+
+    // Note: loop_type filter not yet implemented - would need to filter executions by type
+    if loop_type.is_some() {
+        warn!("Loop type filter not yet implemented for metrics");
+    }
 
     match format {
         OutputFormat::Json => {
@@ -360,12 +378,15 @@ async fn cmd_metrics(loop_type: Option<&str>, format: OutputFormat) -> Result<()
         OutputFormat::Text | OutputFormat::Table => {
             println!("TaskDaemon Metrics");
             println!("-----------------");
-            if let Some(lt) = loop_type {
-                println!("Filter: {}", lt);
-            }
+            println!("Total executions: {}", metrics.total_executions);
+            println!("  Running:   {}", metrics.running);
+            println!("  Pending:   {}", metrics.pending);
+            println!("  Completed: {}", metrics.completed);
+            println!("  Failed:    {}", metrics.failed);
+            println!("  Paused:    {}", metrics.paused);
+            println!("  Stopped:   {}", metrics.stopped);
             println!();
-            println!("Metrics collection not yet implemented.");
-            println!("Run the daemon to start collecting metrics.");
+            println!("Total iterations: {}", metrics.total_iterations);
         }
     }
 

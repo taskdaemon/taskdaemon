@@ -6,9 +6,30 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
-use crate::domain::{Filter, FilterOp, IndexValue, LoopExecution, Plan, Spec, Store};
+use crate::domain::{Filter, FilterOp, IndexValue, LoopExecution, LoopExecutionStatus, Plan, Spec, Store};
 
 use super::messages::{StateCommand, StateError, StateResponse};
+
+/// Aggregated metrics from the daemon's state
+#[derive(Debug, Default, serde::Serialize)]
+pub struct DaemonMetrics {
+    /// Total number of loop executions
+    pub total_executions: u64,
+    /// Currently running loops
+    pub running: u64,
+    /// Loops waiting to start
+    pub pending: u64,
+    /// Successfully completed loops
+    pub completed: u64,
+    /// Failed loops
+    pub failed: u64,
+    /// Paused loops
+    pub paused: u64,
+    /// Stopped loops
+    pub stopped: u64,
+    /// Total iterations across all loops
+    pub total_iterations: u64,
+}
 
 /// Handle to send commands to the StateManager
 #[derive(Clone)]
@@ -232,6 +253,29 @@ impl StateManager {
         self.get_spec(id)
             .await?
             .ok_or_else(|| StateError::NotFound(format!("Spec {}", id)))
+    }
+
+    /// Get aggregated metrics from all loop executions
+    pub async fn get_metrics(&self) -> eyre::Result<DaemonMetrics> {
+        let executions = self.list_executions(None, None).await?;
+
+        let mut metrics = DaemonMetrics::default();
+
+        for exec in executions {
+            metrics.total_executions += 1;
+            match exec.status {
+                LoopExecutionStatus::Running => metrics.running += 1,
+                LoopExecutionStatus::Pending => metrics.pending += 1,
+                LoopExecutionStatus::Complete => metrics.completed += 1,
+                LoopExecutionStatus::Failed => metrics.failed += 1,
+                LoopExecutionStatus::Paused => metrics.paused += 1,
+                LoopExecutionStatus::Stopped => metrics.stopped += 1,
+                LoopExecutionStatus::Rebasing | LoopExecutionStatus::Blocked => {}
+            }
+            metrics.total_iterations += exec.iteration as u64;
+        }
+
+        Ok(metrics)
     }
 
     /// Create a new LoopExecution (alias for create_execution)
