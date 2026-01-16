@@ -653,7 +653,6 @@ inputs:
     fn test_has_changes_no_files() {
         let config = LoopsConfig {
             paths: vec!["builtin".to_string()],
-            default_type: String::new(),
         };
         let loader = LoopLoader::new(&config).unwrap();
 

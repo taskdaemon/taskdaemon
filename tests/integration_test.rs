@@ -967,31 +967,6 @@ async fn test_create_loop_execution_directly() {
     assert_eq!(retrieved.loop_type, "plan");
 }
 
-/// Test that default loop type is "plan" (the builtin default)
-#[tokio::test]
-async fn test_default_loop_type_is_plan() {
-    let config = taskdaemon::config::LoopsConfig::default();
-    assert_eq!(config.default_type, "plan", "Default loop type should be 'plan'");
-}
-
-/// Test that LoopsConfig can be overridden via serde (for the edge case where
-/// someone explicitly clears default_type in their config)
-#[test]
-fn test_loops_config_can_override_default_type() {
-    // If someone sets default-type to empty in their config, it should be respected
-    let yaml = r#"
-paths:
-  - builtin
-default-type: ""
-"#;
-    let config: taskdaemon::config::LoopsConfig = serde_yaml::from_str(yaml).expect("parse");
-    assert!(config.default_type.is_empty(), "Should be able to override to empty");
-
-    // But the default (no config) should be "plan"
-    let default_config = taskdaemon::config::LoopsConfig::default();
-    assert_eq!(default_config.default_type, "plan");
-}
-
 // =============================================================================
 // Delete Operations Tests
 // =============================================================================

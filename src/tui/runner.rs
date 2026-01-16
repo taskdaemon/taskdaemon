@@ -34,8 +34,6 @@ pub struct TuiRunner {
     event_handler: EventHandler,
     /// Last data refresh time
     last_refresh: Instant,
-    /// Default loop type for creating new loops (from config)
-    default_loop_type: String,
 }
 
 impl TuiRunner {
@@ -47,21 +45,17 @@ impl TuiRunner {
             state_manager: None,
             event_handler: EventHandler::new(Duration::from_millis(33)), // ~30 FPS
             last_refresh: Instant::now(),
-            default_loop_type: String::new(),
         }
     }
 
     /// Create a new TuiRunner with StateManager connection
-    ///
-    /// `default_loop_type` specifies which loop type to create when user presses 'n'.
-    pub fn with_state_manager(terminal: Tui, state_manager: StateManager, default_loop_type: String) -> Self {
+    pub fn with_state_manager(terminal: Tui, state_manager: StateManager) -> Self {
         Self {
             app: App::new(),
             terminal,
             state_manager: Some(state_manager),
             event_handler: EventHandler::new(Duration::from_millis(33)),
             last_refresh: Instant::now() - DATA_REFRESH_INTERVAL, // Force immediate refresh
-            default_loop_type,
         }
     }
 
@@ -126,15 +120,8 @@ impl TuiRunner {
         Ok(())
     }
 
-    /// Start a new loop with the configured default loop type
+    /// Start a new plan loop for the given task
     async fn start_task(&mut self, task: &str) {
-        if self.default_loop_type.is_empty() {
-            self.app
-                .state_mut()
-                .set_error("No loop type configured. Check 'default-type' in loops config section.");
-            return;
-        }
-
         let state_manager = match &self.state_manager {
             Some(sm) => sm,
             None => {
@@ -143,14 +130,14 @@ impl TuiRunner {
             }
         };
 
-        debug!("Starting {} loop: {}", self.default_loop_type, task);
+        debug!("Starting plan loop: {}", task);
 
-        // Create a loop execution with the configured default type
-        let execution = crate::domain::LoopExecution::new(&self.default_loop_type, task);
+        // Create a plan execution - "plan" is always the entry point
+        let execution = crate::domain::LoopExecution::new("plan", task);
 
         match state_manager.create_execution(execution).await {
             Ok(id) => {
-                debug!("Created {} loop {}", self.default_loop_type, id);
+                debug!("Created plan loop {}", id);
                 // Force a refresh to show the new loop
                 self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
             }

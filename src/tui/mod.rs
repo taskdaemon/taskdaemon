@@ -55,10 +55,7 @@ pub async fn run(terminal: Tui) -> Result<()> {
 }
 
 /// Run the TUI with StateManager connection for live data
-///
-/// `default_loop_type` specifies which loop type to create when user presses 'n'.
-/// Should come from config. If empty, TUI will show an error when trying to create.
-pub async fn run_with_state(state_manager: StateManager, default_loop_type: String) -> Result<()> {
+pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
     let terminal = init()?;
 
     // Use a guard to ensure terminal is restored even on early return/error
@@ -70,18 +67,18 @@ pub async fn run_with_state(state_manager: StateManager, default_loop_type: Stri
     }
     let _guard = TerminalGuard;
 
-    let mut runner = TuiRunner::with_state_manager(terminal, state_manager, default_loop_type);
+    let mut runner = TuiRunner::with_state_manager(terminal, state_manager);
     runner.run().await
 }
 
 /// Run the TUI in a way that can be used from both sync and async contexts
-pub fn run_blocking_with_state(state_manager: StateManager, default_loop_type: String) -> Result<()> {
+pub fn run_blocking_with_state(state_manager: StateManager) -> Result<()> {
     let terminal = init()?;
 
     let result = {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
-            let mut runner = TuiRunner::with_state_manager(terminal, state_manager, default_loop_type);
+            let mut runner = TuiRunner::with_state_manager(terminal, state_manager);
             runner.run().await
         })
     };

@@ -188,11 +188,8 @@ async fn cmd_tui(config: &Config) -> Result<()> {
 
     let state_manager = StateManager::spawn(&store_path).context("Failed to spawn StateManager")?;
 
-    // Get default loop type from config
-    let default_loop_type = config.loops.default_type.clone();
-
     // Run TUI
-    tui::run_with_state(state_manager, default_loop_type).await
+    tui::run_with_state(state_manager).await
 }
 
 /// Show logs
