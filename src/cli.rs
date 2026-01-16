@@ -33,16 +33,6 @@ pub enum Command {
         command: DaemonCommand,
     },
 
-    /// Launch the interactive TUI
-    Tui,
-
-    /// Interactive REPL for AI-assisted coding
-    Repl {
-        /// Optional initial task to process
-        #[arg(value_name = "TASK")]
-        initial_task: Option<String>,
-    },
-
     /// Run a loop to completion (batch mode)
     Run {
         /// Loop type to run (plan, spec, phase, ralph)
@@ -313,32 +303,6 @@ mod tests {
                 command: DaemonCommand::Status { .. }
             })
         ));
-    }
-
-    #[test]
-    fn test_cli_parse_tui() {
-        let cli = Cli::parse_from(["taskdaemon", "tui"]);
-        assert!(matches!(cli.command, Some(Command::Tui)));
-    }
-
-    #[test]
-    fn test_cli_parse_repl() {
-        let cli = Cli::parse_from(["taskdaemon", "repl"]);
-        if let Some(Command::Repl { initial_task }) = cli.command {
-            assert!(initial_task.is_none());
-        } else {
-            panic!("Expected Repl command");
-        }
-    }
-
-    #[test]
-    fn test_cli_parse_repl_with_task() {
-        let cli = Cli::parse_from(["taskdaemon", "repl", "Fix the bug"]);
-        if let Some(Command::Repl { initial_task }) = cli.command {
-            assert_eq!(initial_task, Some("Fix the bug".to_string()));
-        } else {
-            panic!("Expected Repl command");
-        }
     }
 
     #[test]

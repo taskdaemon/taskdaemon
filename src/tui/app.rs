@@ -5,7 +5,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::state::{AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, View};
+use super::state::{
+    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, TOP_LEVEL_VIEWS, View, top_level_view_index,
+};
 
 /// TUI application
 #[derive(Debug)]
@@ -49,6 +51,7 @@ impl App {
             InteractionMode::Filter(_) => self.handle_filter_key(key),
             InteractionMode::Command(_) => self.handle_command_key(key),
             InteractionMode::TaskInput(_) => self.handle_task_input_key(key),
+            InteractionMode::ReplInput => self.handle_repl_input_key(key),
             InteractionMode::Confirm(_) => self.handle_confirm_key(key),
             InteractionMode::Help => self.handle_help_key(key),
         }
@@ -80,6 +83,14 @@ impl App {
             }
             (KeyCode::Char(':'), _) => {
                 self.state.interaction_mode = InteractionMode::Command(String::new());
+            }
+
+            // === Top-level view navigation (left/right arrows) ===
+            (KeyCode::Left, _) => {
+                self.navigate_prev_top_level_view();
+            }
+            (KeyCode::Right, _) => {
+                self.navigate_next_top_level_view();
             }
 
             // === Navigation (only in list views) ===
@@ -152,10 +163,34 @@ impl App {
                 self.state.logs_follow = !self.state.logs_follow;
             }
 
+            // === REPL view specific: any other character starts input ===
+            (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                if matches!(self.state.current_view, View::Repl) && !self.state.repl_streaming =>
+            {
+                self.state.repl_input.push(c);
+                self.state.interaction_mode = InteractionMode::ReplInput;
+            }
+
             _ => {}
         }
 
         false
+    }
+
+    /// Navigate to the previous top-level view
+    fn navigate_prev_top_level_view(&mut self) {
+        let current_idx = top_level_view_index(&self.state.current_view);
+        let prev_idx = if current_idx == 0 { TOP_LEVEL_VIEWS.len() - 1 } else { current_idx - 1 };
+        self.state.current_view = TOP_LEVEL_VIEWS[prev_idx].clone();
+        self.state.view_stack.clear();
+    }
+
+    /// Navigate to the next top-level view
+    fn navigate_next_top_level_view(&mut self) {
+        let current_idx = top_level_view_index(&self.state.current_view);
+        let next_idx = (current_idx + 1) % TOP_LEVEL_VIEWS.len();
+        self.state.current_view = TOP_LEVEL_VIEWS[next_idx].clone();
+        self.state.view_stack.clear();
     }
 
     /// Handle drill down (Enter key)
@@ -339,6 +374,91 @@ impl App {
         false
     }
 
+    /// Handle key in REPL input mode
+    fn handle_repl_input_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                // Clear input and return to normal mode
+                self.state.repl_input.clear();
+                self.state.interaction_mode = InteractionMode::Normal;
+            }
+            KeyCode::Enter => {
+                // Submit the input for processing
+                let input = std::mem::take(&mut self.state.repl_input);
+                if !input.trim().is_empty() {
+                    // Handle slash commands
+                    if input.starts_with('/') {
+                        self.handle_repl_slash_command(&input);
+                    } else {
+                        // Queue for LLM processing
+                        self.state.pending_repl_submit = Some(input);
+                    }
+                }
+                self.state.interaction_mode = InteractionMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.state.repl_input.pop();
+                // If input is empty, return to normal mode
+                if self.state.repl_input.is_empty() {
+                    self.state.interaction_mode = InteractionMode::Normal;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.state.repl_input.push(c);
+            }
+            // Allow view navigation with arrow keys even in input mode
+            KeyCode::Left => {
+                self.state.interaction_mode = InteractionMode::Normal;
+                self.navigate_prev_top_level_view();
+            }
+            KeyCode::Right => {
+                self.state.interaction_mode = InteractionMode::Normal;
+                self.navigate_next_top_level_view();
+            }
+            _ => {}
+        }
+
+        false
+    }
+
+    /// Handle REPL slash commands
+    fn handle_repl_slash_command(&mut self, input: &str) {
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        let cmd = parts.first().copied().unwrap_or("");
+
+        match cmd {
+            "/help" | "/h" => {
+                self.state.interaction_mode = InteractionMode::Help;
+            }
+            "/quit" | "/q" | "/exit" => {
+                if self.state.executions_active > 0 {
+                    self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::quit());
+                } else {
+                    self.state.should_quit = true;
+                }
+            }
+            "/clear" | "/c" => {
+                self.state.repl_history.clear();
+                self.state.repl_response_buffer.clear();
+                self.state.repl_scroll = 0;
+            }
+            "/executions" | "/exec" => {
+                self.state.current_view = View::Executions;
+                self.state.view_stack.clear();
+            }
+            "/records" | "/rec" => {
+                self.state.current_view = View::Records {
+                    type_filter: None,
+                    parent_filter: None,
+                };
+                self.state.view_stack.clear();
+            }
+            _ => {
+                self.state.set_error(format!("Unknown command: {}", cmd));
+            }
+        }
+    }
+
     /// Handle key in command mode
     fn handle_command_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
@@ -478,7 +598,8 @@ mod tests {
     #[test]
     fn test_app_new() {
         let app = App::new();
-        assert!(matches!(app.state().current_view, View::Executions));
+        // Default view is now REPL
+        assert!(matches!(app.state().current_view, View::Repl));
         assert!(matches!(app.state().interaction_mode, InteractionMode::Normal));
     }
 

@@ -31,7 +31,6 @@ pub mod daemon;
 pub mod domain;
 pub mod llm;
 pub mod progress;
-pub mod repl;
 pub mod scheduler;
 pub mod state;
 pub mod tools;

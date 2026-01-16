@@ -15,9 +15,10 @@ mod views;
 pub use app::App;
 pub use events::{Event, EventHandler};
 pub use runner::TuiRunner;
-pub use state::{AppState, InteractionMode, View};
+pub use state::{AppState, InteractionMode, ReplMessage, ReplRole, TOP_LEVEL_VIEWS, View, top_level_view_index};
 
 use std::io::{self, Stdout};
+use std::sync::Arc;
 
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
@@ -26,6 +27,7 @@ use eyre::Result;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::llm::LlmClient;
 use crate::state::StateManager;
 
 /// Terminal type alias
@@ -56,6 +58,11 @@ pub async fn run(terminal: Tui) -> Result<()> {
 
 /// Run the TUI with StateManager connection for live data
 pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
+    run_with_state_and_llm(state_manager, None).await
+}
+
+/// Run the TUI with StateManager and optional LLM client for REPL
+pub async fn run_with_state_and_llm(state_manager: StateManager, llm_client: Option<Arc<dyn LlmClient>>) -> Result<()> {
     let terminal = init()?;
 
     // Use a guard to ensure terminal is restored even on early return/error
@@ -67,7 +74,11 @@ pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
     }
     let _guard = TerminalGuard;
 
-    let mut runner = TuiRunner::with_state_manager(terminal, state_manager);
+    let mut runner = if let Some(llm) = llm_client {
+        TuiRunner::with_llm_client(terminal, Some(state_manager), llm)
+    } else {
+        TuiRunner::with_state_manager(terminal, state_manager)
+    };
     runner.run().await
 }
 

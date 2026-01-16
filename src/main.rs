@@ -74,8 +74,6 @@ async fn main() -> Result<()> {
             DaemonCommand::Stop => cmd_stop().await,
             DaemonCommand::Status { detailed, format } => cmd_status(detailed, format).await,
         },
-        Some(Command::Tui) => cmd_tui(&config).await,
-        Some(Command::Repl { initial_task }) => cmd_repl_interactive(&config, initial_task).await,
         Some(Command::Run {
             loop_type,
             task,
@@ -86,24 +84,10 @@ async fn main() -> Result<()> {
         Some(Command::Metrics { loop_type, format }) => cmd_metrics(loop_type.as_deref(), format).await,
         Some(Command::Logs { follow, lines }) => cmd_logs(follow, lines).await,
         None => {
-            // Default: print help with tool status
-            print_help_with_status()
+            // Default: launch TUI with REPL view
+            cmd_tui(&config).await
         }
     }
-}
-
-/// Print help with required tools and daemon status
-fn print_help_with_status() -> Result<()> {
-    // Print help using clap
-    let mut cmd = Cli::command();
-    cmd.print_help()?;
-    println!();
-    println!();
-
-    // Print the after-help content
-    print!("{}", generate_after_help());
-
-    Ok(())
 }
 
 /// Start the daemon
@@ -176,7 +160,7 @@ async fn cmd_status(detailed: bool, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-/// Launch the TUI
+/// Launch the TUI with REPL as default view
 async fn cmd_tui(config: &Config) -> Result<()> {
     // Initialize StateManager with store path
     let store_path = PathBuf::from(&config.storage.taskstore_dir);
@@ -188,8 +172,26 @@ async fn cmd_tui(config: &Config) -> Result<()> {
 
     let state_manager = StateManager::spawn(&store_path).context("Failed to spawn StateManager")?;
 
-    // Run TUI
-    tui::run_with_state(state_manager).await
+    // Create LLM client if API key is available
+    let llm_client: Option<std::sync::Arc<dyn taskdaemon::LlmClient>> =
+        if std::env::var(&config.llm.api_key_env).is_ok() {
+            match taskdaemon::AnthropicClient::from_config(&config.llm) {
+                Ok(client) => Some(std::sync::Arc::new(client)),
+                Err(e) => {
+                    warn!("Failed to create LLM client: {}. REPL will be unavailable.", e);
+                    None
+                }
+            }
+        } else {
+            info!(
+                "LLM API key ({}) not set. REPL will show an error when used.",
+                config.llm.api_key_env
+            );
+            None
+        };
+
+    // Run TUI with LLM client
+    tui::run_with_state_and_llm(state_manager, llm_client).await
 }
 
 /// Show logs
@@ -228,11 +230,6 @@ async fn cmd_logs(follow: bool, lines: usize) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Run the interactive REPL
-async fn cmd_repl_interactive(config: &Config, initial_task: Option<String>) -> Result<()> {
-    taskdaemon::repl::run_interactive(config, initial_task).await
 }
 
 /// Run a loop to completion (batch mode)

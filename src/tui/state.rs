@@ -8,6 +8,11 @@
 /// Which view is currently displayed (k9s-style)
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum View {
+    /// Interactive REPL for AI-assisted coding (default view)
+    #[default]
+    Repl,
+    /// All running executions (`:loops` or `:executions`)
+    Executions,
     /// Loop records filtered by type (`:records` or `:<type>` e.g., `:plan`)
     Records {
         /// Filter to specific loop type (None = all records)
@@ -15,9 +20,6 @@ pub enum View {
         /// Filter to specific parent ID
         parent_filter: Option<String>,
     },
-    /// All running executions (`:loops` or `:executions`)
-    #[default]
-    Executions,
     /// Logs view for a specific resource (`l` key)
     Logs { target_id: String },
     /// Describe view with full details (`d` key)
@@ -28,10 +30,31 @@ pub enum View {
     },
 }
 
+/// Top-level views for arrow key navigation (in order)
+pub const TOP_LEVEL_VIEWS: [View; 3] = [
+    View::Repl,
+    View::Executions,
+    View::Records {
+        type_filter: None,
+        parent_filter: None,
+    },
+];
+
+/// Get the index of a view in the top-level views list
+pub fn top_level_view_index(view: &View) -> usize {
+    match view {
+        View::Repl => 0,
+        View::Executions => 1,
+        View::Records { .. } => 2,
+        _ => 0, // Default to Repl for non-top-level views
+    }
+}
+
 impl View {
     /// Get the display name for the header
     pub fn display_name(&self) -> String {
         match self {
+            Self::Repl => "REPL".to_string(),
             Self::Records {
                 type_filter: Some(t), ..
             } => format!("Records ({})", t),
@@ -45,6 +68,7 @@ impl View {
     /// Parse a command name to a View
     ///
     /// Built-in commands:
+    /// - `repl` - show the interactive REPL
     /// - `records` or `all` - show all Loop records
     /// - `loops` or `executions` - show all LoopExecution records
     ///
@@ -52,6 +76,8 @@ impl View {
     /// - Any loaded type name (e.g., `plan`, `spec`) filters Records by that type
     pub fn from_command(cmd: &str, available_types: &[String]) -> Option<Self> {
         match cmd {
+            // REPL view
+            "repl" => Some(Self::Repl),
             // All records
             "records" | "all" => Some(Self::Records {
                 type_filter: None,
@@ -73,9 +99,14 @@ impl View {
         }
     }
 
-    /// Check if this is a list view (can navigate)
+    /// Check if this is a list view (can navigate with j/k)
     pub fn is_list_view(&self) -> bool {
         matches!(self, Self::Records { .. } | Self::Executions)
+    }
+
+    /// Check if this is a top-level view (can navigate with left/right)
+    pub fn is_top_level(&self) -> bool {
+        matches!(self, Self::Repl | Self::Executions | Self::Records { .. })
     }
 }
 
@@ -91,6 +122,8 @@ pub enum InteractionMode {
     Command(String),
     /// Task input mode (n key)
     TaskInput(String),
+    /// REPL input mode (typing in REPL view)
+    ReplInput,
     /// Confirmation dialog
     Confirm(ConfirmDialog),
     /// Help overlay
@@ -184,6 +217,59 @@ pub enum PendingAction {
     DeleteExecution(String),
 }
 
+/// REPL message role
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplRole {
+    User,
+    Assistant,
+    ToolResult { tool_name: String },
+    Error,
+}
+
+/// REPL message for display
+#[derive(Debug, Clone)]
+pub struct ReplMessage {
+    pub role: ReplRole,
+    pub content: String,
+    pub timestamp: i64,
+}
+
+impl ReplMessage {
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: ReplRole::User,
+            content: content.into(),
+            timestamp: taskstore::now_ms(),
+        }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: ReplRole::Assistant,
+            content: content.into(),
+            timestamp: taskstore::now_ms(),
+        }
+    }
+
+    pub fn tool_result(tool_name: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: ReplRole::ToolResult {
+                tool_name: tool_name.into(),
+            },
+            content: content.into(),
+            timestamp: taskstore::now_ms(),
+        }
+    }
+
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            role: ReplRole::Error,
+            content: content.into(),
+            timestamp: taskstore::now_ms(),
+        }
+    }
+}
+
 /// Selection state for list views
 #[derive(Debug, Default, Clone)]
 pub struct SelectionState {
@@ -273,6 +359,20 @@ pub struct AppState {
 
     // === Last data refresh ===
     pub last_refresh: i64,
+
+    // === REPL state ===
+    /// Conversation history for display
+    pub repl_history: Vec<ReplMessage>,
+    /// Current input buffer
+    pub repl_input: String,
+    /// Is the LLM currently streaming a response?
+    pub repl_streaming: bool,
+    /// Accumulating stream response (for incremental display)
+    pub repl_response_buffer: String,
+    /// Queued input for async processing
+    pub pending_repl_submit: Option<String>,
+    /// Scroll offset for REPL history view
+    pub repl_scroll: usize,
 }
 
 impl Default for AppState {
@@ -300,6 +400,13 @@ impl Default for AppState {
             pending_task: None,
             pending_action: None,
             last_refresh: 0,
+            // REPL state
+            repl_history: Vec::new(),
+            repl_input: String::new(),
+            repl_streaming: false,
+            repl_response_buffer: String::new(),
+            pending_repl_submit: None,
+            repl_scroll: 0,
         }
     }
 }
@@ -356,6 +463,7 @@ impl AppState {
     /// Get item count for current view
     pub fn current_item_count(&self) -> usize {
         match &self.current_view {
+            View::Repl => self.repl_history.len(),
             View::Records { .. } => self.filtered_records().len(),
             View::Executions => self.filtered_executions().len(),
             View::Logs { .. } => self.logs.len(),
@@ -602,6 +710,9 @@ mod tests {
     fn test_app_state_navigation() {
         let mut state = AppState::new();
 
+        // Default view is now REPL
+        assert!(matches!(state.current_view, View::Repl));
+
         // Navigate to records
         state.navigate_to(View::Records {
             type_filter: Some("mytype".to_string()),
@@ -612,10 +723,36 @@ mod tests {
 
         // Go back
         assert!(state.pop_view());
-        assert!(matches!(state.current_view, View::Executions));
+        assert!(matches!(state.current_view, View::Repl));
         assert_eq!(state.view_stack.len(), 0);
 
         // Can't go back further
         assert!(!state.pop_view());
+    }
+
+    #[test]
+    fn test_view_from_command_repl() {
+        let types = vec![];
+        assert!(matches!(View::from_command("repl", &types), Some(View::Repl)));
+    }
+
+    #[test]
+    fn test_top_level_view_index() {
+        assert_eq!(top_level_view_index(&View::Repl), 0);
+        assert_eq!(top_level_view_index(&View::Executions), 1);
+        assert_eq!(
+            top_level_view_index(&View::Records {
+                type_filter: None,
+                parent_filter: None
+            }),
+            2
+        );
+        // Non-top-level views should default to 0
+        assert_eq!(
+            top_level_view_index(&View::Logs {
+                target_id: "test".to_string()
+            }),
+            0
+        );
     }
 }

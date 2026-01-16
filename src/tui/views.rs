@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 
-use super::state::{AppState, ConfirmDialog, InteractionMode, View};
+use super::state::{AppState, ConfirmDialog, InteractionMode, ReplRole, View};
 
 /// Status colors (k9s-inspired)
 mod colors {
@@ -24,6 +24,12 @@ mod colors {
     pub const KEYBIND: Color = Color::Rgb(0, 255, 255); // Cyan
     pub const SELECTED_BG: Color = Color::Rgb(40, 40, 40);
     pub const DIM: Color = Color::DarkGray;
+
+    // REPL message colors
+    pub const REPL_USER: Color = Color::Rgb(0, 255, 127); // Green
+    pub const REPL_ASSISTANT: Color = Color::Rgb(100, 149, 237); // Cornflower blue
+    pub const REPL_TOOL: Color = Color::Rgb(255, 215, 0); // Gold
+    pub const REPL_ERROR: Color = Color::Rgb(220, 20, 60); // Crimson
 }
 
 /// Get color for a status string
@@ -77,6 +83,7 @@ pub fn render(state: &AppState, frame: &mut Frame) {
 
     // Render main content based on current view
     match &state.current_view {
+        View::Repl => render_repl_view(state, frame, chunks[1]),
         View::Records { .. } => render_records_table(state, frame, chunks[1]),
         View::Executions => render_executions_table(state, frame, chunks[1]),
         View::Logs { .. } => render_logs_view(state, frame, chunks[1]),
@@ -144,6 +151,152 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
     let header = Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::ALL));
 
     frame.render_widget(header, area);
+}
+
+/// Render REPL view with conversation history and input
+fn render_repl_view(state: &AppState, frame: &mut Frame, area: Rect) {
+    // Split area: message history (scrollable) + input line at bottom
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // Message history
+            Constraint::Length(3), // Input line
+        ])
+        .split(area);
+
+    // Render message history
+    let mut lines: Vec<Line> = Vec::new();
+
+    for msg in &state.repl_history {
+        let (prefix, prefix_style, content_style) = match &msg.role {
+            ReplRole::User => (
+                "> ",
+                Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD),
+                Style::default().fg(colors::REPL_USER),
+            ),
+            ReplRole::Assistant => (
+                "  ",
+                Style::default().fg(colors::REPL_ASSISTANT),
+                Style::default().fg(Color::White),
+            ),
+            ReplRole::ToolResult { .. } => (
+                "",
+                Style::default().fg(colors::REPL_TOOL),
+                Style::default().fg(colors::DIM),
+            ),
+            ReplRole::Error => (
+                "! ",
+                Style::default().fg(colors::REPL_ERROR).add_modifier(Modifier::BOLD),
+                Style::default().fg(colors::REPL_ERROR),
+            ),
+        };
+
+        // For tool results, show the tool name as prefix
+        let actual_prefix = if let ReplRole::ToolResult { tool_name } = &msg.role {
+            format!("[{}] ", tool_name)
+        } else {
+            prefix.to_string()
+        };
+
+        // Split content into lines for proper wrapping
+        for (i, content_line) in msg.content.lines().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(actual_prefix.clone(), prefix_style),
+                    Span::styled(content_line, content_style),
+                ]));
+            } else {
+                // Continuation lines are indented
+                let indent = " ".repeat(actual_prefix.len());
+                lines.push(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(content_line, content_style),
+                ]));
+            }
+        }
+
+        // Add blank line after each message for readability
+        lines.push(Line::from(""));
+    }
+
+    // If streaming, show the response buffer with a cursor
+    if state.repl_streaming {
+        if !state.repl_response_buffer.is_empty() {
+            for (i, content_line) in state.repl_response_buffer.lines().enumerate() {
+                if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("  ", Style::default().fg(colors::REPL_ASSISTANT)),
+                        Span::styled(content_line, Style::default().fg(Color::White)),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(content_line, Style::default().fg(Color::White)),
+                    ]));
+                }
+            }
+        }
+        // Show streaming indicator
+        lines.push(Line::from(vec![Span::styled(
+            "  ...",
+            Style::default().fg(colors::DIM).add_modifier(Modifier::SLOW_BLINK),
+        )]));
+    }
+
+    // Show welcome message if empty
+    if state.repl_history.is_empty() && !state.repl_streaming {
+        lines.push(Line::from(vec![Span::styled(
+            "Welcome to TaskDaemon REPL",
+            Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Type a message and press Enter to chat with the AI assistant.",
+            Style::default().fg(colors::DIM),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "Use /help for available commands, /quit to exit.",
+            Style::default().fg(colors::DIM),
+        )]));
+    }
+
+    let history = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" REPL ")
+                .border_style(Style::default().fg(colors::HEADER)),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((state.repl_scroll as u16, 0));
+
+    frame.render_widget(history, chunks[0]);
+
+    // Render input line
+    let input_style = if state.repl_streaming {
+        Style::default().fg(colors::DIM)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let cursor = if !state.repl_streaming {
+        Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK))
+    } else {
+        Span::raw("")
+    };
+
+    let input_content = Line::from(vec![
+        Span::styled(
+            "> ",
+            Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(&state.repl_input, input_style),
+        cursor,
+    ]);
+
+    let input = Paragraph::new(input_content).block(Block::default().borders(Borders::ALL));
+
+    frame.render_widget(input, chunks[1]);
 }
 
 /// Render Records table (generic Loop records)
@@ -453,6 +606,7 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
             } else {
                 // Show keybinds based on current view
                 let keybinds = match &state.current_view {
+                    View::Repl => vec![("<Enter>", "Submit"), ("<←/→>", "Views"), ("/clear", "Clear")],
                     View::Records { .. } => vec![
                         ("<Enter>", "Children"),
                         ("<d>", "Describe"),
