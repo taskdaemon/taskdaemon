@@ -30,6 +30,7 @@ pub mod coordinator;
 pub mod daemon;
 pub mod domain;
 pub mod llm;
+pub mod planning;
 pub mod progress;
 pub mod scheduler;
 pub mod state;
@@ -58,6 +59,9 @@ pub use r#loop::{
     CascadeHandler, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopManager,
     LoopManagerConfig, LoopMetrics, LoopStats, LoopStatus, LoopTaskResult, LoopType, LoopTypeLoader, TypeMetrics,
     topological_sort, validate_dependency_graph,
+};
+pub use planning::{
+    DecomposedPlan, DecomposerConfig, PlanDecomposer, PlanDraft, PlanningSession, SessionConfig, SessionState,
 };
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};

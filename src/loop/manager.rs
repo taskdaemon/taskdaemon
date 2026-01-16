@@ -23,7 +23,7 @@ use crate::llm::LlmClient;
 use crate::r#loop::{LoopConfig, LoopEngine};
 use crate::scheduler::Scheduler;
 use crate::state::StateManager;
-use crate::worktree::{WorktreeConfig, WorktreeManager};
+use crate::worktree::{MergeResult, WorktreeConfig, WorktreeManager, merge_to_main};
 
 /// Configuration for the LoopManager
 #[derive(Debug, Clone)]
@@ -318,14 +318,16 @@ impl LoopManager {
         let llm = self.llm.clone();
         let state = self.state.clone();
         let worktree_path = worktree_info.path.clone();
+        let repo_root = self.config.repo_root.clone();
         let scheduler = self.scheduler.clone();
 
         let handle = tokio::spawn(async move {
             // Build engine with coordinator and scheduler for rate limiting
-            let engine = LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path, coord_handle)
-                .with_scheduler(scheduler.clone());
+            let engine =
+                LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path.clone(), coord_handle)
+                    .with_scheduler(scheduler.clone());
 
-            let result = run_loop_task(engine, state).await;
+            let result = run_loop_task(engine, state, worktree_path, repo_root).await;
 
             // Mark scheduler slot as complete (releases slot for next queued request)
             scheduler.complete(&exec_id).await;
@@ -475,19 +477,85 @@ impl LoopManager {
 }
 
 /// Run a loop task and handle completion
-async fn run_loop_task(mut engine: LoopEngine, state: StateManager) -> LoopTaskResult {
+///
+/// On successful completion, merges the worktree branch to main.
+async fn run_loop_task(
+    mut engine: LoopEngine,
+    state: StateManager,
+    worktree_path: PathBuf,
+    repo_root: PathBuf,
+) -> LoopTaskResult {
     let exec_id = engine.exec_id.clone();
 
     match engine.run().await {
         Ok(crate::r#loop::IterationResult::Complete { iterations }) => {
-            // Update state to complete with progress
-            if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
-                exec.set_status(LoopExecutionStatus::Complete);
-                exec.iteration = engine.current_iteration();
-                exec.progress = engine.get_progress();
-                let _ = state.update_execution(exec).await;
+            // Get spec title for merge commit message
+            let spec_title = state
+                .get_execution(&exec_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|e| e.context.get("title").and_then(|v| v.as_str()).map(String::from))
+                .unwrap_or_else(|| "Completed work".to_string());
+
+            // Merge to main before marking complete
+            match merge_to_main(&repo_root, &worktree_path, &exec_id, &spec_title).await {
+                Ok(MergeResult::Success) => {
+                    info!(exec_id = %exec_id, "Successfully merged to main");
+                    // Update state to complete with progress
+                    if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
+                        exec.set_status(LoopExecutionStatus::Complete);
+                        exec.iteration = engine.current_iteration();
+                        exec.progress = engine.get_progress();
+                        let _ = state.update_execution(exec).await;
+                    }
+                    LoopTaskResult::Complete { exec_id, iterations }
+                }
+                Ok(MergeResult::Conflict { message }) => {
+                    warn!(exec_id = %exec_id, "Merge conflict: {}", message);
+                    // Mark as blocked - needs manual intervention
+                    if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
+                        exec.set_status(LoopExecutionStatus::Blocked);
+                        exec.set_error(format!("Merge conflict: {}", message));
+                        exec.iteration = engine.current_iteration();
+                        exec.progress = engine.get_progress();
+                        let _ = state.update_execution(exec).await;
+                    }
+                    LoopTaskResult::Failed {
+                        exec_id,
+                        reason: format!("Merge conflict: {}", message),
+                    }
+                }
+                Ok(MergeResult::PushFailed { message }) => {
+                    warn!(exec_id = %exec_id, "Push failed: {}", message);
+                    // Mark as failed - push issue
+                    if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
+                        exec.set_status(LoopExecutionStatus::Failed);
+                        exec.set_error(format!("Push failed: {}", message));
+                        exec.iteration = engine.current_iteration();
+                        exec.progress = engine.get_progress();
+                        let _ = state.update_execution(exec).await;
+                    }
+                    LoopTaskResult::Failed {
+                        exec_id,
+                        reason: format!("Push failed: {}", message),
+                    }
+                }
+                Err(e) => {
+                    error!(exec_id = %exec_id, "Merge error: {}", e);
+                    if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
+                        exec.set_status(LoopExecutionStatus::Failed);
+                        exec.set_error(format!("Merge error: {}", e));
+                        exec.iteration = engine.current_iteration();
+                        exec.progress = engine.get_progress();
+                        let _ = state.update_execution(exec).await;
+                    }
+                    LoopTaskResult::Failed {
+                        exec_id,
+                        reason: format!("Merge error: {}", e),
+                    }
+                }
             }
-            LoopTaskResult::Complete { exec_id, iterations }
         }
         Ok(crate::r#loop::IterationResult::Interrupted { reason: _ }) => {
             // Update state to stopped with progress
