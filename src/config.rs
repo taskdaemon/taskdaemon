@@ -212,8 +212,15 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
+        // Use XDG data directory (~/.local/share/taskdaemon on Linux)
+        let taskstore_dir = dirs::data_dir()
+            .map(|d| d.join("taskdaemon"))
+            .unwrap_or_else(|| PathBuf::from(".taskstore"))
+            .to_string_lossy()
+            .into_owned();
+
         Self {
-            taskstore_dir: ".taskstore".to_string(),
+            taskstore_dir,
             jsonl_warn_mb: 100,
             jsonl_error_mb: 500,
         }
