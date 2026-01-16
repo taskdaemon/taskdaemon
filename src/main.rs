@@ -368,12 +368,56 @@ async fn run_daemon(config: &Config) -> Result<()> {
     // - LoopManager for running loops (use loop_configs)
     let _ = &loop_configs; // Suppress unused warning until LoopManager is wired
 
-    info!("Daemon running. Press Ctrl+C to stop.");
+    info!("Daemon running. Press Ctrl+C to stop, SIGHUP to reload config.");
 
-    // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
+    // Set up signal handlers
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
 
-    warn!("Shutdown signal received");
+        let mut sighup = signal(SignalKind::hangup())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+        let mut sigterm = signal(SignalKind::terminate())?;
+
+        loop {
+            tokio::select! {
+                _ = sighup.recv() => {
+                    info!("SIGHUP received - reloading configuration");
+                    // Reload loop types (hot-reload)
+                    match LoopTypeLoader::new(&config.loops) {
+                        Ok(new_loader) => {
+                            let new_configs = new_loader.to_configs();
+                            info!(
+                                "Reloaded {} loop types: {:?}",
+                                new_configs.len(),
+                                new_configs.keys().collect::<Vec<_>>()
+                            );
+                            // Note: In a full implementation, this would be sent to LoopManager
+                            // via a channel to hot-swap the configs
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to reload loop types");
+                        }
+                    }
+                }
+                _ = sigint.recv() => {
+                    warn!("SIGINT received");
+                    break;
+                }
+                _ = sigterm.recv() => {
+                    warn!("SIGTERM received");
+                    break;
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, just wait for Ctrl+C
+        tokio::signal::ctrl_c().await?;
+    }
+
     info!("Daemon shutting down...");
 
     // Cleanup - abort watcher and coordinator tasks
