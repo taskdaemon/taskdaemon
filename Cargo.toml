@@ -26,7 +26,20 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
+thiserror = "2.0.17"
+async-trait = "0.1.89"
+futures = "0.3.31"
+glob = "0.3.3"
+handlebars = "6.4.0"
+tracing = "0.1.44"
+reqwest-eventsource = "0.6.0"
+uuid = { version = "1.19.0", features = ["v7"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 # Dependencies will be added via cargo add
 
 [build-dependencies]
+
+[dev-dependencies]
+tempfile = "3.24.0"
 # For build.rs if needed
