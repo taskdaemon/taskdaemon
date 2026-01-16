@@ -189,6 +189,34 @@ impl StateManager {
         reply_rx.await.map_err(|_| StateError::ChannelError)?
     }
 
+    // === Delete operations ===
+
+    /// Delete a Loop record by ID
+    pub async fn delete_loop(&self, id: &str) -> StateResponse<()> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StateCommand::DeleteLoop {
+                id: id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| StateError::ChannelError)?;
+        reply_rx.await.map_err(|_| StateError::ChannelError)?
+    }
+
+    /// Delete a LoopExecution by ID
+    pub async fn delete_execution(&self, id: &str) -> StateResponse<()> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StateCommand::DeleteExecution {
+                id: id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| StateError::ChannelError)?;
+        reply_rx.await.map_err(|_| StateError::ChannelError)?
+    }
+
     /// Sync the store from JSONL files
     pub async fn sync(&self) -> StateResponse<()> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -404,6 +432,20 @@ async fn actor_loop(mut store: Store, mut rx: mpsc::Receiver<StateCommand>) {
 
                 let result: StateResponse<Vec<LoopExecution>> =
                     store.list(&filters).map_err(|e| StateError::StoreError(e.to_string()));
+                let _ = reply.send(result);
+            }
+
+            StateCommand::DeleteLoop { id, reply } => {
+                let result = store
+                    .delete::<Loop>(&id)
+                    .map_err(|e| StateError::StoreError(e.to_string()));
+                let _ = reply.send(result);
+            }
+
+            StateCommand::DeleteExecution { id, reply } => {
+                let result = store
+                    .delete::<LoopExecution>(&id)
+                    .map_err(|e| StateError::StoreError(e.to_string()));
                 let _ = reply.send(result);
             }
 

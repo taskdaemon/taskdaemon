@@ -276,7 +276,7 @@ pub struct LoopsConfig {
     pub paths: Vec<String>,
 
     /// Default loop type for TUI quick-create (when user presses 'n')
-    /// This is optional - if empty, the TUI will prompt for type selection.
+    /// Defaults to "plan" which is the top-level entry point.
     #[serde(rename = "default-type")]
     pub default_type: String,
 }
@@ -289,7 +289,7 @@ impl Default for LoopsConfig {
                 "~/.config/taskdaemon/loops".to_string(),
                 ".taskdaemon/loops".to_string(),
             ],
-            default_type: String::new(),
+            default_type: "plan".to_string(),
         }
     }
 }

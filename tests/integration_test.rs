@@ -945,6 +945,174 @@ async fn test_hierarchy_traversal_from_leaf_to_root() {
     assert!(plan.parent.is_none(), "Plan should be root (no parent)");
 }
 
+// =============================================================================
+// Task Creation Tests (without TUI)
+// =============================================================================
+
+/// Test that creating a loop execution works when called directly
+#[tokio::test]
+async fn test_create_loop_execution_directly() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("spawn state");
+
+    // Create a loop execution directly (like TUI's start_task does)
+    let execution = taskdaemon::domain::LoopExecution::new("plan", "Build a new feature");
+
+    // This should succeed
+    let id = state.create_execution(execution).await.expect("create execution");
+    assert!(!id.is_empty(), "Should get an ID back");
+
+    // Verify it was created
+    let retrieved = state.get_execution(&id).await.expect("get").expect("exists");
+    assert_eq!(retrieved.loop_type, "plan");
+}
+
+/// Test that default loop type is "plan" (the builtin default)
+#[tokio::test]
+async fn test_default_loop_type_is_plan() {
+    let config = taskdaemon::config::LoopsConfig::default();
+    assert_eq!(config.default_type, "plan", "Default loop type should be 'plan'");
+}
+
+/// Test that LoopsConfig can be overridden via serde (for the edge case where
+/// someone explicitly clears default_type in their config)
+#[test]
+fn test_loops_config_can_override_default_type() {
+    // If someone sets default-type to empty in their config, it should be respected
+    let yaml = r#"
+paths:
+  - builtin
+default-type: ""
+"#;
+    let config: taskdaemon::config::LoopsConfig = serde_yaml::from_str(yaml).expect("parse");
+    assert!(config.default_type.is_empty(), "Should be able to override to empty");
+
+    // But the default (no config) should be "plan"
+    let default_config = taskdaemon::config::LoopsConfig::default();
+    assert_eq!(default_config.default_type, "plan");
+}
+
+// =============================================================================
+// Delete Operations Tests
+// =============================================================================
+
+/// Test deleting a loop execution
+#[tokio::test]
+async fn test_delete_execution() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("spawn state");
+
+    // Create an execution
+    let execution = taskdaemon::domain::LoopExecution::new("ralph", "Test task");
+    let id = state.create_execution(execution).await.expect("create");
+
+    // Verify it exists
+    let exists = state.get_execution(&id).await.expect("get");
+    assert!(exists.is_some(), "Execution should exist before delete");
+
+    // Delete it
+    state.delete_execution(&id).await.expect("delete");
+
+    // Verify it's gone
+    let after_delete = state.get_execution(&id).await.expect("get");
+    assert!(after_delete.is_none(), "Execution should not exist after delete");
+}
+
+/// Test deleting a loop record
+#[tokio::test]
+async fn test_delete_loop() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("spawn state");
+
+    // Create a loop
+    let record = Loop::new("spec", "Test spec");
+    let id = record.id.clone();
+    state.create_loop(record).await.expect("create");
+
+    // Verify it exists
+    let exists = state.get_loop(&id).await.expect("get");
+    assert!(exists.is_some(), "Loop should exist before delete");
+
+    // Delete it
+    state.delete_loop(&id).await.expect("delete");
+
+    // Verify it's gone
+    let after_delete = state.get_loop(&id).await.expect("get");
+    assert!(after_delete.is_none(), "Loop should not exist after delete");
+}
+
+/// Test that deleting a parent doesn't automatically delete children
+/// (orphan handling is a separate concern)
+#[tokio::test]
+async fn test_delete_loop_leaves_children() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("spawn state");
+
+    // Create parent-child hierarchy
+    let parent = Loop::new("plan", "Parent Plan");
+    let parent_id = parent.id.clone();
+    state.create_loop(parent).await.expect("create parent");
+
+    let mut child = Loop::new("spec", "Child Spec");
+    child.parent = Some(parent_id.clone());
+    let child_id = child.id.clone();
+    state.create_loop(child).await.expect("create child");
+
+    // Delete parent
+    state.delete_loop(&parent_id).await.expect("delete");
+
+    // Child should still exist (as orphan)
+    let child_after = state.get_loop(&child_id).await.expect("get");
+    assert!(child_after.is_some(), "Child should still exist after parent deletion");
+
+    // Child still references the deleted parent
+    let child_record = child_after.unwrap();
+    assert_eq!(child_record.parent, Some(parent_id.clone()));
+}
+
+/// Test deleting a non-existent record doesn't error (idempotent)
+#[tokio::test]
+async fn test_delete_nonexistent_is_ok() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("spawn state");
+
+    // Delete something that doesn't exist - should succeed (no-op)
+    let result = state.delete_execution("nonexistent-id").await;
+    assert!(result.is_ok(), "Deleting non-existent record should be ok");
+
+    let result = state.delete_loop("nonexistent-id").await;
+    assert!(result.is_ok(), "Deleting non-existent loop should be ok");
+}
+
+/// Test that deleted records don't appear in list queries
+#[tokio::test]
+async fn test_deleted_records_not_in_list() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("spawn state");
+
+    // Create multiple executions
+    let exec1 = taskdaemon::domain::LoopExecution::new("ralph", "Task 1");
+    let exec2 = taskdaemon::domain::LoopExecution::new("ralph", "Task 2");
+    let exec3 = taskdaemon::domain::LoopExecution::new("ralph", "Task 3");
+
+    let id1 = state.create_execution(exec1).await.expect("create");
+    let id2 = state.create_execution(exec2).await.expect("create");
+    let _id3 = state.create_execution(exec3).await.expect("create");
+
+    // Delete two of them
+    state.delete_execution(&id1).await.expect("delete");
+    state.delete_execution(&id2).await.expect("delete");
+
+    // List should only show one
+    let remaining = state.list_executions(None, None).await.expect("list");
+    assert_eq!(remaining.len(), 1, "Only one execution should remain");
+    assert_eq!(remaining[0].loop_type, "ralph");
+}
+
+// =============================================================================
+// Hierarchy Count Tests
+// =============================================================================
+
 #[tokio::test]
 async fn test_hierarchy_counts_at_each_level() {
     let temp_dir = TempDir::new().expect("temp dir");

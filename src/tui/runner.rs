@@ -131,7 +131,7 @@ impl TuiRunner {
         if self.default_loop_type.is_empty() {
             self.app
                 .state_mut()
-                .set_error("No default-type configured in loops section. Add 'default-type: <type>' to config.");
+                .set_error("No loop type configured. Check 'default-type' in loops config section.");
             return;
         }
 

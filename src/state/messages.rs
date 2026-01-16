@@ -69,6 +69,16 @@ pub enum StateCommand {
         reply: oneshot::Sender<StateResponse<Vec<LoopExecution>>>,
     },
 
+    // Delete operations
+    DeleteLoop {
+        id: String,
+        reply: oneshot::Sender<StateResponse<()>>,
+    },
+    DeleteExecution {
+        id: String,
+        reply: oneshot::Sender<StateResponse<()>>,
+    },
+
     // Generic operations
     GetGeneric {
         collection: String,
