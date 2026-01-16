@@ -27,12 +27,14 @@
 pub mod cli;
 pub mod config;
 pub mod coordinator;
+pub mod daemon;
 pub mod domain;
 pub mod llm;
 pub mod progress;
 pub mod scheduler;
 pub mod state;
 pub mod tools;
+pub mod tui;
 pub mod watcher;
 pub mod worktree;
 
