@@ -1,35 +1,24 @@
 # Phase Loop Type
-# Level 3: Takes a Spec phase, produces code/tests in git worktree
+# Level 3: Takes completed Spec, produces N phase.md artifacts with dependencies
+# This is a decomposition step, not implementation
 parent: spec
-description: "Implement a single phase of a Spec in an isolated git worktree"
+description: "Decompose a Spec into atomic phase documents with dependencies"
 
 prompt-template: |
-  You are implementing Phase {{phase-number}} of {{total-phases}}: {{phase-name}}
+  You are decomposing a Spec into Phases (atomic implementation units).
 
   ## Spec Content
   {{spec-content}}
 
-  {{#if phase-description}}
-  ## Phase Description
-  {{phase-description}}
+  {{#if existing-phases}}
+  ## Existing Phases
+  {{existing-phases}}
   {{/if}}
 
-  {{#if completed-phases}}
-  ## Completed Phases
-  {{completed-phases}}
-  {{/if}}
-
-  ## Current State
-  Working directory: {{working-directory}}
-
-  {{#if git-status}}
-  Git status:
-  {{git-status}}
-  {{/if}}
-
-  {{#if git-diff}}
-  Git diff (recent changes):
-  {{git-diff}}
+  {{#if coverage-gaps}}
+  ## Coverage Analysis
+  What the Spec covers that Phases don't yet:
+  {{coverage-gaps}}
   {{/if}}
 
   {{#if progress}}
@@ -37,35 +26,31 @@ prompt-template: |
   {{progress}}
   {{/if}}
 
-  {{#if previous-errors}}
-  ## Validation Output (failed)
-  {{previous-errors}}
-  {{/if}}
-
   ## Instructions
-  Implement this phase. Write code, tests, and documentation as needed.
-  Commit your changes with a meaningful message.
+  Create Phase documents for uncovered functionality. Each Phase should:
+  - Be atomic (completable in one focused implementation session)
+  - Have clear acceptance criteria with testable requirements
+  - Specify files to be created or modified
+  - Define dependencies on other Phases (if any)
+  - Include specific test cases to validate completion
 
-  When validation passes (tests pass, lints clean), this phase is complete.
+  Write Phase documents to the phases output directory.
+  Update the phases index with metadata including deps field.
+
+  When all Spec functionality is covered by Phases, validation will succeed.
 
 validation-command: "otto ci"
 success-exit-code: 0
-max-iterations: 100
+max-iterations: 50
 iteration-timeout-ms: 300000
 
 inputs:
   - spec-content
-  - phase-name
-  - phase-number
-  - total-phases
-  - phase-description
-  - completed-phases
-  - working-directory
-  - git-status
-  - git-diff
-  - previous-errors
+  - existing-phases
+  - coverage-gaps
 outputs:
-  - committed-code
+  - phase-markdowns
+  - phases-jsonl
 tools:
   - read_file
   - write_file
@@ -73,7 +58,6 @@ tools:
   - list_directory
   - glob
   - grep
-  - run_command
   - query_loop
   - share_data
   - complete_task

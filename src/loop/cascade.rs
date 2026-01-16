@@ -263,6 +263,9 @@ impl CascadeHandler {
     }
 
     /// Check if all children for a parent are complete
+    ///
+    /// Recursively bubbles completion up the hierarchy:
+    /// Ralph -> Phase -> Spec -> Plan
     async fn check_parent_completion(&self, parent_id: &str) -> Result<()> {
         let children = self.state.list_loops_for_parent(parent_id).await?;
 
@@ -272,15 +275,27 @@ impl CascadeHandler {
 
         if any_failed && let Ok(Some(mut parent)) = self.state.get_loop(parent_id).await {
             parent.set_status(LoopStatus::Failed);
-            let _ = self.state.update_loop(parent).await;
+            let grandparent_id = parent.parent.clone();
+            self.state.update_loop(parent).await?;
             warn!(parent_id, "Parent marked Failed due to child failure");
+
+            // Recursively propagate failure up the hierarchy
+            if let Some(grandparent_id) = grandparent_id {
+                Box::pin(self.check_parent_completion(&grandparent_id)).await?;
+            }
         } else if all_complete
             && !children.is_empty()
             && let Ok(Some(mut parent)) = self.state.get_loop(parent_id).await
         {
             parent.set_status(LoopStatus::Complete);
-            let _ = self.state.update_loop(parent).await;
+            let grandparent_id = parent.parent.clone();
+            self.state.update_loop(parent).await?;
             info!(parent_id, "All children complete, parent marked Complete");
+
+            // Recursively propagate completion up the hierarchy
+            if let Some(grandparent_id) = grandparent_id {
+                Box::pin(self.check_parent_completion(&grandparent_id)).await?;
+            }
         }
 
         Ok(())

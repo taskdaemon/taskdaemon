@@ -1,11 +1,21 @@
 # Ralph Loop Type
-# Generic loop for arbitrary tasks (the classic Ralph Wiggum pattern)
-# No parent - standalone loop type
-description: "Generic loop for arbitrary tasks - the classic Ralph Wiggum pattern"
+# Level 4: Takes a Phase document, produces code/tests in git worktree
+# This is the implementation step - writes actual code
+parent: phase
+description: "Implement a Phase document - write code, tests, and documentation"
 
 prompt-template: |
-  ## Task
+  You are implementing a Phase from a Spec.
+
+  {{#if phase-content}}
+  ## Phase Content
+  {{phase-content}}
+  {{/if}}
+
+  {{#if task-description}}
+  ## Task Description
   {{task-description}}
+  {{/if}}
 
   ## Current State
   Working directory: {{working-directory}}
@@ -20,6 +30,11 @@ prompt-template: |
   {{git-status}}
   {{/if}}
 
+  {{#if git-diff}}
+  Git diff (recent changes):
+  {{git-diff}}
+  {{/if}}
+
   {{#if progress}}
   ## Previous Iterations
   {{progress}}
@@ -31,10 +46,10 @@ prompt-template: |
   {{/if}}
 
   ## Instructions
-  Complete the task. Make necessary changes to files.
-  Commit your changes when appropriate.
+  Implement this phase. Write code, tests, and documentation as needed.
+  Commit your changes with a meaningful message.
 
-  When validation passes, the task is complete.
+  When validation passes (tests pass, lints clean), the phase is complete.
 
 validation-command: "otto ci"
 success-exit-code: 0
@@ -42,13 +57,15 @@ max-iterations: 100
 iteration-timeout-ms: 300000
 
 inputs:
+  - phase-content
   - task-description
   - working-directory
   - files-in-scope
   - git-status
+  - git-diff
   - previous-errors
 outputs:
-  - task-artifacts
+  - committed-code
 tools:
   - read_file
   - write_file

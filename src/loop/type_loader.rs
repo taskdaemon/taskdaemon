@@ -521,7 +521,18 @@ mod tests {
     fn test_builtin_phase_parses() {
         let loop_type: LoopType = serde_yaml::from_str(BUILTIN_PHASE).unwrap();
         assert!(!loop_type.prompt_template.is_empty());
+        // Phase is a decomposition step (not implementation), so no run_command
+        assert!(!loop_type.tools.contains(&"run_command".to_string()));
+        assert_eq!(loop_type.parent, Some("spec".to_string()));
+    }
+
+    #[test]
+    fn test_builtin_ralph_has_parent_phase() {
+        let loop_type: LoopType = serde_yaml::from_str(BUILTIN_RALPH).unwrap();
+        assert!(!loop_type.prompt_template.is_empty());
+        // Ralph is the implementation step, needs run_command
         assert!(loop_type.tools.contains(&"run_command".to_string()));
+        assert_eq!(loop_type.parent, Some("phase".to_string()));
     }
 
     #[test]
@@ -648,5 +659,34 @@ inputs:
 
         // No external files tracked, so no changes
         assert!(!loader.has_changes());
+    }
+
+    #[test]
+    fn test_four_level_hierarchy() {
+        let config = LoopsConfig::default();
+        let loader = LoopLoader::new(&config).unwrap();
+
+        // Verify the 4-level hierarchy: Plan -> Spec -> Phase -> Ralph
+        // Plan is root (no parent)
+        let plan = loader.get("plan").unwrap();
+        assert!(plan.parent.is_none(), "Plan should be root");
+
+        // Spec has parent: plan
+        let spec = loader.get("spec").unwrap();
+        assert_eq!(spec.parent, Some("plan".to_string()));
+
+        // Phase has parent: spec
+        let phase = loader.get("phase").unwrap();
+        assert_eq!(phase.parent, Some("spec".to_string()));
+
+        // Ralph has parent: phase
+        let ralph = loader.get("ralph").unwrap();
+        assert_eq!(ralph.parent, Some("phase".to_string()));
+
+        // children_of returns correct children
+        assert_eq!(loader.children_of("plan"), vec!["spec"]);
+        assert_eq!(loader.children_of("spec"), vec!["phase"]);
+        assert_eq!(loader.children_of("phase"), vec!["ralph"]);
+        assert!(loader.children_of("ralph").is_empty(), "Ralph has no children");
     }
 }
