@@ -161,14 +161,19 @@ Working directory: {}"#,
     fn print_help(&self) {
         println!();
         println!("{}", "Available Commands:".bright_cyan());
-        println!("  {}  - Show this help", "/help".yellow());
-        println!("  {}  - Exit the REPL", "/quit".yellow());
-        println!("  {} - Clear conversation history", "/clear".yellow());
-        println!("  {} - Show conversation history", "/history".yellow());
+        println!("  {:14} Show this help", "/help".yellow());
+        println!("  {:14} Exit the REPL", "/quit".yellow());
+        println!("  {:14} Clear conversation history", "/clear".yellow());
+        println!("  {:14} Show conversation history", "/history".yellow());
         println!();
         println!("{}", "Available Tools:".bright_cyan());
-        println!("  read_file, write_file, edit_file, list_directory");
-        println!("  glob, grep, run_command");
+        println!("  {:14} Read file contents", "read_file".yellow());
+        println!("  {:14} Write content to a file", "write_file".yellow());
+        println!("  {:14} Edit file with search/replace", "edit_file".yellow());
+        println!("  {:14} List directory contents", "list_directory".yellow());
+        println!("  {:14} Find files by pattern", "glob".yellow());
+        println!("  {:14} Search file contents", "grep".yellow());
+        println!("  {:14} Run a shell command", "run_command".yellow());
         println!();
     }
 
