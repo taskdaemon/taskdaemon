@@ -9,8 +9,10 @@ use handlebars::Handlebars;
 use tracing::{info, warn};
 
 use crate::coordinator::{CoordMessage, CoordinatorHandle};
+use crate::domain::Priority;
 use crate::llm::{CompletionRequest, CompletionResponse, ContentBlock, LlmClient, Message, StopReason, ToolDefinition};
 use crate::progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
+use crate::scheduler::Scheduler;
 use crate::tools::{ToolContext, ToolExecutor, ToolResult};
 
 use super::LoopConfig;
@@ -75,6 +77,9 @@ pub struct LoopEngine {
 
     /// Coordinator handle for inter-loop communication
     coord_handle: Option<CoordinatorHandle>,
+
+    /// Scheduler for rate limiting LLM calls
+    scheduler: Option<Arc<Scheduler>>,
 }
 
 impl LoopEngine {
@@ -96,6 +101,7 @@ impl LoopEngine {
             status: LoopStatus::Running,
             handlebars: Handlebars::new(),
             coord_handle: None,
+            scheduler: None,
         }
     }
 
@@ -123,7 +129,14 @@ impl LoopEngine {
             status: LoopStatus::Running,
             handlebars: Handlebars::new(),
             coord_handle: Some(coord_handle),
+            scheduler: None,
         }
+    }
+
+    /// Set the scheduler for rate limiting LLM calls
+    pub fn with_scheduler(mut self, scheduler: Arc<Scheduler>) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     /// Get the accumulated progress text
@@ -475,20 +488,54 @@ impl LoopEngine {
                 max_tokens: 16384,
             };
 
+            // Wait for scheduler slot (rate limiting) before making LLM call
+            if let Some(scheduler) = &self.scheduler {
+                // Use a turn-specific ID for per-turn rate limiting
+                let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                if let Err(e) = scheduler.wait_for_slot(&turn_id, Priority::Normal).await {
+                    return Ok(AgenticLoopResult::Error {
+                        message: format!("Scheduler error: {}", e),
+                        recoverable: true,
+                    });
+                }
+            }
+
             let response = match self.llm.complete(request).await {
-                Ok(r) => r,
+                Ok(r) => {
+                    // Mark scheduler slot as complete after successful call
+                    if let Some(scheduler) = &self.scheduler {
+                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                        scheduler.complete(&turn_id).await;
+                    }
+                    r
+                }
                 Err(e) if e.is_rate_limit() => {
+                    // Mark slot complete even on rate limit
+                    if let Some(scheduler) = &self.scheduler {
+                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                        scheduler.complete(&turn_id).await;
+                    }
                     return Ok(AgenticLoopResult::RateLimited {
                         retry_after: e.retry_after().unwrap_or(Duration::from_secs(60)),
                     });
                 }
                 Err(e) if e.is_retryable() => {
+                    // Mark slot complete on retryable error
+                    if let Some(scheduler) = &self.scheduler {
+                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                        scheduler.complete(&turn_id).await;
+                    }
                     return Ok(AgenticLoopResult::Error {
                         message: e.to_string(),
                         recoverable: true,
                     });
                 }
                 Err(e) => {
+                    // Mark slot complete on non-retryable error
+                    if let Some(scheduler) = &self.scheduler {
+                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                        scheduler.complete(&turn_id).await;
+                    }
                     return Ok(AgenticLoopResult::Error {
                         message: e.to_string(),
                         recoverable: false,

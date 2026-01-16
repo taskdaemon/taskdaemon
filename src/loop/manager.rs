@@ -321,8 +321,9 @@ impl LoopManager {
         let scheduler = self.scheduler.clone();
 
         let handle = tokio::spawn(async move {
-            // Use with_coordinator to wire the coordinator handle into the engine
-            let engine = LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path, coord_handle);
+            // Build engine with coordinator and scheduler for rate limiting
+            let engine = LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path, coord_handle)
+                .with_scheduler(scheduler.clone());
 
             let result = run_loop_task(engine, state).await;
 
