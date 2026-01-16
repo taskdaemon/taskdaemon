@@ -8,6 +8,7 @@ use std::time::Duration;
 use handlebars::Handlebars;
 use tracing::{info, warn};
 
+use crate::coordinator::{CoordMessage, CoordinatorHandle};
 use crate::llm::{CompletionRequest, CompletionResponse, ContentBlock, LlmClient, Message, StopReason, ToolDefinition};
 use crate::progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 use crate::tools::{ToolContext, ToolExecutor, ToolResult};
@@ -71,6 +72,9 @@ pub struct LoopEngine {
     /// Template engine
     #[allow(dead_code)]
     handlebars: Handlebars<'static>,
+
+    /// Coordinator handle for inter-loop communication
+    coord_handle: Option<CoordinatorHandle>,
 }
 
 impl LoopEngine {
@@ -91,6 +95,34 @@ impl LoopEngine {
             iteration: 0,
             status: LoopStatus::Running,
             handlebars: Handlebars::new(),
+            coord_handle: None,
+        }
+    }
+
+    /// Create a new loop engine with coordinator handle for inter-loop communication
+    pub fn with_coordinator(
+        exec_id: String,
+        config: LoopConfig,
+        llm: Arc<dyn LlmClient>,
+        worktree: PathBuf,
+        coord_handle: CoordinatorHandle,
+    ) -> Self {
+        let progress = Box::new(SystemCapturedProgress::with_limits(
+            config.progress_max_entries,
+            config.progress_max_chars,
+        ));
+
+        Self {
+            exec_id,
+            config,
+            llm,
+            tool_executor: ToolExecutor::standard(),
+            progress,
+            worktree,
+            iteration: 0,
+            status: LoopStatus::Running,
+            handlebars: Handlebars::new(),
+            coord_handle: Some(coord_handle),
         }
     }
 
@@ -101,7 +133,19 @@ impl LoopEngine {
             self.exec_id, self.config.loop_type, self.config.max_iterations
         );
 
+        // Subscribe to main_updated alerts if coordinator is available
+        if let Some(ref coord_handle) = self.coord_handle
+            && let Err(e) = coord_handle.subscribe("main_updated").await
+        {
+            warn!("Failed to subscribe to main_updated: {}", e);
+        }
+
         while self.iteration < self.config.max_iterations {
+            // Check for coordinator messages before each iteration
+            if let Some(result) = self.poll_coordinator_messages().await {
+                return Ok(result);
+            }
+
             self.iteration += 1;
             info!(
                 "Loop {} iteration {}/{}",
@@ -149,6 +193,81 @@ impl LoopEngine {
         })
     }
 
+    /// Poll for coordinator messages (non-blocking)
+    ///
+    /// Returns Some(IterationResult) if the loop should stop, None to continue.
+    async fn poll_coordinator_messages(&mut self) -> Option<IterationResult> {
+        let coord_handle = self.coord_handle.as_ref()?;
+
+        // Non-blocking poll for messages
+        while let Some(msg) = coord_handle.try_recv() {
+            match msg {
+                CoordMessage::Stop { from_exec_id, reason } => {
+                    info!(
+                        "Loop {} received stop request from {}: {}",
+                        self.exec_id, from_exec_id, reason
+                    );
+                    self.status = LoopStatus::Stopped;
+                    return Some(IterationResult::Interrupted {
+                        reason: format!("Stop requested by {}: {}", from_exec_id, reason),
+                    });
+                }
+                CoordMessage::Query {
+                    query_id,
+                    from_exec_id,
+                    question,
+                } => {
+                    // Handle query - for now, respond with a default message
+                    // In future, this could be expanded to support custom query handlers
+                    info!(
+                        "Loop {} received query {} from {}: {}",
+                        self.exec_id, query_id, from_exec_id, question
+                    );
+                    if let Err(e) = coord_handle
+                        .reply_query(&query_id, &format!("Loop {} cannot answer queries yet", self.exec_id))
+                        .await
+                    {
+                        warn!("Failed to reply to query: {}", e);
+                    }
+                }
+                CoordMessage::Share {
+                    from_exec_id,
+                    share_type,
+                    data,
+                } => {
+                    // Log shared data - could be used for inter-loop coordination
+                    info!(
+                        "Loop {} received share '{}' from {}: {}",
+                        self.exec_id, share_type, from_exec_id, data
+                    );
+                }
+                CoordMessage::Notification {
+                    from_exec_id,
+                    event_type,
+                    data,
+                } => {
+                    // Handle notifications - main_updated is particularly important
+                    if event_type == "main_updated" {
+                        info!(
+                            "Loop {} received main_updated notification from {}: {}",
+                            self.exec_id, from_exec_id, data
+                        );
+                        // Set status to rebasing - actual rebase handling will be implemented in Phase 2
+                        self.status = LoopStatus::Rebasing;
+                        // For now, just log - actual rebase handling comes in Phase 2 (2.3)
+                    } else {
+                        info!(
+                            "Loop {} received notification '{}' from {}: {}",
+                            self.exec_id, event_type, from_exec_id, data
+                        );
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Run a single iteration
     async fn run_iteration(&mut self) -> eyre::Result<IterationResult> {
         // Build context for template
@@ -157,8 +276,12 @@ impl LoopEngine {
         // Render prompt
         let prompt = self.render_prompt(&context)?;
 
-        // Create tool context for this iteration
-        let tool_ctx = ToolContext::new(self.worktree.clone(), self.exec_id.clone());
+        // Create tool context for this iteration - with coordinator if available
+        let tool_ctx = if let Some(ref coord_handle) = self.coord_handle {
+            ToolContext::with_coordinator(self.worktree.clone(), self.exec_id.clone(), coord_handle.clone())
+        } else {
+            ToolContext::new(self.worktree.clone(), self.exec_id.clone())
+        };
         tool_ctx.clear_reads().await;
 
         // Get tool definitions for this loop type

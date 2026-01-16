@@ -6,11 +6,11 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use eyre::{Context, Result};
 use tracing::{info, warn};
 
-use taskdaemon::cli::{Cli, Command, OutputFormat};
+use taskdaemon::cli::{Cli, Command, DaemonCommand, OutputFormat, generate_after_help};
 use taskdaemon::config::Config;
 use taskdaemon::daemon::DaemonManager;
 use taskdaemon::r#loop::LoopTypeLoader;
@@ -40,18 +40,15 @@ fn setup_logging(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn get_log_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("taskdaemon")
-        .join("logs")
-        .join("taskdaemon.log")
-}
+use taskdaemon::cli::get_log_path;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parse CLI arguments
-    let cli = Cli::parse();
+    // Build command with dynamic after_help that shows tool checks and daemon status
+    let cmd = Cli::command().after_help(generate_after_help());
+
+    // Parse CLI arguments using the modified command
+    let cli = Cli::from_arg_matches(&cmd.get_matches())?;
 
     // Setup logging
     setup_logging(cli.verbose).context("Failed to setup logging")?;
@@ -66,24 +63,40 @@ async fn main() -> Result<()> {
 
     // Dispatch command
     match cli.command {
-        Some(Command::Start { foreground }) => cmd_start(&config, foreground).await,
-        Some(Command::Stop) => cmd_stop().await,
-        Some(Command::Status { detailed, format }) => cmd_status(detailed, format).await,
+        Some(Command::Daemon { command }) => match command {
+            DaemonCommand::Start { foreground } => cmd_start(&config, foreground).await,
+            DaemonCommand::Stop => cmd_stop().await,
+            DaemonCommand::Status { detailed, format } => cmd_status(detailed, format).await,
+        },
         Some(Command::Tui) => cmd_tui(&config).await,
-        Some(Command::Logs { follow, lines }) => cmd_logs(follow, lines).await,
-        Some(Command::Run {
+        Some(Command::Repl {
             loop_type,
             task,
             max_iterations,
-        }) => cmd_run(&config, &loop_type, &task, max_iterations).await,
+        }) => cmd_repl(&config, &loop_type, &task, max_iterations).await,
         Some(Command::RunDaemon) => cmd_run_daemon(&config).await,
         Some(Command::ListLoops) => cmd_list_loops(&config).await,
         Some(Command::Metrics { loop_type, format }) => cmd_metrics(loop_type.as_deref(), format).await,
+        Some(Command::Logs { follow, lines }) => cmd_logs(follow, lines).await,
         None => {
-            // Default: show status
-            cmd_status(false, OutputFormat::Text).await
+            // Default: print help with tool status
+            print_help_with_status()
         }
     }
+}
+
+/// Print help with required tools and daemon status
+fn print_help_with_status() -> Result<()> {
+    // Print help using clap
+    let mut cmd = Cli::command();
+    cmd.print_help()?;
+    println!();
+    println!();
+
+    // Print the after-help content
+    print!("{}", generate_after_help());
+
+    Ok(())
 }
 
 /// Start the daemon
@@ -210,8 +223,8 @@ async fn cmd_logs(follow: bool, lines: usize) -> Result<()> {
     Ok(())
 }
 
-/// Run a single loop (for development/testing)
-async fn cmd_run(config: &Config, loop_type: &str, task: &str, max_iterations: Option<u32>) -> Result<()> {
+/// Run a loop interactively (REPL mode)
+async fn cmd_repl(config: &Config, loop_type: &str, task: &str, max_iterations: Option<u32>) -> Result<()> {
     // Load loop types
     let loader = LoopTypeLoader::new(&config.loops)?;
 

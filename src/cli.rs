@@ -9,7 +9,6 @@ use std::path::PathBuf;
     name = "taskdaemon",
     about = "Ralph Wiggum loop orchestrator for concurrent AI workflows",
     version = env!("GIT_DESCRIBE"),
-    after_help = "Logs are written to: ~/.local/share/taskdaemon/logs/taskdaemon.log"
 )]
 pub struct Cli {
     /// Path to config file
@@ -28,43 +27,17 @@ pub struct Cli {
 /// CLI subcommands
 #[derive(Subcommand)]
 pub enum Command {
-    /// Start the daemon in the background
-    Start {
-        /// Don't fork to background (run in foreground)
-        #[arg(long)]
-        foreground: bool,
-    },
-
-    /// Stop the running daemon
-    Stop,
-
-    /// Show daemon status and running loops
-    Status {
-        /// Show detailed loop information
-        #[arg(short, long)]
-        detailed: bool,
-
-        /// Output format
-        #[arg(short, long, default_value = "text")]
-        format: OutputFormat,
+    /// Manage the taskdaemon daemon
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
     },
 
     /// Launch the interactive TUI
     Tui,
 
-    /// Show daemon logs
-    Logs {
-        /// Follow log output (like tail -f)
-        #[arg(short, long)]
-        follow: bool,
-
-        /// Number of lines to show
-        #[arg(short, long, default_value = "50")]
-        lines: usize,
-    },
-
-    /// Run a single loop (for development/testing)
-    Run {
+    /// Run a loop interactively (REPL mode)
+    Repl {
         /// Loop type to run (plan, spec, phase, ralph)
         #[arg(value_name = "TYPE")]
         loop_type: String,
@@ -77,7 +50,7 @@ pub enum Command {
         max_iterations: Option<u32>,
     },
 
-    /// Internal: Run as daemon process (used by `start`)
+    /// Internal: Run as daemon process (used by `daemon start`)
     #[command(hide = true)]
     RunDaemon,
 
@@ -94,6 +67,159 @@ pub enum Command {
         #[arg(short, long, default_value = "text")]
         format: OutputFormat,
     },
+
+    /// Show daemon logs
+    Logs {
+        /// Follow log output (like tail -f)
+        #[arg(short, long)]
+        follow: bool,
+
+        /// Number of lines to show
+        #[arg(short, long, default_value = "50")]
+        lines: usize,
+    },
+}
+
+/// Daemon management subcommands
+#[derive(Subcommand)]
+pub enum DaemonCommand {
+    /// Start the daemon
+    Start {
+        /// Don't fork to background (run in foreground)
+        #[arg(long)]
+        foreground: bool,
+    },
+
+    /// Stop the daemon
+    Stop,
+
+    /// Check daemon status
+    Status {
+        /// Show detailed loop information
+        #[arg(short, long)]
+        detailed: bool,
+
+        /// Output format
+        #[arg(short, long, default_value = "text")]
+        format: OutputFormat,
+    },
+}
+
+/// Result of checking a required tool
+pub struct ToolCheck {
+    pub name: &'static str,
+    pub available: bool,
+    pub version: Option<String>,
+}
+
+impl ToolCheck {
+    /// Check if a tool is available and get its version
+    pub fn check(name: &'static str, version_args: &[&str]) -> Self {
+        let result = std::process::Command::new(name).args(version_args).output();
+
+        match result {
+            Ok(output) if output.status.success() => {
+                let version_str = String::from_utf8_lossy(&output.stdout);
+                let version = parse_version(&version_str);
+                Self {
+                    name,
+                    available: true,
+                    version: Some(version),
+                }
+            }
+            _ => Self {
+                name,
+                available: false,
+                version: None,
+            },
+        }
+    }
+}
+
+/// Parse version from command output (extracts first version-like string)
+fn parse_version(output: &str) -> String {
+    // Look for patterns like "1.2.3" or "v1.2.3"
+    for word in output.split_whitespace() {
+        let word = word.trim_start_matches('v');
+        if word.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            // Take until non-version character
+            let version: String = word.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            if !version.is_empty() {
+                return version;
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Check all required tools and return their status
+pub fn check_required_tools() -> Vec<ToolCheck> {
+    vec![
+        ToolCheck::check("bwrap", &["--version"]),
+        ToolCheck::check("git", &["--version"]),
+    ]
+}
+
+/// Check if the daemon is running (lightweight check for help display)
+pub fn is_daemon_running() -> bool {
+    // Use the same path logic as daemon.rs:default_pid_path()
+    let pid_file = dirs::runtime_dir()
+        .or_else(dirs::data_local_dir)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("taskdaemon")
+        .join("taskdaemon.pid");
+
+    if !pid_file.exists() {
+        return false;
+    }
+
+    if let Ok(contents) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = contents.trim().parse::<u32>()
+    {
+        // Check if process exists
+        return PathBuf::from(format!("/proc/{}", pid)).exists();
+    }
+
+    false
+}
+
+/// Get the log file path
+pub fn get_log_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("taskdaemon")
+        .join("logs")
+        .join("taskdaemon.log")
+}
+
+/// Generate the after_help text with tool checks and daemon status
+pub fn generate_after_help() -> String {
+    let tools = check_required_tools();
+    let daemon_running = is_daemon_running();
+    let log_path = get_log_path();
+
+    let mut help = String::new();
+
+    // Required Tools section
+    help.push_str("Required Tools:\n");
+    for tool in &tools {
+        let icon = if tool.available { "\u{2705}" } else { "\u{274C}" };
+        let version = tool.version.as_deref().unwrap_or("not found");
+        help.push_str(&format!("  {} {:<10} {}\n", icon, tool.name, version));
+    }
+
+    // Daemon section
+    help.push('\n');
+    help.push_str("Daemon:\n");
+    let daemon_icon = if daemon_running { "\u{2705}" } else { "\u{274C}" };
+    let daemon_status = if daemon_running { "running" } else { "stopped" };
+    help.push_str(&format!("  {} {}\n", daemon_icon, daemon_status));
+
+    // Log path
+    help.push('\n');
+    help.push_str(&format!("Logs are written to: {}\n", log_path.display()));
+
+    help
 }
 
 /// Output format for status/metrics commands
@@ -139,27 +265,47 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_parse_start() {
-        let cli = Cli::parse_from(["taskdaemon", "start"]);
-        assert!(matches!(cli.command, Some(Command::Start { foreground: false })));
+    fn test_cli_parse_daemon_start() {
+        let cli = Cli::parse_from(["taskdaemon", "daemon", "start"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Daemon {
+                command: DaemonCommand::Start { foreground: false }
+            })
+        ));
     }
 
     #[test]
-    fn test_cli_parse_start_foreground() {
-        let cli = Cli::parse_from(["taskdaemon", "start", "--foreground"]);
-        assert!(matches!(cli.command, Some(Command::Start { foreground: true })));
+    fn test_cli_parse_daemon_start_foreground() {
+        let cli = Cli::parse_from(["taskdaemon", "daemon", "start", "--foreground"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Daemon {
+                command: DaemonCommand::Start { foreground: true }
+            })
+        ));
     }
 
     #[test]
-    fn test_cli_parse_stop() {
-        let cli = Cli::parse_from(["taskdaemon", "stop"]);
-        assert!(matches!(cli.command, Some(Command::Stop)));
+    fn test_cli_parse_daemon_stop() {
+        let cli = Cli::parse_from(["taskdaemon", "daemon", "stop"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Daemon {
+                command: DaemonCommand::Stop
+            })
+        ));
     }
 
     #[test]
-    fn test_cli_parse_status() {
-        let cli = Cli::parse_from(["taskdaemon", "status"]);
-        assert!(matches!(cli.command, Some(Command::Status { .. })));
+    fn test_cli_parse_daemon_status() {
+        let cli = Cli::parse_from(["taskdaemon", "daemon", "status"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Daemon {
+                command: DaemonCommand::Status { .. }
+            })
+        ));
     }
 
     #[test]
@@ -169,9 +315,9 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_parse_run() {
-        let cli = Cli::parse_from(["taskdaemon", "run", "ralph", "Fix the bug"]);
-        if let Some(Command::Run {
+    fn test_cli_parse_repl() {
+        let cli = Cli::parse_from(["taskdaemon", "repl", "ralph", "Fix the bug"]);
+        if let Some(Command::Repl {
             loop_type,
             task,
             max_iterations,
@@ -181,7 +327,7 @@ mod tests {
             assert_eq!(task, "Fix the bug");
             assert!(max_iterations.is_none());
         } else {
-            panic!("Expected Run command");
+            panic!("Expected Repl command");
         }
     }
 
@@ -195,7 +341,14 @@ mod tests {
 
     #[test]
     fn test_cli_with_config() {
-        let cli = Cli::parse_from(["taskdaemon", "-c", "/path/to/config.yml", "status"]);
+        let cli = Cli::parse_from(["taskdaemon", "-c", "/path/to/config.yml", "daemon", "status"]);
         assert_eq!(cli.config, Some(PathBuf::from("/path/to/config.yml")));
+    }
+
+    #[test]
+    fn test_parse_version() {
+        assert_eq!(parse_version("git version 2.43.0"), "2.43.0");
+        assert_eq!(parse_version("bwrap 0.9.0"), "0.9.0");
+        assert_eq!(parse_version("v1.2.3"), "1.2.3");
     }
 }

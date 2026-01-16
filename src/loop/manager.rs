@@ -290,9 +290,10 @@ impl LoopManager {
         let worktree_path = worktree_info.path.clone();
 
         let handle = tokio::spawn(async move {
-            let engine = LoopEngine::new(exec_id.clone(), loop_config, llm, worktree_path);
+            // Use with_coordinator to wire the coordinator handle into the engine
+            let engine = LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path, coord_handle);
 
-            let result = run_loop_task(engine, coord_handle, state).await;
+            let result = run_loop_task(engine, state).await;
 
             // Release permit when done
             drop(permit);
@@ -444,11 +445,7 @@ impl LoopManager {
 }
 
 /// Run a loop task and handle completion
-async fn run_loop_task(
-    mut engine: LoopEngine,
-    _coord_handle: crate::coordinator::CoordinatorHandle,
-    state: StateManager,
-) -> LoopTaskResult {
+async fn run_loop_task(mut engine: LoopEngine, state: StateManager) -> LoopTaskResult {
     let exec_id = engine.exec_id.clone();
 
     match engine.run().await {
