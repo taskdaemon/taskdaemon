@@ -26,11 +26,14 @@
 
 pub mod cli;
 pub mod config;
+pub mod coordinator;
 pub mod domain;
 pub mod llm;
 pub mod progress;
+pub mod scheduler;
 pub mod state;
 pub mod tools;
+pub mod watcher;
 pub mod worktree;
 
 // Note: 'loop' is a reserved keyword, so we use r#loop
@@ -39,6 +42,9 @@ pub mod r#loop;
 
 // Re-export commonly used types
 pub use config::{Config, LlmConfig};
+pub use coordinator::{
+    CoordMessage, CoordRequest, Coordinator, CoordinatorConfig, CoordinatorHandle, CoordinatorMetrics,
+};
 pub use domain::{
     DomainId, Filter, FilterOp, IndexValue, LoopExecution, LoopExecutionStatus, Phase, PhaseStatus, Plan, PlanStatus,
     Priority, Record, Spec, SpecStatus, Store,
@@ -46,6 +52,8 @@ pub use domain::{
 pub use llm::{AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError};
 pub use r#loop::{IterationResult, LoopConfig, LoopEngine, LoopStatus};
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
+pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};
 pub use state::{RecoveryStats, StateCommand, StateError, StateManager, StateResponse, recover, scan_for_recovery};
 pub use tools::{Tool, ToolContext, ToolError, ToolExecutor, ToolResult};
+pub use watcher::{MainWatcher, WatcherConfig};
 pub use worktree::{WorktreeConfig, WorktreeError, WorktreeInfo, WorktreeManager};
