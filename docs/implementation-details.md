@@ -2,7 +2,7 @@
 
 **Author:** Scott A. Idler
 **Date:** 2026-01-15
-**Status:** Draft - Pending Review
+**Status:** Active
 
 This document captures implementation specifics that supplement the main design docs.
 
@@ -161,17 +161,17 @@ TaskDaemon includes a JSONL size monitor that checks file sizes before loading:
 This fires BEFORE attempting to load into memory, preventing OOM.
 
 ```rust
-const JSONL_WARN_THRESHOLD: u64 = 50 * 1024 * 1024;   // 50 MB
-const JSONL_ERROR_THRESHOLD: u64 = 200 * 1024 * 1024; // 200 MB
+const JSONL_WARN_THRESHOLD: u64 = 100 * 1024 * 1024;  // 100 MB
+const JSONL_ERROR_THRESHOLD: u64 = 500 * 1024 * 1024; // 500 MB
 
 fn check_jsonl_size(path: &Path) -> Result<()> {
     let size = std::fs::metadata(path)?.len();
     if size > JSONL_ERROR_THRESHOLD {
-        return Err(eyre!("JSONL file {} exceeds 200MB limit ({}MB). Run compaction.",
+        return Err(eyre!("JSONL file {} exceeds 500MB limit ({}MB). Run compaction.",
             path.display(), size / 1024 / 1024));
     }
     if size > JSONL_WARN_THRESHOLD {
-        tracing::warn!("JSONL file {} is large ({}MB). Consider compaction.",
+        tracing::warn!("JSONL file {} is large ({}MB, warn at 100MB). Consider compaction.",
             path.display(), size / 1024 / 1024);
     }
     Ok(())
@@ -186,8 +186,8 @@ This is unlikely to be a problem in practice. A typical project will have:
 - Thousands of LoopExecutions over time (manageable)
 
 At ~1KB per record average:
-- 50 MB ≈ 50,000 records (warning)
-- 200 MB ≈ 200,000 records (error)
+- 100 MB ≈ 100,000 records (warning)
+- 500 MB ≈ 500,000 records (error)
 
 ### If Threshold Hit
 
@@ -223,7 +223,7 @@ When a Phase loop runs, it creates a **LoopExecution** record with `loop-type: "
 | **phase** | Spec phase | Code/tests in worktree | Implement one phase of a Spec |
 | **ralph** | Task description | Varies | Generic loop for arbitrary tasks |
 
-These are configurations in `~/.config/taskdaemon/loops/` or `.taskdaemon/loops/`. They all implement the Loop interface defined in Section 1.
+These are embedded in the binary. See [taskdaemon.yml](../taskdaemon.yml) for full definitions. Users can override them via `~/.config/taskdaemon/loops/` or `.taskdaemon/loops/`. All loop types implement the Loop interface defined in Section 1.
 
 ---
 
@@ -383,6 +383,7 @@ Stored as:     /home/user/project/.taskstore/specs/oauth-endpoints.md
 
 ## References
 
+- [taskdaemon.yml](../taskdaemon.yml) - Full example config with all builtin loop definitions
 - [Main Design](./taskdaemon-design.md)
 - [Coordinator Protocol](./coordinator-design.md)
 - [Execution Model](./execution-model-design.md)

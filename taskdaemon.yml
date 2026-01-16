@@ -36,8 +36,8 @@ git:
 # === Storage Configuration ===
 storage:
   taskstore-dir: .taskstore
-  jsonl-warn-mb: 50
-  jsonl-error-mb: 200
+  jsonl-warn-mb: 100
+  jsonl-error-mb: 500
 
 # === Loop Type Paths ===
 loops:
@@ -107,6 +107,14 @@ plan:
     - review-pass
   outputs:
     - plan-markdown
+  tools:
+    - read_file
+    - write_file
+    - edit_file
+    - list_directory
+    - glob
+    - grep
+    - complete_task
 
 # -----------------------------------------------------------------------------
 # SPEC LOOP
@@ -164,6 +172,14 @@ spec:
   outputs:
     - spec-markdowns
     - specs-jsonl
+  tools:
+    - read_file
+    - write_file
+    - edit_file
+    - list_directory
+    - glob
+    - grep
+    - complete_task
 
 # -----------------------------------------------------------------------------
 # PHASE LOOP
@@ -238,6 +254,17 @@ phase:
     - previous-errors
   outputs:
     - committed-code
+  tools:
+    - read_file
+    - write_file
+    - edit_file
+    - list_directory
+    - glob
+    - grep
+    - run_command
+    - query_loop
+    - share_data
+    - complete_task
 
 # -----------------------------------------------------------------------------
 # RALPH LOOP
@@ -295,3 +322,14 @@ ralph:
     - previous-errors
   outputs:
     - task-artifacts
+  tools:
+    - read_file
+    - write_file
+    - edit_file
+    - list_directory
+    - glob
+    - grep
+    - run_command
+    - query_loop
+    - share_data
+    - complete_task

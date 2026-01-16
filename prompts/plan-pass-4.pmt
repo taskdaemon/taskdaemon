@@ -1,0 +1,44 @@
+# Pass 4: ARCHITECTURE
+
+Focus ONLY on architectural fit. Assume completeness, correctness, edge cases handled.
+
+## Check For
+
+### Consistency with Existing Patterns
+- Does this follow established conventions in the codebase?
+- Are naming patterns consistent?
+- Does the module structure match existing code?
+- Are similar problems solved the same way?
+
+### Integration Points
+- Where does this connect to existing code?
+- Are those interfaces stable?
+- Will this break existing functionality?
+- Are there version compatibility concerns?
+
+### Scalability Implications
+- Will this work at 10x scale? 100x?
+- Are there bottlenecks being created?
+- Is state management appropriate?
+- Are there single points of failure?
+
+### Technical Debt
+- Is this creating shortcuts that will need fixing?
+- Are we duplicating existing functionality?
+- Are we over-engineering for current needs?
+- Will this be hard to change later?
+
+### Maintainability
+- Can someone else understand and modify this?
+- Are responsibilities clearly separated?
+- Is the complexity justified?
+- Are there adequate extension points?
+
+## Your Task
+
+For each architectural concern:
+1. Identify the specific issue
+2. Explain the impact if not addressed
+3. Update the Plan with fixes or explicit trade-off documentation
+
+Write the complete Plan with architectural concerns addressed.

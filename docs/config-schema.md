@@ -62,7 +62,7 @@ llm:
 # === Concurrency Limits ===
 concurrency:
   max-loops: 50                          # Max concurrent loop tasks
-  max-api-calls: 10                      # Max concurrent LLM API calls
+  max-api-calls: 10                      # Max concurrent LLM API calls (conservative, tune based on rate limits)
   max-worktrees: 50                      # Max git worktrees on disk
 
 # === Validation Defaults ===
@@ -70,6 +70,14 @@ validation:
   command: "otto ci"                     # Default validator command
   iteration-timeout-ms: 300000           # Max time per iteration (5 min)
   max-iterations: 100                    # Default safety limit
+
+# === Progress Strategy ===
+# How to accumulate state across iterations (fresh context per iteration)
+# See docs/progress-strategy.md for details
+progress:
+  strategy: system-captured              # Only option for now (future: llm-summarized, hybrid)
+  max-entries: 5                         # Keep last N iterations of progress
+  max-output-chars: 500                  # Truncate validation output per iteration
 
 # === Git Configuration ===
 git:
@@ -79,8 +87,8 @@ git:
 # === Storage Configuration ===
 storage:
   taskstore-dir: .taskstore              # Relative to project root
-  jsonl-warn-mb: 50                      # JSONL size warning threshold
-  jsonl-error-mb: 200                    # JSONL size error threshold
+  jsonl-warn-mb: 100                     # JSONL size warning threshold
+  jsonl-error-mb: 500                    # JSONL size error threshold
 
 # === Loop Type Paths ===
 loops:
@@ -115,14 +123,19 @@ validation:
   iteration-timeout-ms: 300000
   max-iterations: 100
 
+progress:
+  strategy: system-captured
+  max-entries: 5
+  max-output-chars: 500
+
 git:
   worktree-dir: /tmp/taskdaemon/worktrees
   disk-quota-gb: 100
 
 storage:
   taskstore-dir: .taskstore
-  jsonl-warn-mb: 50
-  jsonl-error-mb: 200
+  jsonl-warn-mb: 100
+  jsonl-error-mb: 500
 
 loops:
   paths:
@@ -207,7 +220,7 @@ taskdaemon start \
 
 Loop types are loaded from paths in order. Later definitions override earlier:
 
-1. **builtin** - plan, spec, phase, ralph (embedded in binary)
+1. **builtin** - plan, spec, phase, ralph (embedded in binary, see [taskdaemon.yml](../taskdaemon.yml) for definitions)
 2. **~/.config/taskdaemon/loops/** - User's custom loop types
 3. **.taskdaemon/loops/** - Project-specific loop types
 
@@ -232,5 +245,6 @@ This overrides the builtin `phase` for this project only.
 
 ## References
 
+- [taskdaemon.yml](../taskdaemon.yml) - Full example config with all builtin loop definitions (plan, spec, phase, ralph)
 - [Implementation Details](./implementation-details.md) - Loop schema, domain types
 - [Main Design](./taskdaemon-design.md) - Architecture overview

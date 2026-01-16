@@ -890,11 +890,11 @@ let api_url = coord.query(
 
 ## Open Questions
 
-- [ ] Should we support filtered subscriptions (e.g., "phase_complete for exec-001 only")?
-- [ ] Should query replies be cached (same question asked twice)?
-- [ ] Should we support message priorities (urgent vs normal)?
-- [ ] Should we add a "cancel query" operation?
-- [ ] Should we limit payload size (e.g., max 1MB per message)?
+- [x] Should we support filtered subscriptions (e.g., "phase_complete for exec-001 only")? **Decision:** No. Over-engineering. Loops can filter in their message handler.
+- [x] Should query replies be cached (same question asked twice)? **Decision:** No. Queries are rare, caching adds staleness bugs and complexity.
+- [x] Should we support message priorities (urgent vs normal)? **Decision:** No. FIFO is sufficient. Priority inversion bugs are real and hard to debug.
+- [x] Should we add a "cancel query" operation? **Decision:** Yes. Useful when loop gets stopped mid-query. Simple to implement (remove from pending_queries map).
+- [x] Should we limit payload size (e.g., max 1MB per message)? **Decision:** Yes, 1MB limit. Prevents OOM from pathological shares. Reject with error if exceeded.
 
 ## References
 
@@ -902,6 +902,7 @@ let api_url = coord.query(
 - [Execution Model](./execution-model-design.md) - Git worktree management
 - [Implementation Details](./implementation-details.md) - Loop schema, domain types
 - [Config Schema](./config-schema.md) - Configuration hierarchy
-- [TaskStore](https://github.com/saidler/taskstore) - Persistent state library
+- [Progress Strategy](./progress-strategy.md) - Cross-iteration state accumulation
+- [TaskStore](../taskstore/) - Persistent state library (sibling directory)
 - [Tokio mpsc channels](https://docs.rs/tokio/latest/tokio/sync/mpsc/)
 - [Actor pattern in Rust](https://ryhl.io/blog/actors-with-tokio/)

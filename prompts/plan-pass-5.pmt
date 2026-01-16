@@ -1,0 +1,53 @@
+# Pass 5: CLARITY
+
+Focus ONLY on clarity and implementability. This is the final pass.
+
+## Check For
+
+### Precise Language
+- No "should", "might", "could", "probably"
+- No "etc.", "and so on", "and more"
+- No undefined jargon
+- Specific quantities, not "fast", "many", "large"
+
+### Concrete Examples
+- Abstract concepts have examples
+- Data formats are shown, not just described
+- Workflows have step-by-step examples
+
+### Clear Acceptance Criteria
+- How do we know when done?
+- What tests must pass?
+- What metrics must be met?
+
+### Unambiguous Instructions
+- Only one valid interpretation
+- No room for "I thought it meant..."
+- Edge cases explicitly addressed
+
+### Measurable Outcomes
+- Performance targets are numbers
+- Success criteria are binary (pass/fail)
+- Timelines are concrete (if applicable)
+
+## Ambiguity Patterns to Eliminate
+
+BAD: "Make it performant"
+GOOD: "P95 latency under 100ms for 1000 concurrent requests"
+
+BAD: "Handle errors appropriately"
+GOOD: "On network timeout, retry 3 times with exponential backoff (1s, 2s, 4s), then return error to caller"
+
+BAD: "Support multiple formats"
+GOOD: "Support JSON and YAML input formats, detected by file extension"
+
+BAD: "Integrate with the existing system"
+GOOD: "Call AuthService.validate_token() before processing requests"
+
+## Your Task
+
+For each ambiguous statement:
+1. Identify the ambiguity
+2. Replace with precise language
+
+Write the complete final Plan, ready for implementation.

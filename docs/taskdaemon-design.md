@@ -475,38 +475,38 @@ loop_type:
       description: "Sentinel file marking completion"
 
   validation:
-    command: "{{language_config.validation_cmd}}"
-    working_dir: "{{worktree}}"
-    success_exit_code: 0
+    command: "{{language-config.validation-cmd}}"
+    working-dir: "{{worktree}}"
+    success-exit-code: 0
 
   completion:
-    condition: "validation.exit_code == 0"
+    condition: "validation.exit-code == 0"
 
-  prompt_template: |
-    You are implementing {{phase_name}} (Phase {{phase_num}}/{{total_phases}}).
+  prompt-template: |
+    You are implementing {{phase-name}} (Phase {{phase-number}}/{{total-phases}}).
 
     ## Spec Context
-    {{spec_excerpt}}
+    {{spec-content}}
 
     ## Current State
-    {{git_status}}
-    {{git_log}}
+    {{git-status}}
+    {{git-diff}}
 
-    {{#if previous_errors}}
+    {{#if previous-errors}}
     ## Previous Validation Errors
-    {{previous_errors}}
+    {{previous-errors}}
     {{/if}}
 
     ## Task
     1. Implement phase requirements
     2. Write tests
-    3. Run: {{validation_cmd}}
+    3. Run: {{validation-command}}
     4. When CI passes, you're done
 
     Working directory: {{worktree}}
 
-  max_iterations: 100
-  iteration_timeout_ms: 300000  # 5 minutes
+  max-iterations: 100
+  iteration-timeout-ms: 300000  # 5 minutes
 ```
 
 **See:** [loop-type-definition.md](./loop-type-definition.md) *(future doc)*
@@ -1210,16 +1210,17 @@ Several docs from the previous AWL-based design contain useful concepts:
 
 ## Open Questions
 
-- [ ] Should loop type definitions support Turing-complete logic, or keep simple (validation, templates)? **Recommend:** Keep simple
+- [x] Should loop type definitions support Turing-complete logic, or keep simple (validation, templates)? **Decision:** Keep simple. Complex logic belongs in LLM prompts, not loop definitions.
 - [x] Store loop definitions in TaskStore or YAML files? **Decision:** YAML files (parsed into Rust types at runtime)
-- [ ] Optimal semaphore limit for concurrent API calls? **Recommend:** Start with 50, tune based on rate limits
-- [ ] Should we implement rate limiting per loop or global? **Recommend:** Global, let Anthropic throttle us
+- [x] Optimal semaphore limit for concurrent API calls? **Decision:** 10 concurrent API calls. Conservative start, tune based on rate limit feedback.
+- [x] Should we implement rate limiting per loop or global? **Decision:** Global. Let Anthropic throttle us, handle 429s with exponential backoff.
 - [ ] How to handle Specs that block on external dependencies? **Recommend:** Manual unblock command
 - [ ] Should Plan refinement loop support user interaction mid-loop? **Recommend:** Yes, via channel (Phase 5+)
-- [ ] Maximum reasonable iterations before declaring loop stuck? **Recommend:** 1000, configurable per loop type
+- [x] Maximum reasonable iterations before declaring loop stuck? **Decision:** 100 default (configurable per loop type). 1000 is too high for most cases.
 - [ ] Should we add a "supervisor loop" that monitors and restarts failed loops? **Recommend:** Phase 8 enhancement
 - [ ] How to handle authentication/API key rotation without daemon restart? **Recommend:** Hot-reload config file
 - [ ] Should loops prioritize by Plan importance or FIFO? **Recommend:** Add priority field to Plans (Phase 6+)
+- [x] How to accumulate progress across iterations? **Decision:** ProgressStrategy trait with SystemCapturedProgress default. See [progress-strategy.md](./progress-strategy.md)
 
 ## References
 
@@ -1229,16 +1230,26 @@ Several docs from the previous AWL-based design contain useful concepts:
 - **TaskStore:** Beads-inspired SQLite+JSONL+Git pattern
 
 ### Related Documents
-- [TaskStore](https://github.com/saidler/taskstore) - Generic persistent state library
+- [taskdaemon.yml](../taskdaemon.yml) - Full example config with all builtin loop definitions (plan, spec, phase, ralph)
+- [TaskStore](../taskstore/) - Generic persistent state library (sibling directory)
 - [Ralph Plugin Criticism](./stop-using-the-ralph-loop-plugin/summary.md) - Why plugins suffer context rot
 - [Coordinator Protocol](./coordinator-design.md) - Alert/Share/Query event system
 - [Execution Model](./execution-model-design.md) - Git worktree management and crash recovery
 - [TUI Design](./tui-design.md) - Terminal interface architecture
 - [Implementation Details](./implementation-details.md) - Loop schema, domain types, ID format, template variables
 - [Config Schema](./config-schema.md) - Configuration hierarchy and full schema
+- [Progress Strategy](./progress-strategy.md) - Cross-iteration state accumulation (ProgressStrategy trait)
+- [Rule of Five](./rule-of-five.md) - Structured Plan refinement methodology
+
+### Implementation Specifications
+- [LLM Client](./llm-client.md) - LlmClient trait, AnthropicClient implementation, streaming
+- [Tools](./tools.md) - Tool system with worktree-scoped execution
+- [Scheduler](./scheduler.md) - Priority queue + rate limiting for API calls
+- [Loop Engine](./loop-engine.md) - Iteration execution flow, agentic tool loop, validation
+- [Loop Manager](./loop-manager.md) - Orchestrator, dependency resolution, recovery, shutdown
+- [Domain Types](./domain-types.md) - Plan, Spec, LoopExecution types and Record trait
 
 ### Future Detail Documents
-- `llm-client.md` - LlmClient trait, AnthropicClient implementation, rate limiting
 - `deployment-guide.md` - Running TaskDaemon in production
 
 ---
