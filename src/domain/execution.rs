@@ -56,6 +56,10 @@ pub struct LoopExecution {
     /// Loop type name (matches a type loaded by LoopLoader)
     pub loop_type: String,
 
+    /// Short title for display (LLM-generated from task description)
+    #[serde(default)]
+    pub title: Option<String>,
+
     /// Parent record ID (depends on loop type hierarchy)
     pub parent: Option<String>,
 
@@ -97,6 +101,7 @@ impl LoopExecution {
         Self {
             id: generate_id("loop", &format!("{}-{}", loop_type, description)),
             loop_type,
+            title: None,
             parent: None,
             deps: Vec::new(),
             status: LoopExecutionStatus::Pending,
@@ -116,6 +121,7 @@ impl LoopExecution {
         Self {
             id: id.into(),
             loop_type: loop_type.into(),
+            title: None,
             parent: None,
             deps: Vec::new(),
             status: LoopExecutionStatus::Pending,
@@ -127,6 +133,18 @@ impl LoopExecution {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Set the title
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = Some(title.into());
+        self.updated_at = now_ms();
+    }
+
+    /// Builder method to set title
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
     }
 
     /// Set the parent record

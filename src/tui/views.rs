@@ -441,11 +441,11 @@ fn render_executions_table(state: &AppState, frame: &mut Frame, area: Rect) {
         .collect();
 
     let widths = [
-        Constraint::Min(30),    // NAME
-        Constraint::Length(12), // TYPE
-        Constraint::Length(8),  // ITER
-        Constraint::Length(12), // STATUS
-        Constraint::Length(10), // DURATION
+        Constraint::Percentage(50), // NAME - take more space for slug/title
+        Constraint::Length(8),      // TYPE
+        Constraint::Length(6),      // ITER
+        Constraint::Length(10),     // STATUS
+        Constraint::Length(10),     // DURATION
     ];
 
     let table = Table::new(rows, widths)
@@ -463,7 +463,7 @@ fn render_executions_table(state: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(table, area);
 
     if filtered.is_empty() {
-        render_empty_message(frame, area, "No running executions. Press <n> to create a new task.");
+        render_empty_message(frame, area, "No running executions. Press [n] to create a new task.");
     }
 }
 
@@ -645,22 +645,22 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
             } else {
                 // Show keybinds based on current view
                 let keybinds = match &state.current_view {
-                    View::Repl => vec![("<Enter>", "Submit"), ("<←/→>", "Views"), ("/clear", "Clear")],
+                    View::Repl => vec![("[Enter]", "Submit"), ("[←/→]", "Views"), ("/clear", "Clear")],
                     View::Records { .. } => vec![
-                        ("<Enter>", "Children"),
-                        ("<d>", "Describe"),
-                        ("<l>", "Logs"),
-                        ("<Esc>", "Back"),
+                        ("[Enter]", "Children"),
+                        ("[d]", "Describe"),
+                        ("[l]", "Logs"),
+                        ("[Esc]", "Back"),
                     ],
                     View::Executions => vec![
-                        ("<n>", "New Task"),
-                        ("<d>", "Describe"),
-                        ("<l>", "Logs"),
-                        ("<x>", "Cancel"),
-                        ("<D>", "Delete"),
+                        ("[n]", "New Task"),
+                        ("[d]", "Describe"),
+                        ("[l]", "Logs"),
+                        ("[x]", "Cancel"),
+                        ("[D]", "Delete"),
                     ],
-                    View::Logs { .. } => vec![("<Esc>", "Back"), ("<f>", "Follow")],
-                    View::Describe { .. } => vec![("<Esc>", "Back"), ("<l>", "Logs")],
+                    View::Logs { .. } => vec![("[Esc]", "Back"), ("[f]", "Follow")],
+                    View::Describe { .. } => vec![("[Esc]", "Back"), ("[l]", "Logs")],
                 };
 
                 let mut spans = vec![Span::raw(" ")];
@@ -673,12 +673,12 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                 }
                 spans.push(Span::raw("│ "));
                 spans.push(Span::styled(
-                    "<?>",
+                    "[?]",
                     Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
                 ));
                 spans.push(Span::raw(" Help "));
                 spans.push(Span::styled(
-                    "<q>",
+                    "[q]",
                     Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
                 ));
                 spans.push(Span::raw(" Quit"));

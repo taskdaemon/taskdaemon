@@ -13,9 +13,12 @@ use std::time::{Duration, Instant};
 
 use eyre::Result;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::llm::{CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolDefinition};
+use crate::llm::{
+    CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
+};
 use crate::state::StateManager;
 use crate::tools::{ToolContext, ToolExecutor};
 
@@ -29,6 +32,19 @@ use super::views;
 
 /// How often to refresh data from StateManager
 const DATA_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Result from the background LLM task
+#[derive(Debug)]
+enum LlmTaskResult {
+    /// LLM returned with response
+    Response {
+        content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+        stop_reason: StopReason,
+    },
+    /// Error occurred
+    Error(String),
+}
 
 /// TUI Runner that manages the terminal and event loop
 pub struct TuiRunner {
@@ -56,6 +72,10 @@ pub struct TuiRunner {
     system_prompt: String,
     /// Receiver for stream chunks (populated during streaming)
     stream_rx: Option<mpsc::Receiver<StreamChunk>>,
+    /// Receiver for LLM task results
+    llm_result_rx: Option<mpsc::Receiver<LlmTaskResult>>,
+    /// Handle to the background LLM task
+    llm_task: Option<JoinHandle<()>>,
 }
 
 impl TuiRunner {
@@ -76,6 +96,8 @@ impl TuiRunner {
             repl_conversation: Vec::new(),
             system_prompt,
             stream_rx: None,
+            llm_result_rx: None,
+            llm_task: None,
         }
     }
 
@@ -96,6 +118,8 @@ impl TuiRunner {
             repl_conversation: Vec::new(),
             system_prompt,
             stream_rx: None,
+            llm_result_rx: None,
+            llm_task: None,
         }
     }
 
@@ -116,6 +140,8 @@ impl TuiRunner {
             repl_conversation: Vec::new(),
             system_prompt,
             stream_rx: None,
+            llm_result_rx: None,
+            llm_task: None,
         }
     }
 
@@ -201,13 +227,16 @@ Working directory: {}"#,
     async fn handle_tick(&mut self) -> Result<()> {
         self.app.state_mut().tick();
 
-        // Check for pending REPL submit
+        // Check for pending REPL submit - spawn background task
         if let Some(input) = self.app.state_mut().pending_repl_submit.take() {
-            self.process_repl_input(&input).await;
+            self.start_repl_request(&input);
         }
 
         // Process streaming chunks if we're streaming
-        self.process_stream_chunks().await;
+        self.process_stream_chunks();
+
+        // Check for LLM task results
+        self.process_llm_results().await;
 
         // Check for pending task to start
         if let Some(task) = self.app.state_mut().pending_task.take() {
@@ -228,8 +257,8 @@ Working directory: {}"#,
         Ok(())
     }
 
-    /// Process pending stream chunks from LLM
-    async fn process_stream_chunks(&mut self) {
+    /// Process pending stream chunks from LLM (non-blocking)
+    fn process_stream_chunks(&mut self) {
         if let Some(rx) = &mut self.stream_rx {
             // Try to receive all available chunks without blocking
             while let Ok(chunk) = rx.try_recv() {
@@ -253,8 +282,172 @@ Working directory: {}"#,
         }
     }
 
-    /// Process REPL input - call LLM with streaming
-    async fn process_repl_input(&mut self, input: &str) {
+    /// Process LLM task results (non-blocking check)
+    async fn process_llm_results(&mut self) {
+        // Collect results first to avoid borrow conflicts
+        let results: Vec<LlmTaskResult> = if let Some(rx) = &mut self.llm_result_rx {
+            let mut collected = Vec::new();
+            while let Ok(result) = rx.try_recv() {
+                collected.push(result);
+            }
+            collected
+        } else {
+            return;
+        };
+
+        // Now process each result
+        for result in results {
+            match result {
+                LlmTaskResult::Response {
+                    content,
+                    tool_calls,
+                    stop_reason,
+                } => {
+                    // Handle the response based on stop reason
+                    match stop_reason {
+                        StopReason::EndTurn => {
+                            // Done - add response to history and conversation
+                            if let Some(ref text) = content {
+                                // Add streamed content to history
+                                let response_text = if self.app.state().repl_response_buffer.is_empty() {
+                                    text.clone()
+                                } else {
+                                    std::mem::take(&mut self.app.state_mut().repl_response_buffer)
+                                };
+                                self.app
+                                    .state_mut()
+                                    .repl_history
+                                    .push(ReplMessage::assistant(&response_text));
+                                self.repl_conversation.push(Message::assistant(&response_text));
+                            }
+                            self.finish_streaming();
+                        }
+                        StopReason::ToolUse => {
+                            // Execute tools and continue
+                            self.handle_tool_calls(content, tool_calls).await;
+                        }
+                        StopReason::MaxTokens => {
+                            if let Some(ref text) = content {
+                                let response_text = std::mem::take(&mut self.app.state_mut().repl_response_buffer);
+                                if !response_text.is_empty() {
+                                    self.app
+                                        .state_mut()
+                                        .repl_history
+                                        .push(ReplMessage::assistant(&response_text));
+                                }
+                                self.repl_conversation.push(Message::assistant(text));
+                            }
+                            self.app
+                                .state_mut()
+                                .repl_history
+                                .push(ReplMessage::error("[Response truncated - max tokens]"));
+                            self.finish_streaming();
+                        }
+                        StopReason::StopSequence => {
+                            if let Some(ref text) = content {
+                                let response_text = std::mem::take(&mut self.app.state_mut().repl_response_buffer);
+                                if !response_text.is_empty() {
+                                    self.app
+                                        .state_mut()
+                                        .repl_history
+                                        .push(ReplMessage::assistant(&response_text));
+                                }
+                                self.repl_conversation.push(Message::assistant(text));
+                            }
+                            self.finish_streaming();
+                        }
+                    }
+                }
+                LlmTaskResult::Error(err) => {
+                    self.app
+                        .state_mut()
+                        .repl_history
+                        .push(ReplMessage::error(format!("LLM error: {}", err)));
+                    self.finish_streaming();
+                }
+            }
+        }
+    }
+
+    /// Finish streaming state
+    fn finish_streaming(&mut self) {
+        self.app.state_mut().repl_streaming = false;
+        self.app.state_mut().repl_response_buffer.clear();
+        self.stream_rx = None;
+        self.llm_result_rx = None;
+        self.llm_task = None;
+    }
+
+    /// Handle tool calls from LLM response
+    async fn handle_tool_calls(&mut self, content: Option<String>, tool_calls: Vec<ToolCall>) {
+        if tool_calls.is_empty() {
+            self.finish_streaming();
+            return;
+        }
+
+        // Build assistant message with tool uses
+        let mut blocks: Vec<ContentBlock> = Vec::new();
+        if let Some(ref text) = content {
+            blocks.push(ContentBlock::text(text));
+            // Show text content if any
+            if !text.is_empty() {
+                let response_text = std::mem::take(&mut self.app.state_mut().repl_response_buffer);
+                if !response_text.is_empty() {
+                    self.app
+                        .state_mut()
+                        .repl_history
+                        .push(ReplMessage::assistant(&response_text));
+                }
+            }
+        }
+        for tc in &tool_calls {
+            blocks.push(ContentBlock::ToolUse {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.input.clone(),
+            });
+        }
+        self.repl_conversation.push(Message::assistant_blocks(blocks));
+
+        // Execute tools and collect results
+        let ctx = ToolContext::new_unsandboxed(self.worktree.clone(), "repl".to_string());
+        let mut result_blocks: Vec<ContentBlock> = Vec::new();
+
+        for tc in &tool_calls {
+            // Show tool call
+            self.app
+                .state_mut()
+                .repl_history
+                .push(ReplMessage::tool_result(&tc.name, format!("Running {}...", tc.name)));
+
+            let result = self.tool_executor.execute(tc, &ctx).await;
+
+            // Show result (truncated)
+            let display_content = if result.content.len() > 500 {
+                format!("{}... ({} chars)", &result.content[..500], result.content.len())
+            } else {
+                result.content.clone()
+            };
+            self.app
+                .state_mut()
+                .repl_history
+                .push(ReplMessage::tool_result(&tc.name, display_content));
+
+            result_blocks.push(ContentBlock::tool_result(&tc.id, &result.content, result.is_error));
+        }
+
+        // Add tool results to conversation
+        self.repl_conversation.push(Message::user_blocks(result_blocks));
+
+        // Clear response buffer for next LLM turn
+        self.app.state_mut().repl_response_buffer.clear();
+
+        // Continue with another LLM call
+        self.continue_llm_request();
+    }
+
+    /// Start a new REPL request (spawns background task)
+    fn start_repl_request(&mut self, input: &str) {
         // Check if we have an LLM client
         let llm = match &self.llm_client {
             Some(llm) => Arc::clone(llm),
@@ -276,9 +469,13 @@ Working directory: {}"#,
         self.app.state_mut().repl_streaming = true;
         self.app.state_mut().repl_response_buffer.clear();
 
-        // Create channel for streaming
-        let (tx, rx) = mpsc::channel::<StreamChunk>(100);
-        self.stream_rx = Some(rx);
+        // Create channel for streaming chunks
+        let (stream_tx, stream_rx) = mpsc::channel::<StreamChunk>(100);
+        self.stream_rx = Some(stream_rx);
+
+        // Create channel for LLM task result
+        let (result_tx, result_rx) = mpsc::channel::<LlmTaskResult>(1);
+        self.llm_result_rx = Some(result_rx);
 
         // Build request
         let request = CompletionRequest {
@@ -288,144 +485,82 @@ Working directory: {}"#,
             max_tokens: 4096,
         };
 
-        // Call the LLM - this is the main processing loop
-        match self.call_llm_loop(llm, request, tx).await {
-            Ok((final_text, new_conversation)) => {
-                // Update conversation with tool calls/results
-                self.repl_conversation = new_conversation;
-
-                // Add assistant response to display history
-                if !final_text.is_empty() {
-                    self.app
-                        .state_mut()
-                        .repl_history
-                        .push(ReplMessage::assistant(&final_text));
-                }
-            }
-            Err(e) => {
-                self.app
-                    .state_mut()
-                    .repl_history
-                    .push(ReplMessage::error(format!("LLM error: {}", e)));
-            }
-        }
-
-        // Clear streaming state
-        self.app.state_mut().repl_streaming = false;
-        self.app.state_mut().repl_response_buffer.clear();
-        self.stream_rx = None;
+        // Spawn background task
+        self.llm_task = Some(tokio::spawn(async move {
+            let result = match llm.stream(request, stream_tx).await {
+                Ok(response) => LlmTaskResult::Response {
+                    content: response.content,
+                    tool_calls: response.tool_calls,
+                    stop_reason: response.stop_reason,
+                },
+                Err(e) => LlmTaskResult::Error(e.to_string()),
+            };
+            let _ = result_tx.send(result).await;
+        }));
     }
 
-    /// Call LLM with tool use loop
-    async fn call_llm_loop(
-        &mut self,
-        llm: Arc<dyn LlmClient>,
-        initial_request: CompletionRequest,
-        tx: mpsc::Sender<StreamChunk>,
-    ) -> Result<(String, Vec<Message>)> {
-        let mut request = initial_request;
-        let mut conversation = request.messages.clone();
-        let mut final_text = String::new();
-
-        loop {
-            // Call LLM with streaming
-            let response = llm
-                .stream(request.clone(), tx.clone())
-                .await
-                .map_err(|e| eyre::eyre!("LLM error: {}", e))?;
-
-            // Capture any text content
-            if let Some(ref text) = response.content {
-                final_text = text.clone();
+    /// Continue LLM request after tool execution (spawns background task)
+    fn continue_llm_request(&mut self) {
+        // Check if we have an LLM client
+        let llm = match &self.llm_client {
+            Some(llm) => Arc::clone(llm),
+            None => {
+                self.finish_streaming();
+                return;
             }
+        };
 
-            match response.stop_reason {
-                StopReason::EndTurn => {
-                    // Done - add assistant response to conversation
-                    if let Some(ref content) = response.content {
-                        conversation.push(Message::assistant(content));
-                    }
-                    break;
-                }
-                StopReason::ToolUse => {
-                    // Execute tools and continue
-                    if response.tool_calls.is_empty() {
-                        break;
-                    }
+        // Create channel for streaming chunks
+        let (stream_tx, stream_rx) = mpsc::channel::<StreamChunk>(100);
+        self.stream_rx = Some(stream_rx);
 
-                    // Build assistant message with tool uses
-                    let mut blocks: Vec<ContentBlock> = Vec::new();
-                    if let Some(ref content) = response.content {
-                        blocks.push(ContentBlock::text(content));
-                    }
-                    for tc in &response.tool_calls {
-                        blocks.push(ContentBlock::ToolUse {
-                            id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            input: tc.input.clone(),
-                        });
-                    }
-                    conversation.push(Message::assistant_blocks(blocks));
+        // Create channel for LLM task result
+        let (result_tx, result_rx) = mpsc::channel::<LlmTaskResult>(1);
+        self.llm_result_rx = Some(result_rx);
 
-                    // Execute tools and collect results
-                    let ctx = ToolContext::new_unsandboxed(self.worktree.clone(), "repl".to_string());
-                    let mut result_blocks: Vec<ContentBlock> = Vec::new();
+        // Build request with current conversation (includes tool results)
+        let request = CompletionRequest {
+            system_prompt: self.system_prompt.clone(),
+            messages: self.repl_conversation.clone(),
+            tools: self.get_tool_definitions(),
+            max_tokens: 4096,
+        };
 
-                    for tc in &response.tool_calls {
-                        // Add tool call to display history
-                        self.app
-                            .state_mut()
-                            .repl_history
-                            .push(ReplMessage::tool_result(&tc.name, format!("Running {}...", tc.name)));
+        // Spawn background task
+        self.llm_task = Some(tokio::spawn(async move {
+            let result = match llm.stream(request, stream_tx).await {
+                Ok(response) => LlmTaskResult::Response {
+                    content: response.content,
+                    tool_calls: response.tool_calls,
+                    stop_reason: response.stop_reason,
+                },
+                Err(e) => LlmTaskResult::Error(e.to_string()),
+            };
+            let _ = result_tx.send(result).await;
+        }));
+    }
 
-                        let result = self.tool_executor.execute(tc, &ctx).await;
+    /// Generate a short title from task description using LLM
+    async fn generate_title(&self, task: &str) -> Option<String> {
+        let llm = self.llm_client.as_ref()?;
 
-                        // Add result to display history
-                        let display_content = if result.content.len() > 500 {
-                            format!("{}... ({} chars)", &result.content[..500], result.content.len())
-                        } else {
-                            result.content.clone()
-                        };
+        let request = CompletionRequest {
+            system_prompt: "Extract 2-4 key words from the task description to create a short title. \
+                           Output ONLY the title words separated by spaces, nothing else. \
+                           Examples: 'Add OAuth' 'Fix Login Bug' 'Update API Docs' 'Refactor Tests'"
+                .to_string(),
+            messages: vec![Message::user(task)],
+            tools: vec![],
+            max_tokens: 50,
+        };
 
-                        self.app
-                            .state_mut()
-                            .repl_history
-                            .push(ReplMessage::tool_result(&tc.name, display_content));
-
-                        result_blocks.push(ContentBlock::tool_result(&tc.id, &result.content, result.is_error));
-                    }
-
-                    // Add tool results to conversation
-                    conversation.push(Message::user_blocks(result_blocks));
-
-                    // Update request for next iteration
-                    request = CompletionRequest {
-                        system_prompt: self.system_prompt.clone(),
-                        messages: conversation.clone(),
-                        tools: self.get_tool_definitions(),
-                        max_tokens: 4096,
-                    };
-                }
-                StopReason::MaxTokens => {
-                    if let Some(ref content) = response.content {
-                        conversation.push(Message::assistant(content));
-                    }
-                    self.app
-                        .state_mut()
-                        .repl_history
-                        .push(ReplMessage::error("[Response truncated - max tokens reached]"));
-                    break;
-                }
-                StopReason::StopSequence => {
-                    if let Some(ref content) = response.content {
-                        conversation.push(Message::assistant(content));
-                    }
-                    break;
-                }
+        match llm.complete(request).await {
+            Ok(response) => response.content.map(|s| s.trim().to_string()),
+            Err(e) => {
+                debug!("Failed to generate title: {}", e);
+                None
             }
         }
-
-        Ok((final_text, conversation))
     }
 
     /// Start a new plan loop for the given task
@@ -440,8 +575,14 @@ Working directory: {}"#,
 
         debug!("Starting plan loop: {}", task);
 
+        // Generate a short title via LLM
+        let title = self.generate_title(task).await;
+
         // Create a plan execution - "plan" is always the entry point
-        let execution = crate::domain::LoopExecution::new("plan", task);
+        let mut execution = crate::domain::LoopExecution::new("plan", task);
+        if let Some(t) = title {
+            execution.set_title(t);
+        }
 
         match state_manager.create_execution(execution).await {
             Ok(id) => {
@@ -597,9 +738,28 @@ Working directory: {}"#,
                         };
                         let progress = e.progress.lines().last().unwrap_or("").to_string();
 
+                        // Build name: "019bc8-fix-login-bug" (lowercase, hyphenated)
+                        let hash = &e.id[..6.min(e.id.len())];
+                        let title_part = if let Some(ref title) = e.title {
+                            // Convert title to lowercase slug format
+                            title
+                                .to_lowercase()
+                                .chars()
+                                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                                .collect::<String>()
+                                .split('-')
+                                .filter(|s| !s.is_empty())
+                                .collect::<Vec<_>>()
+                                .join("-")
+                        } else {
+                            // Extract slug from ID: format is {hash}-{type}-{slug}
+                            e.id.splitn(3, '-').nth(2).unwrap_or(&e.id).to_string()
+                        };
+                        let name = format!("{}-{}", hash, title_part);
+
                         ExecutionItem {
                             id: e.id.clone(),
-                            name: format!("{} ({})", e.loop_type, &e.id[..8.min(e.id.len())]),
+                            name,
                             loop_type: e.loop_type.clone(),
                             iteration: format!("{}/10", e.iteration), // TODO: get max from config
                             status: e.status.to_string(),
