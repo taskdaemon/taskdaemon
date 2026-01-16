@@ -64,7 +64,7 @@ loops:
 # -----------------------------------------------------------------------------
 # Level 1: Takes user idea, produces Plan markdown using Rule of Five
 # Input: User's feature request or idea
-# Output: .taskstore/plans/<id>.md
+# Output: Plan markdown document
 # -----------------------------------------------------------------------------
 plan:
   # No parent - this is a root loop type
@@ -127,7 +127,7 @@ plan:
 # -----------------------------------------------------------------------------
 # Level 2: Takes completed Plan, produces N Spec markdowns with dependencies
 # Input: Plan markdown
-# Output: .taskstore/specs/<id>.md (multiple)
+# Output: Multiple Spec markdown documents
 # -----------------------------------------------------------------------------
 spec:
   parent: plan
@@ -162,7 +162,7 @@ spec:
     - Define phases for implementation
     - Specify dependencies on other Specs (if any)
 
-    Write Specs to: .taskstore/specs/<spec-id>.md
+    Write Specs to the specs output directory.
     Update specs.jsonl with metadata including deps field.
 
     When all Plan functionality is covered by Specs, validation will succeed.
