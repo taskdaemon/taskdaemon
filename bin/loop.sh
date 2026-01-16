@@ -39,7 +39,7 @@ fi
 iteration=0
 
 while true; do
-    ((iteration++))
+    ((++iteration))
 
     echo -e "${YELLOW}=== Iteration $iteration of $MAX_ITERATIONS ===${NC}"
 
