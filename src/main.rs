@@ -17,7 +17,7 @@ use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
 use taskdaemon::llm::{AnthropicClient, LlmClient};
-use taskdaemon::r#loop::{LoopManager, LoopManagerConfig, LoopTypeLoader};
+use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopManager, LoopManagerConfig, LoopTypeLoader};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;
 use taskdaemon::tui;
@@ -231,27 +231,73 @@ async fn cmd_logs(follow: bool, lines: usize) -> Result<()> {
 
 /// Run a loop interactively (REPL mode)
 async fn cmd_repl(config: &Config, loop_type: &str, task: &str, max_iterations: Option<u32>) -> Result<()> {
+    // Validate API key early
+    if std::env::var(&config.llm.api_key_env).is_err() {
+        return Err(eyre::eyre!(
+            "LLM API key not found. Set the {} environment variable.",
+            config.llm.api_key_env
+        ));
+    }
+
     // Load loop types
     let loader = LoopTypeLoader::new(&config.loops)?;
-
-    let loop_def = loader
+    let _loop_def = loader
         .get(loop_type)
         .ok_or_else(|| eyre::eyre!("Unknown loop type: {}", loop_type))?;
 
+    // Get loop config from the loader
+    let all_configs = loader.to_configs();
+    let mut loop_config = all_configs
+        .get(loop_type)
+        .cloned()
+        .ok_or_else(|| eyre::eyre!("Failed to build config for loop type: {}", loop_type))?;
+
+    // Override max_iterations if specified
+    if let Some(max) = max_iterations {
+        loop_config.max_iterations = max;
+    }
+
+    // Inject task into prompt template context
+    loop_config.prompt_template = loop_config.prompt_template.replace("{{task}}", task);
+
     println!("Running {} loop", loop_type);
     println!("  Task: {}", task);
-    println!("  Description: {}", loop_def.description);
-    if let Some(max) = max_iterations {
-        println!("  Max iterations: {}", max);
-    } else {
-        println!("  Max iterations: {} (default)", loop_def.max_iterations);
-    }
+    println!("  Max iterations: {}", loop_config.max_iterations);
     println!();
 
-    // TODO: Full loop execution implementation
-    // This would create a LoopExecution, set up the worktree, and run iterations
-    println!("Full loop execution not yet implemented.");
-    println!("Use the daemon for actual loop orchestration.");
+    // Use current directory as worktree (REPL runs in place)
+    let worktree = std::env::current_dir()?;
+
+    // Create LLM client
+    let llm: Arc<dyn LlmClient> =
+        Arc::new(AnthropicClient::from_config(&config.llm).context("Failed to create LLM client")?);
+
+    // Create and run engine (no coordinator for REPL mode)
+    let exec_id = format!("repl-{}", std::process::id());
+    let mut engine = LoopEngine::new(exec_id, loop_config, llm, worktree);
+
+    // Run with progress output
+    println!("Starting iterations...\n");
+
+    match engine.run().await? {
+        IterationResult::Complete { iterations } => {
+            println!("\n✓ Loop completed successfully after {} iterations", iterations);
+        }
+        IterationResult::Error { message, .. } => {
+            println!("\n✗ Loop failed: {}", message);
+            std::process::exit(1);
+        }
+        IterationResult::Interrupted { reason } => {
+            println!("\n⚠ Loop interrupted: {}", reason);
+        }
+        IterationResult::Continue { .. } => {
+            // Shouldn't happen, but handle gracefully
+            println!("\nLoop finished with continue status");
+        }
+        IterationResult::RateLimited { retry_after } => {
+            println!("\n⚠ Rate limited, retry after {:?}", retry_after);
+        }
+    }
 
     Ok(())
 }
