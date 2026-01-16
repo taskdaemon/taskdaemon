@@ -36,8 +36,15 @@ pub enum Command {
     /// Launch the interactive TUI
     Tui,
 
-    /// Run a loop interactively (REPL mode)
+    /// Interactive REPL for AI-assisted coding
     Repl {
+        /// Optional initial task to process
+        #[arg(value_name = "TASK")]
+        initial_task: Option<String>,
+    },
+
+    /// Run a loop to completion (batch mode)
+    Run {
         /// Loop type to run (plan, spec, phase, ralph)
         #[arg(value_name = "TYPE")]
         loop_type: String,
@@ -316,8 +323,28 @@ mod tests {
 
     #[test]
     fn test_cli_parse_repl() {
-        let cli = Cli::parse_from(["taskdaemon", "repl", "ralph", "Fix the bug"]);
-        if let Some(Command::Repl {
+        let cli = Cli::parse_from(["taskdaemon", "repl"]);
+        if let Some(Command::Repl { initial_task }) = cli.command {
+            assert!(initial_task.is_none());
+        } else {
+            panic!("Expected Repl command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_repl_with_task() {
+        let cli = Cli::parse_from(["taskdaemon", "repl", "Fix the bug"]);
+        if let Some(Command::Repl { initial_task }) = cli.command {
+            assert_eq!(initial_task, Some("Fix the bug".to_string()));
+        } else {
+            panic!("Expected Repl command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_run() {
+        let cli = Cli::parse_from(["taskdaemon", "run", "ralph", "Fix the bug"]);
+        if let Some(Command::Run {
             loop_type,
             task,
             max_iterations,
@@ -327,7 +354,7 @@ mod tests {
             assert_eq!(task, "Fix the bug");
             assert!(max_iterations.is_none());
         } else {
-            panic!("Expected Repl command");
+            panic!("Expected Run command");
         }
     }
 

@@ -75,11 +75,12 @@ async fn main() -> Result<()> {
             DaemonCommand::Status { detailed, format } => cmd_status(detailed, format).await,
         },
         Some(Command::Tui) => cmd_tui(&config).await,
-        Some(Command::Repl {
+        Some(Command::Repl { initial_task }) => cmd_repl_interactive(&config, initial_task).await,
+        Some(Command::Run {
             loop_type,
             task,
             max_iterations,
-        }) => cmd_repl(&config, &loop_type, &task, max_iterations).await,
+        }) => cmd_run(&config, &loop_type, &task, max_iterations).await,
         Some(Command::RunDaemon) => cmd_run_daemon(&config).await,
         Some(Command::ListLoops) => cmd_list_loops(&config).await,
         Some(Command::Metrics { loop_type, format }) => cmd_metrics(loop_type.as_deref(), format).await,
@@ -229,8 +230,13 @@ async fn cmd_logs(follow: bool, lines: usize) -> Result<()> {
     Ok(())
 }
 
-/// Run a loop interactively (REPL mode)
-async fn cmd_repl(config: &Config, loop_type: &str, task: &str, max_iterations: Option<u32>) -> Result<()> {
+/// Run the interactive REPL
+async fn cmd_repl_interactive(config: &Config, initial_task: Option<String>) -> Result<()> {
+    taskdaemon::repl::run_interactive(config, initial_task).await
+}
+
+/// Run a loop to completion (batch mode)
+async fn cmd_run(config: &Config, loop_type: &str, task: &str, max_iterations: Option<u32>) -> Result<()> {
     // Validate API key early
     if std::env::var(&config.llm.api_key_env).is_err() {
         return Err(eyre::eyre!(

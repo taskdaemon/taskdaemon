@@ -32,6 +32,7 @@ pub mod domain;
 pub mod llm;
 pub mod planning;
 pub mod progress;
+pub mod repl;
 pub mod scheduler;
 pub mod state;
 pub mod tools;
