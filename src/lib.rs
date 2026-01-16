@@ -51,8 +51,8 @@ pub use domain::{
 };
 pub use llm::{AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError};
 pub use r#loop::{
-    IterationResult, LoopConfig, LoopEngine, LoopManager, LoopManagerConfig, LoopStatus, LoopTaskResult,
-    topological_sort, validate_dependency_graph,
+    CascadeHandler, IterationResult, LoopConfig, LoopEngine, LoopManager, LoopManagerConfig, LoopStatus,
+    LoopTaskResult, LoopType, LoopTypeLoader, topological_sort, validate_dependency_graph,
 };
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};

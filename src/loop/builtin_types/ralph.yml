@@ -1,0 +1,61 @@
+# Ralph Loop Type
+# Generic loop for arbitrary tasks (the classic Ralph Wiggum pattern)
+description: "Generic loop for arbitrary tasks - the classic Ralph Wiggum pattern"
+
+prompt-template: |
+  ## Task
+  {{task-description}}
+
+  ## Current State
+  Working directory: {{working-directory}}
+
+  {{#if files-in-scope}}
+  Files in scope:
+  {{files-in-scope}}
+  {{/if}}
+
+  {{#if git-status}}
+  Git status:
+  {{git-status}}
+  {{/if}}
+
+  {{#if progress}}
+  ## Previous Iterations
+  {{progress}}
+  {{/if}}
+
+  {{#if previous-errors}}
+  ## Validation Output (failed)
+  {{previous-errors}}
+  {{/if}}
+
+  ## Instructions
+  Complete the task. Make necessary changes to files.
+  Commit your changes when appropriate.
+
+  When validation passes, the task is complete.
+
+validation-command: "otto ci"
+success-exit-code: 0
+max-iterations: 100
+iteration-timeout-ms: 300000
+
+inputs:
+  - task-description
+  - working-directory
+  - files-in-scope
+  - git-status
+  - previous-errors
+outputs:
+  - task-artifacts
+tools:
+  - read_file
+  - write_file
+  - edit_file
+  - list_directory
+  - glob
+  - grep
+  - run_command
+  - query_loop
+  - share_data
+  - complete_task

@@ -1,0 +1,58 @@
+# Spec Loop Type
+# Level 2: Takes completed Plan, produces N Spec markdowns with dependencies
+description: "Decompose a Plan into atomic Spec documents with dependencies"
+
+prompt-template: |
+  You are decomposing a Plan into Specs (atomic work units).
+
+  ## Plan Content
+  {{plan-content}}
+
+  {{#if existing-specs}}
+  ## Existing Specs
+  {{existing-specs}}
+  {{/if}}
+
+  {{#if coverage-gaps}}
+  ## Coverage Analysis
+  What the Plan covers that Specs don't yet:
+  {{coverage-gaps}}
+  {{/if}}
+
+  {{#if progress}}
+  ## Previous Iterations
+  {{progress}}
+  {{/if}}
+
+  ## Instructions
+  Create Spec documents for uncovered functionality. Each Spec should:
+  - Be atomic (completable in one focused session)
+  - Have clear acceptance criteria
+  - Define phases for implementation
+  - Specify dependencies on other Specs (if any)
+
+  Write Specs to: .taskstore/specs/<spec-id>.md
+  Update specs.jsonl with metadata including deps field.
+
+  When all Plan functionality is covered by Specs, validation will succeed.
+
+validation-command: "otto ci"
+success-exit-code: 0
+max-iterations: 50
+iteration-timeout-ms: 300000
+
+inputs:
+  - plan-content
+  - existing-specs
+  - coverage-gaps
+outputs:
+  - spec-markdowns
+  - specs-jsonl
+tools:
+  - read_file
+  - write_file
+  - edit_file
+  - list_directory
+  - glob
+  - grep
+  - complete_task

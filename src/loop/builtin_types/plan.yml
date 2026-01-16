@@ -1,0 +1,55 @@
+# Plan Loop Type
+# Level 1: Takes user idea, produces Plan markdown using Rule of Five
+description: "Create or refine a Plan document using Rule of Five methodology"
+
+prompt-template: |
+  You are creating a Plan document for the following request:
+
+  ## User Request
+  {{user-request}}
+
+  {{#if current-plan}}
+  ## Current Plan Draft
+  {{current-plan}}
+  {{/if}}
+
+  ## Review Pass
+  This is review pass {{review-pass}} of 5.
+
+  Focus areas by pass:
+  - Pass 1: Completeness - Are all sections filled? Missing requirements?
+  - Pass 2: Correctness - Logical errors? Wrong assumptions?
+  - Pass 3: Edge Cases - What could go wrong? Error handling?
+  - Pass 4: Architecture - Does this fit the larger system?
+  - Pass 5: Clarity - Is it implementable? Ambiguous sections?
+
+  {{#if progress}}
+  ## Previous Iterations
+  {{progress}}
+  {{/if}}
+
+  ## Instructions
+  Review and improve the Plan. Write the complete updated Plan to:
+  {{output-file}}
+
+  When the Plan is complete and passes all 5 review passes, ensure validation succeeds.
+
+validation-command: "otto ci"
+success-exit-code: 0
+max-iterations: 25
+iteration-timeout-ms: 300000
+
+inputs:
+  - user-request
+  - current-plan
+  - review-pass
+outputs:
+  - plan-markdown
+tools:
+  - read_file
+  - write_file
+  - edit_file
+  - list_directory
+  - glob
+  - grep
+  - complete_task

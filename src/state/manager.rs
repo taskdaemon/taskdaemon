@@ -212,6 +212,39 @@ impl StateManager {
             .await
             .map_err(|_| StateError::ChannelError)
     }
+
+    // === Convenience methods for cascade logic ===
+
+    /// List all Specs for a given Plan ID
+    pub async fn list_specs_for_plan(&self, plan_id: &str) -> StateResponse<Vec<Spec>> {
+        self.list_specs(Some(plan_id.to_string()), None).await
+    }
+
+    /// Get a Plan by ID, returning error if not found
+    pub async fn get_plan_required(&self, id: &str) -> Result<Plan, StateError> {
+        self.get_plan(id)
+            .await?
+            .ok_or_else(|| StateError::NotFound(format!("Plan {}", id)))
+    }
+
+    /// Get a Spec by ID, returning error if not found
+    pub async fn get_spec_required(&self, id: &str) -> Result<Spec, StateError> {
+        self.get_spec(id)
+            .await?
+            .ok_or_else(|| StateError::NotFound(format!("Spec {}", id)))
+    }
+
+    /// Create a new LoopExecution (alias for create_execution)
+    pub async fn create_loop_execution(&self, execution: LoopExecution) -> StateResponse<String> {
+        self.create_execution(execution).await
+    }
+
+    /// Get a LoopExecution for a specific Spec (by parent field)
+    pub async fn get_loop_execution_for_spec(&self, spec_id: &str) -> StateResponse<Option<LoopExecution>> {
+        // List executions and find one with matching parent
+        let executions = self.list_executions(None, Some("phase".to_string())).await?;
+        Ok(executions.into_iter().find(|e| e.parent.as_deref() == Some(spec_id)))
+    }
 }
 
 /// The actor loop that owns the Store and processes commands

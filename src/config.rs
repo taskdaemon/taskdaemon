@@ -18,11 +18,17 @@ pub struct Config {
     /// Validation defaults
     pub validation: ValidationConfig,
 
+    /// Progress strategy configuration
+    pub progress: ProgressConfig,
+
     /// Git configuration
     pub git: GitConfig,
 
     /// Storage configuration
     pub storage: StorageConfig,
+
+    /// Loop type paths configuration
+    pub loops: LoopsConfig,
 }
 
 impl Config {
@@ -211,6 +217,75 @@ impl Default for StorageConfig {
             jsonl_warn_mb: 100,
             jsonl_error_mb: 500,
         }
+    }
+}
+
+/// Progress strategy configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProgressConfig {
+    /// Progress strategy (currently only "system-captured" supported)
+    pub strategy: String,
+
+    /// Maximum number of iterations to keep in progress
+    #[serde(rename = "max-entries")]
+    pub max_entries: usize,
+
+    /// Maximum output characters per iteration
+    #[serde(rename = "max-output-chars")]
+    pub max_output_chars: usize,
+}
+
+impl Default for ProgressConfig {
+    fn default() -> Self {
+        Self {
+            strategy: "system-captured".to_string(),
+            max_entries: 5,
+            max_output_chars: 500,
+        }
+    }
+}
+
+/// Loop type paths configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoopsConfig {
+    /// Paths to search for loop type definitions (searched in order)
+    pub paths: Vec<String>,
+}
+
+impl Default for LoopsConfig {
+    fn default() -> Self {
+        Self {
+            paths: vec![
+                "builtin".to_string(),
+                "~/.config/taskdaemon/loops".to_string(),
+                ".taskdaemon/loops".to_string(),
+            ],
+        }
+    }
+}
+
+impl LoopsConfig {
+    /// Expand paths (resolve ~/ and relative paths)
+    pub fn expanded_paths(&self) -> Vec<PathBuf> {
+        self.paths
+            .iter()
+            .filter_map(|p| {
+                if p == "builtin" {
+                    None // builtin is handled specially
+                } else if p.starts_with("~/") {
+                    dirs::home_dir().map(|home| home.join(&p[2..]))
+                } else {
+                    Some(PathBuf::from(p))
+                }
+            })
+            .collect()
+    }
+
+    /// Check if builtin types should be loaded
+    pub fn use_builtin(&self) -> bool {
+        self.paths.iter().any(|p| p == "builtin")
     }
 }
 

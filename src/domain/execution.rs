@@ -200,6 +200,27 @@ impl LoopExecution {
     pub fn is_resumable(&self) -> bool {
         matches!(self.status, LoopExecutionStatus::Paused | LoopExecutionStatus::Blocked)
     }
+
+    // === Builder methods for cascade logic ===
+
+    /// Set the parent and return self (builder pattern)
+    pub fn with_parent(mut self, parent: impl Into<String>) -> Self {
+        self.parent = Some(parent.into());
+        self.updated_at = now_ms();
+        self
+    }
+
+    /// Add a context value (builder pattern)
+    pub fn with_context_value(mut self, key: &str, value: &str) -> Self {
+        if self.context.is_null() {
+            self.context = serde_json::json!({});
+        }
+        if let Some(obj) = self.context.as_object_mut() {
+            obj.insert(key.to_string(), Value::String(value.to_string()));
+        }
+        self.updated_at = now_ms();
+        self
+    }
 }
 
 impl Record for LoopExecution {
