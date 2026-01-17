@@ -19,6 +19,7 @@ use tracing::{debug, info, trace, warn};
 use crate::llm::{
     CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
 };
+use crate::prompts::{FocusArea, PromptContext, PromptLoader};
 use crate::state::StateManager;
 use crate::tools::{ToolContext, ToolExecutor};
 
@@ -742,9 +743,18 @@ Working directory: {}"#,
         }
     }
 
-    /// Create a plan draft from conversation
+    /// Create a plan draft from conversation using the Rule of Five methodology
+    ///
+    /// This iterates through 3-5 review passes, each focusing on a different quality dimension:
+    /// - Pass 1: Completeness (all sections filled?)
+    /// - Pass 2: Correctness (logical errors? wrong assumptions?)
+    /// - Pass 3: Edge Cases (error handling? failure modes?)
+    /// - Pass 4: Architecture (fits system? scalability?)
+    /// - Pass 5: Clarity (implementable? unambiguous?)
+    ///
+    /// Convergence is detected when two consecutive passes produce no changes.
     async fn create_plan_draft(&mut self, request: PlanCreateRequest) {
-        info!("=== create_plan_draft START ===");
+        info!("=== create_plan_draft START (Rule of Five) ===");
         info!(
             "StateManager present: {}, LLM client present: {}",
             self.state_manager.is_some(),
@@ -795,59 +805,139 @@ Working directory: {}"#,
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        // Summarize conversation using LLM
-        let summarize_prompt = r#"Analyze this conversation and extract a structured requirements summary.
+        // Load prompt templates
+        let prompt_loader = PromptLoader::new(&self.worktree);
 
-Output format:
-## Goal
-[One sentence describing what the user wants to build/change]
-
-## Requirements
-- [Requirement 1]
-- [Requirement 2]
-...
-
-## Constraints
-- [Constraint 1]
-- [Constraint 2]
-...
-
-## Key Decisions
-- [Decision made during conversation]
-...
-
-Be comprehensive but concise. Include all requirements discussed."#;
-
-        let summarize_request = CompletionRequest {
-            system_prompt: summarize_prompt.to_string(),
-            messages: vec![Message::user(&conversation_text)],
-            tools: vec![],
-            max_tokens: 2048,
-        };
-
-        info!("Sending summarization request to LLM...");
-        let summary = match llm.complete(summarize_request).await {
-            Ok(response) => {
-                let s = response.content.unwrap_or_else(|| "No summary generated".to_string());
-                info!("LLM summarization complete: {} chars", s.len());
-                s
-            }
+        // Get system prompt for plan creation
+        let system_prompt = match prompt_loader.system_prompt() {
+            Ok(prompt) => prompt,
             Err(e) => {
-                warn!("Failed to summarize conversation: {}", e);
-                self.app
-                    .state_mut()
-                    .set_error(format!("Failed to summarize conversation: {}. Try again.", e));
+                warn!("Failed to load plan system prompt: {}", e);
+                self.app.state_mut().set_error("Failed to load plan prompts");
                 return;
             }
         };
 
-        // Generate a short title
-        info!("Generating title from summary...");
+        // Generate a short title first
+        info!("Generating title from conversation...");
         let title = self
-            .generate_title(&summary)
+            .generate_title(&conversation_text)
             .await
             .unwrap_or_else(|| "New Plan".to_string());
         info!("Generated title: {}", title);
+
+        // Show initial progress message
+        self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+            "Creating plan: {}\nRunning Rule of Five review passes...",
+            title
+        )));
+
+        // === RULE OF FIVE ITERATION ===
+        // Start with Pass 1: Completeness
+        let mut current_plan = String::new();
+        let mut pass_outputs: Vec<String> = Vec::new();
+        let mut consecutive_unchanged = 0;
+        const MAX_PASSES: u8 = 5;
+        const MIN_PASSES: u8 = 3;
+
+        for pass_num in 1..=MAX_PASSES {
+            let focus = match FocusArea::from_pass(pass_num) {
+                Some(f) => f,
+                None => break,
+            };
+
+            info!("=== Rule of Five Pass {}: {} ===", pass_num, focus);
+
+            // Update UI with progress
+            self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                "  Pass {}/5: {} review...",
+                pass_num,
+                focus.name()
+            )));
+
+            // Build context for this pass
+            let ctx = if pass_num == 1 {
+                PromptContext::first_pass(conversation_text.clone())
+            } else {
+                PromptContext::review_pass(pass_num, current_plan.clone(), focus)
+            };
+
+            // Get the pass-specific prompt
+            let pass_prompt = match prompt_loader.pass_prompt(pass_num, &ctx) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Failed to load pass {} prompt: {}", pass_num, e);
+                    self.app
+                        .state_mut()
+                        .set_error(format!("Failed to load pass {} prompt", pass_num));
+                    return;
+                }
+            };
+
+            // Build the LLM request
+            let user_message = if pass_num == 1 {
+                format!(
+                    "{}\n\n---\n\n# Conversation to convert to Plan:\n\n{}",
+                    pass_prompt, conversation_text
+                )
+            } else {
+                format!("{}\n\n---\n\n# Current Plan:\n\n{}", pass_prompt, current_plan)
+            };
+
+            let completion_request = CompletionRequest {
+                system_prompt: system_prompt.clone(),
+                messages: vec![Message::user(&user_message)],
+                tools: vec![],
+                max_tokens: 8192,
+            };
+
+            // Execute the pass
+            info!("Sending pass {} request to LLM...", pass_num);
+            let pass_output = match llm.complete(completion_request).await {
+                Ok(response) => {
+                    let output = response.content.unwrap_or_default();
+                    info!("Pass {} complete: {} chars", pass_num, output.len());
+                    output
+                }
+                Err(e) => {
+                    warn!("Pass {} failed: {}", pass_num, e);
+                    self.app
+                        .state_mut()
+                        .set_error(format!("Pass {} failed: {}", pass_num, e));
+                    return;
+                }
+            };
+
+            // Check for convergence (no significant changes)
+            let changed = self.plan_changed_significantly(&current_plan, &pass_output);
+
+            if changed {
+                consecutive_unchanged = 0;
+                info!("Pass {} made changes", pass_num);
+            } else {
+                consecutive_unchanged += 1;
+                info!(
+                    "Pass {} converged (no changes), consecutive={}",
+                    pass_num, consecutive_unchanged
+                );
+            }
+
+            // Update current plan
+            current_plan = pass_output.clone();
+            pass_outputs.push(pass_output);
+
+            // Check for early convergence (two consecutive unchanged passes after MIN_PASSES)
+            if pass_num >= MIN_PASSES && consecutive_unchanged >= 2 {
+                info!("Early convergence after pass {} (two consecutive unchanged)", pass_num);
+                self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                    "  Plan converged after {} passes",
+                    pass_num
+                )));
+                break;
+            }
+        }
+
+        info!("Rule of Five complete: {} passes executed", pass_outputs.len());
 
         // Create the plan execution with Draft status
         info!("Creating LoopExecution with Draft status...");
@@ -859,11 +949,11 @@ Be comprehensive but concise. Include all requirements discussed."#;
             execution.id, execution.loop_type, execution.status
         );
 
-        // Store the summary in context
+        // Store the final plan and pass count in context
         execution.set_context(serde_json::json!({
-            "user-request": summary,
-            "conversation-summary": conversation_text,
-            "review-pass": 0
+            "user-request": conversation_text,
+            "review-passes-completed": pass_outputs.len(),
+            "final-plan": current_plan
         }));
 
         // Create the execution record
@@ -892,29 +982,34 @@ Be comprehensive but concise. Include all requirements discussed."#;
         }
         info!("Plan directory created successfully");
 
-        // Write the initial plan.md file
+        // Write the final plan.md file
         let plan_content = format!(
             r#"# Plan: {}
 
 **Status:** Draft
 **Created:** {}
 **ID:** {}
+**Review Passes:** {} of 5
+
+---
 
 {}
 
 ---
 
-*This is a draft plan. Review and edit as needed, then use `s` in the Executions view to start execution.*
+*This plan has been reviewed through {} Rule of Five passes. Use `s` in the Executions view to start execution.*
 "#,
             title,
             chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
             exec_id,
-            summary
+            pass_outputs.len(),
+            current_plan,
+            pass_outputs.len()
         );
 
         let plan_path = plan_dir.join("plan.md");
         info!("Writing plan.md to {:?}", plan_path);
-        if let Err(e) = std::fs::write(&plan_path, plan_content) {
+        if let Err(e) = std::fs::write(&plan_path, &plan_content) {
             warn!("Failed to write plan file: {}", e);
             self.app
                 .state_mut()
@@ -928,17 +1023,55 @@ Be comprehensive but concise. Include all requirements discussed."#;
 
         // Show success message
         self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-            "Created draft plan: {} ({})\nView in Executions with `E` key or Tab, then press `s` to start execution.",
-            title, hash
+            "Created draft plan: {} ({})\n{} review passes completed.\nView in Executions with Tab, then press `s` to start execution.",
+            title, hash, pass_outputs.len()
         )));
 
         info!(
-            "=== create_plan_draft COMPLETE: exec_id={}, title={}, plan_path={:?} ===",
-            exec_id, title, plan_path
+            "=== create_plan_draft COMPLETE: exec_id={}, title={}, passes={}, plan_path={:?} ===",
+            exec_id,
+            title,
+            pass_outputs.len(),
+            plan_path
         );
 
         // Force refresh to show the new draft
         self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+    }
+
+    /// Check if the plan changed significantly between passes
+    ///
+    /// Returns true if there are meaningful changes, false if the plans are essentially the same.
+    /// This is used to detect convergence in the Rule of Five iteration.
+    fn plan_changed_significantly(&self, old_plan: &str, new_plan: &str) -> bool {
+        if old_plan.is_empty() {
+            return true; // First pass always counts as a change
+        }
+
+        // Normalize whitespace for comparison
+        let normalize = |s: &str| -> String {
+            s.lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let old_normalized = normalize(old_plan);
+        let new_normalized = normalize(new_plan);
+
+        // Simple length-based heuristic: if the length changed by more than 5%, it's significant
+        let len_old = old_normalized.len();
+        let len_new = new_normalized.len();
+        let len_diff = (len_new as i64 - len_old as i64).unsigned_abs() as usize;
+        let threshold = (len_old.max(len_new) as f64 * 0.05) as usize;
+
+        if len_diff > threshold {
+            return true;
+        }
+
+        // If lengths are similar, check for actual content changes
+        old_normalized != new_normalized
     }
 
     /// Execute a pending action (cancel/pause/resume/start draft)
