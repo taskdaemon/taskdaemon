@@ -323,7 +323,7 @@ fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
             ),
             ReplMode::Plan => (
                 "Welcome to TaskDaemon Plan",
-                "Describe your goal and press Enter to create an execution plan.",
+                "Describe your goal, then type /create to generate a plan using the Rule of Five methodology (3-5 review passes for completeness, correctness, edge cases, architecture, and clarity).",
             ),
         };
 
@@ -721,7 +721,11 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                 // Show keybinds based on current view
                 let keybinds = match &state.current_view {
                     View::Repl => {
-                        vec![("[Enter]", "Submit"), ("/clear", "Clear")]
+                        if state.repl_mode == ReplMode::Plan {
+                            vec![("[Enter]", "Send"), ("/create", "Create Plan"), ("/clear", "Clear")]
+                        } else {
+                            vec![("[Enter]", "Send"), ("/clear", "Clear")]
+                        }
                     }
                     View::Records { .. } => vec![
                         ("[Enter]", "Children"),
@@ -804,11 +808,20 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             "Global",
             Style::default().add_modifier(Modifier::BOLD),
         )]),
+        key_line("Tab", "Cycle views (Chat/Plan → Executions → Records)"),
         key_line(":", "Command mode (:records, :executions, :<type>)"),
         key_line("/", "Filter current view"),
         key_line("?", "Toggle help"),
         key_line("q", "Quit"),
         key_line("Esc", "Back / Clear filter"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Chat/Plan View",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        key_line("Enter", "Send message (Chat) or create plan (Plan)"),
+        key_line("/create", "Create plan from conversation (Rule of Five)"),
+        key_line("/clear", "Clear conversation history"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Navigation",
