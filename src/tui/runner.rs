@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use eyre::Result;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::llm::{
     CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
@@ -277,6 +277,7 @@ Working directory: {}"#,
 
         // Check for pending REPL submit - spawn background task
         if let Some(input) = self.app.state_mut().pending_repl_submit.take() {
+            info!("REPL submit received: {} chars", input.len());
             self.start_repl_request(&input);
         }
 
@@ -288,16 +289,19 @@ Working directory: {}"#,
 
         // Check for pending task to start
         if let Some(task) = self.app.state_mut().pending_task.take() {
+            info!("Starting task: {}", task);
             self.start_task(&task).await;
         }
 
         // Check for pending plan creation
         if let Some(request) = self.app.state_mut().pending_plan_create.take() {
+            info!("Creating plan from {} messages", request.messages.len());
             self.create_plan_draft(request).await;
         }
 
         // Check for pending action (cancel/pause/resume/start draft)
         if let Some(action) = self.app.state_mut().pending_action.take() {
+            info!("Executing action: {:?}", action);
             self.execute_action(action).await;
         }
 
@@ -314,23 +318,31 @@ Working directory: {}"#,
     fn process_stream_chunks(&mut self) {
         if let Some(rx) = &mut self.stream_rx {
             // Try to receive all available chunks without blocking
+            let mut chunk_count = 0;
             while let Ok(chunk) = rx.try_recv() {
+                chunk_count += 1;
                 match chunk {
                     StreamChunk::TextDelta(text) => {
+                        trace!("Received text delta: {} chars", text.len());
                         self.app.state_mut().repl_response_buffer.push_str(&text);
                     }
-                    StreamChunk::ToolUseStart { name, .. } => {
+                    StreamChunk::ToolUseStart { ref name, .. } => {
+                        debug!("Tool use started: {}", name);
                         // Show tool call in response buffer
                         self.app
                             .state_mut()
                             .repl_response_buffer
                             .push_str(&format!("\n[calling {}]", name));
                     }
-                    StreamChunk::Error(err) => {
+                    StreamChunk::Error(ref err) => {
+                        warn!("Stream error: {}", err);
                         self.app.state_mut().repl_history.push(ReplMessage::error(err));
                     }
                     _ => {}
                 }
+            }
+            if chunk_count > 0 {
+                trace!("Processed {} stream chunks", chunk_count);
             }
         }
     }
@@ -348,6 +360,10 @@ Working directory: {}"#,
             return;
         };
 
+        if !results.is_empty() {
+            info!("Processing {} LLM result(s)", results.len());
+        }
+
         // Now process each result
         for result in results {
             match result {
@@ -356,9 +372,16 @@ Working directory: {}"#,
                     tool_calls,
                     stop_reason,
                 } => {
+                    info!(
+                        "LLM response: stop_reason={:?}, has_content={}, tool_calls={}",
+                        stop_reason,
+                        content.is_some(),
+                        tool_calls.len()
+                    );
                     // Handle the response based on stop reason
                     match stop_reason {
                         StopReason::EndTurn => {
+                            debug!("Response complete (EndTurn)");
                             // Done - add response to history and conversation
                             if let Some(ref text) = content {
                                 // Add streamed content to history
@@ -376,6 +399,7 @@ Working directory: {}"#,
                             self.finish_streaming();
                         }
                         StopReason::ToolUse => {
+                            info!("Response has tool calls, executing {} tool(s)", tool_calls.len());
                             // Execute tools and continue
                             self.handle_tool_calls(content, tool_calls).await;
                         }
@@ -412,6 +436,7 @@ Working directory: {}"#,
                     }
                 }
                 LlmTaskResult::Error(err) => {
+                    warn!("LLM task error: {}", err);
                     self.app
                         .state_mut()
                         .repl_history
@@ -424,6 +449,7 @@ Working directory: {}"#,
 
     /// Finish streaming state
     fn finish_streaming(&mut self) {
+        info!("Finishing streaming, setting repl_streaming=false");
         self.app.state_mut().repl_streaming = false;
         self.app.state_mut().repl_response_buffer.clear();
         self.stream_rx = None;
@@ -433,7 +459,10 @@ Working directory: {}"#,
 
     /// Handle tool calls from LLM response
     async fn handle_tool_calls(&mut self, content: Option<String>, tool_calls: Vec<ToolCall>) {
+        info!("handle_tool_calls: {} tools to execute", tool_calls.len());
+
         if tool_calls.is_empty() {
+            debug!("No tool calls, finishing streaming");
             self.finish_streaming();
             return;
         }
@@ -454,6 +483,7 @@ Working directory: {}"#,
             }
         }
         for tc in &tool_calls {
+            debug!("Adding tool use to conversation: {} (id={})", tc.name, tc.id);
             blocks.push(ContentBlock::ToolUse {
                 id: tc.id.clone(),
                 name: tc.name.clone(),
@@ -467,6 +497,7 @@ Working directory: {}"#,
         let mut result_blocks: Vec<ContentBlock> = Vec::new();
 
         for tc in &tool_calls {
+            info!("Executing tool: {} (id={})", tc.name, tc.id);
             // Show tool call
             self.app
                 .state_mut()
@@ -474,6 +505,12 @@ Working directory: {}"#,
                 .push(ReplMessage::tool_result(&tc.name, format!("Running {}...", tc.name)));
 
             let result = self.tool_executor.execute(tc, &ctx).await;
+            debug!(
+                "Tool {} result: {} chars, is_error={}",
+                tc.name,
+                result.content.len(),
+                result.is_error
+            );
 
             // Show result (truncated)
             let display_content = if result.content.len() > 500 {
@@ -489,11 +526,21 @@ Working directory: {}"#,
             result_blocks.push(ContentBlock::tool_result(&tc.id, &result.content, result.is_error));
         }
 
+        info!(
+            "All {} tools executed, adding results to conversation",
+            tool_calls.len()
+        );
         // Add tool results to conversation
         self.repl_conversation.push(Message::user_blocks(result_blocks));
 
         // Clear response buffer for next LLM turn
         self.app.state_mut().repl_response_buffer.clear();
+
+        // Show that we're continuing (visual feedback)
+        self.app
+            .state_mut()
+            .repl_history
+            .push(ReplMessage::assistant("Analyzing results..."));
 
         // Continue with another LLM call
         self.continue_llm_request();
@@ -501,8 +548,16 @@ Working directory: {}"#,
 
     /// Start a new REPL request (spawns background task)
     fn start_repl_request(&mut self, input: &str) {
+        info!(
+            "start_repl_request: mode={:?}, input_len={}, streaming={}",
+            self.app.state().repl_mode,
+            input.len(),
+            self.app.state().repl_streaming
+        );
+
         // Don't start a new request if we're already streaming
         if self.app.state().repl_streaming {
+            warn!("Blocked: already streaming, cannot start new request");
             self.app
                 .state_mut()
                 .repl_history
@@ -514,6 +569,7 @@ Working directory: {}"#,
         let llm = match &self.llm_client {
             Some(llm) => Arc::clone(llm),
             None => {
+                warn!("No LLM client configured");
                 self.app.state_mut().repl_history.push(ReplMessage::error(
                     "No LLM client configured. Start with daemon or set ANTHROPIC_API_KEY.",
                 ));
@@ -526,6 +582,7 @@ Working directory: {}"#,
 
         // Add user message to LLM conversation
         self.repl_conversation.push(Message::user(input));
+        info!("Conversation now has {} messages", self.repl_conversation.len());
 
         // Set streaming state
         self.app.state_mut().repl_streaming = true;
@@ -547,15 +604,24 @@ Working directory: {}"#,
             max_tokens: 4096,
         };
 
+        info!("Spawning LLM request task with {} tools", request.tools.len());
+
         // Spawn background task
         self.llm_task = Some(tokio::spawn(async move {
+            debug!("LLM task started");
             let result = match llm.stream(request, stream_tx).await {
-                Ok(response) => LlmTaskResult::Response {
-                    content: response.content,
-                    tool_calls: response.tool_calls,
-                    stop_reason: response.stop_reason,
-                },
-                Err(e) => LlmTaskResult::Error(e.to_string()),
+                Ok(response) => {
+                    debug!("LLM stream completed successfully");
+                    LlmTaskResult::Response {
+                        content: response.content,
+                        tool_calls: response.tool_calls,
+                        stop_reason: response.stop_reason,
+                    }
+                }
+                Err(e) => {
+                    warn!("LLM stream failed: {}", e);
+                    LlmTaskResult::Error(e.to_string())
+                }
             };
             let _ = result_tx.send(result).await;
         }));
@@ -571,6 +637,11 @@ Working directory: {}"#,
                 return;
             }
         };
+
+        debug!(
+            "Continuing LLM request with {} messages in conversation",
+            self.repl_conversation.len()
+        );
 
         // Create channel for streaming chunks
         let (stream_tx, stream_rx) = mpsc::channel::<StreamChunk>(100);
@@ -588,16 +659,28 @@ Working directory: {}"#,
             max_tokens: 4096,
         };
 
-        // Spawn background task
+        // Spawn background task with timeout
         self.llm_task = Some(tokio::spawn(async move {
-            let result = match llm.stream(request, stream_tx).await {
-                Ok(response) => LlmTaskResult::Response {
-                    content: response.content,
-                    tool_calls: response.tool_calls,
-                    stop_reason: response.stop_reason,
-                },
-                Err(e) => LlmTaskResult::Error(e.to_string()),
-            };
+            // 2 minute timeout for continued requests
+            let result =
+                match tokio::time::timeout(std::time::Duration::from_secs(120), llm.stream(request, stream_tx)).await {
+                    Ok(Ok(response)) => {
+                        debug!("Continued request completed successfully");
+                        LlmTaskResult::Response {
+                            content: response.content,
+                            tool_calls: response.tool_calls,
+                            stop_reason: response.stop_reason,
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!("Continued request failed: {}", e);
+                        LlmTaskResult::Error(e.to_string())
+                    }
+                    Err(_) => {
+                        warn!("Continued request timed out after 2 minutes");
+                        LlmTaskResult::Error("Request timed out after 2 minutes".to_string())
+                    }
+                };
             let _ = result_tx.send(result).await;
         }));
     }
