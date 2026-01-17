@@ -26,7 +26,7 @@ use super::Tui;
 use super::app::App;
 use super::events::{Event, EventHandler};
 use super::state::{
-    DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, RecordItem, ReplMessage, View,
+    DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, RecordItem, ReplMessage, ReplMode, View,
 };
 use super::views;
 
@@ -68,8 +68,10 @@ pub struct TuiRunner {
     worktree: PathBuf,
     /// LLM conversation history (separate from display history)
     repl_conversation: Vec<Message>,
-    /// System prompt for REPL
-    system_prompt: String,
+    /// System prompt for Chat mode REPL
+    chat_system_prompt: String,
+    /// System prompt for Plan mode REPL
+    plan_system_prompt: String,
     /// Receiver for stream chunks (populated during streaming)
     stream_rx: Option<mpsc::Receiver<StreamChunk>>,
     /// Receiver for LLM task results
@@ -82,7 +84,8 @@ impl TuiRunner {
     /// Create a new TuiRunner without StateManager (for testing/standalone mode)
     pub fn new(terminal: Tui) -> Self {
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let system_prompt = Self::build_system_prompt(&worktree);
+        let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
+        let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
 
         Self {
             app: App::new(),
@@ -94,7 +97,8 @@ impl TuiRunner {
             tool_executor: ToolExecutor::standard(),
             worktree,
             repl_conversation: Vec::new(),
-            system_prompt,
+            chat_system_prompt,
+            plan_system_prompt,
             stream_rx: None,
             llm_result_rx: None,
             llm_task: None,
@@ -104,7 +108,8 @@ impl TuiRunner {
     /// Create a new TuiRunner with StateManager connection
     pub fn with_state_manager(terminal: Tui, state_manager: StateManager) -> Self {
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let system_prompt = Self::build_system_prompt(&worktree);
+        let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
+        let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
 
         Self {
             app: App::new(),
@@ -116,7 +121,8 @@ impl TuiRunner {
             tool_executor: ToolExecutor::standard(),
             worktree,
             repl_conversation: Vec::new(),
-            system_prompt,
+            chat_system_prompt,
+            plan_system_prompt,
             stream_rx: None,
             llm_result_rx: None,
             llm_task: None,
@@ -126,7 +132,8 @@ impl TuiRunner {
     /// Create a new TuiRunner with LLM client for REPL
     pub fn with_llm_client(terminal: Tui, state_manager: Option<StateManager>, llm_client: Arc<dyn LlmClient>) -> Self {
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let system_prompt = Self::build_system_prompt(&worktree);
+        let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
+        let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
 
         Self {
             app: App::new(),
@@ -138,15 +145,16 @@ impl TuiRunner {
             tool_executor: ToolExecutor::standard(),
             worktree,
             repl_conversation: Vec::new(),
-            system_prompt,
+            chat_system_prompt,
+            plan_system_prompt,
             stream_rx: None,
             llm_result_rx: None,
             llm_task: None,
         }
     }
 
-    /// Build the system prompt for REPL
-    fn build_system_prompt(worktree: &Path) -> String {
+    /// Build the system prompt for Chat mode REPL
+    fn build_chat_system_prompt(worktree: &Path) -> String {
         format!(
             r#"You are an AI coding assistant in an interactive REPL.
 
@@ -168,6 +176,45 @@ Guidelines:
 Working directory: {}"#,
             worktree.display()
         )
+    }
+
+    /// Build the system prompt for Plan mode REPL
+    fn build_plan_system_prompt(worktree: &Path) -> String {
+        format!(
+            r#"You are a senior software architect helping gather requirements for a technical plan.
+
+Your role is to:
+1. Ask clarifying questions about the user's goals
+2. Identify missing details (scope, constraints, dependencies)
+3. Suggest considerations they may have missed
+4. Summarize the requirements when asked
+
+Guidelines:
+- Keep responses concise and focused
+- Ask one or two questions at a time
+- Acknowledge good answers before moving on
+- When requirements seem complete, suggest using /create to generate the plan
+
+Do NOT generate the full plan during this conversation.
+Focus on gathering comprehensive requirements first.
+
+You have access to these tools for exploring the codebase:
+- read_file: Read file contents
+- list_directory: List files in a directory
+- glob: Find files matching a pattern
+- grep: Search file contents with regex
+
+Working directory: {}"#,
+            worktree.display()
+        )
+    }
+
+    /// Get the current system prompt based on REPL mode
+    fn current_system_prompt(&self) -> &str {
+        match self.app.state().repl_mode {
+            ReplMode::Chat => &self.chat_system_prompt,
+            ReplMode::Plan => &self.plan_system_prompt,
+        }
     }
 
     /// Get tool definitions for the REPL
@@ -477,9 +524,9 @@ Working directory: {}"#,
         let (result_tx, result_rx) = mpsc::channel::<LlmTaskResult>(1);
         self.llm_result_rx = Some(result_rx);
 
-        // Build request
+        // Build request (use current system prompt based on mode)
         let request = CompletionRequest {
-            system_prompt: self.system_prompt.clone(),
+            system_prompt: self.current_system_prompt().to_string(),
             messages: self.repl_conversation.clone(),
             tools: self.get_tool_definitions(),
             max_tokens: 4096,
@@ -520,7 +567,7 @@ Working directory: {}"#,
 
         // Build request with current conversation (includes tool results)
         let request = CompletionRequest {
-            system_prompt: self.system_prompt.clone(),
+            system_prompt: self.current_system_prompt().to_string(),
             messages: self.repl_conversation.clone(),
             tools: self.get_tool_definitions(),
             max_tokens: 4096,
