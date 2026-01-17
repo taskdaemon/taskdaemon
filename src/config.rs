@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Log level (TRACE, DEBUG, INFO, WARN, ERROR)
+    #[serde(rename = "log-level")]
+    pub log_level: Option<String>,
+
     /// LLM provider configuration
     pub llm: LlmConfig,
 
@@ -32,6 +36,53 @@ pub struct Config {
 }
 
 impl Config {
+    /// Load just the log level from config files (for early logging setup)
+    ///
+    /// Searches for config files in the standard locations and returns the
+    /// log-level value if found. This is called before full config loading
+    /// to enable proper logging during startup.
+    pub fn load_log_level(config_path: Option<&PathBuf>) -> Option<String> {
+        // Helper to extract log-level from a file
+        fn extract_log_level(path: &Path) -> Option<String> {
+            let content = fs::read_to_string(path).ok()?;
+            // Quick YAML parse just for log-level
+            #[derive(Deserialize)]
+            struct LogLevelOnly {
+                #[serde(rename = "log-level")]
+                log_level: Option<String>,
+            }
+            let parsed: LogLevelOnly = serde_yaml::from_str(&content).ok()?;
+            parsed.log_level
+        }
+
+        // If explicit config path provided, try it
+        if let Some(path) = config_path
+            && let Some(level) = extract_log_level(path)
+        {
+            return Some(level);
+        }
+
+        // Try project-local config: .taskdaemon.yml
+        let local_config = PathBuf::from(".taskdaemon.yml");
+        if local_config.exists()
+            && let Some(level) = extract_log_level(&local_config)
+        {
+            return Some(level);
+        }
+
+        // Try user config: ~/.config/taskdaemon/taskdaemon.yml
+        if let Some(config_dir) = dirs::config_dir() {
+            let user_config = config_dir.join("taskdaemon").join("taskdaemon.yml");
+            if user_config.exists()
+                && let Some(level) = extract_log_level(&user_config)
+            {
+                return Some(level);
+            }
+        }
+
+        None
+    }
+
     /// Validate configuration before use
     ///
     /// Checks that required environment variables and paths are set correctly.

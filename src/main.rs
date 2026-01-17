@@ -23,7 +23,7 @@ use taskdaemon::state::StateManager;
 use taskdaemon::tui;
 use taskdaemon::watcher::{MainWatcher, WatcherConfig};
 
-fn setup_logging(verbose: bool) -> Result<()> {
+fn setup_logging(cli_log_level: Option<&str>, config_log_level: Option<&str>) -> Result<()> {
     // Create log directory
     let log_dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -32,8 +32,24 @@ fn setup_logging(verbose: bool) -> Result<()> {
 
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
-    // Setup tracing subscriber - write to log file, not stdout/stderr
-    let level = if verbose { tracing::Level::DEBUG } else { tracing::Level::INFO };
+    // Determine log level with priority: CLI --log-level > config file > default (INFO)
+    let level_str = cli_log_level.or(config_log_level);
+    let level = if let Some(s) = level_str {
+        match s.to_uppercase().as_str() {
+            "TRACE" => tracing::Level::TRACE,
+            "DEBUG" => tracing::Level::DEBUG,
+            "INFO" => tracing::Level::INFO,
+            "WARN" | "WARNING" => tracing::Level::WARN,
+            "ERROR" => tracing::Level::ERROR,
+            _ => {
+                eprintln!("Warning: Unknown log-level '{}', defaulting to INFO", s);
+                tracing::Level::INFO
+            }
+        }
+    } else {
+        tracing::Level::INFO
+    };
+
     let log_file = fs::File::create(log_dir.join("taskdaemon.log")).context("Failed to create log file")?;
 
     tracing_subscriber::fmt()
@@ -42,7 +58,7 @@ fn setup_logging(verbose: bool) -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive(level.into()))
         .init();
 
-    info!("Logging initialized (verbose: {})", verbose);
+    info!("Logging initialized (level: {:?})", level);
     Ok(())
 }
 
@@ -56,8 +72,11 @@ async fn main() -> Result<()> {
     // Parse CLI arguments using the modified command
     let cli = Cli::from_arg_matches(&cmd.get_matches())?;
 
-    // Setup logging
-    setup_logging(cli.verbose).context("Failed to setup logging")?;
+    // Load log level from config file early (before full config load)
+    let config_log_level = Config::load_log_level(cli.config.as_ref());
+
+    // Setup logging with priority: CLI > config > INFO default
+    setup_logging(cli.log_level.as_deref(), config_log_level.as_deref()).context("Failed to setup logging")?;
 
     // Load configuration
     let config = Config::load(cli.config.as_ref()).context("Failed to load configuration")?;

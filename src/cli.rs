@@ -15,9 +15,14 @@ pub struct Cli {
     #[arg(short, long, global = true, help = "Path to config file")]
     pub config: Option<PathBuf>,
 
-    /// Enable verbose output
-    #[arg(short, long, global = true, help = "Enable verbose output")]
-    pub verbose: bool,
+    /// Log level (TRACE, DEBUG, INFO, WARN, ERROR)
+    #[arg(
+        short = 'l',
+        long = "log-level",
+        global = true,
+        help = "Log level (TRACE, DEBUG, INFO, WARN, ERROR)"
+    )]
+    pub log_level: Option<String>,
 
     /// Subcommand to execute
     #[command(subcommand)]
