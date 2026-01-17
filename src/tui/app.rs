@@ -6,7 +6,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::state::{
-    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, TOP_LEVEL_VIEWS, View, top_level_view_index,
+    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, ReplMode, TOP_LEVEL_VIEWS, View,
+    top_level_view_index,
 };
 
 /// TUI application
@@ -141,8 +142,25 @@ impl App {
                 self.handle_cancel();
             }
             (KeyCode::Char('p'), _) => {
-                // Pause selected execution
-                self.handle_pause();
+                // In REPL Chat mode: switch to Plan mode
+                // Otherwise: Pause selected execution
+                if matches!(self.state.current_view, View::Repl)
+                    && self.state.repl_mode == ReplMode::Chat
+                    && !self.state.repl_streaming
+                {
+                    self.state.repl_mode = ReplMode::Plan;
+                } else {
+                    self.handle_pause();
+                }
+            }
+            (KeyCode::Char('c'), _) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // In REPL Plan mode: switch to Chat mode
+                if matches!(self.state.current_view, View::Repl)
+                    && self.state.repl_mode == ReplMode::Plan
+                    && !self.state.repl_streaming
+                {
+                    self.state.repl_mode = ReplMode::Chat;
+                }
             }
             (KeyCode::Char('r'), _) => {
                 // Resume selected execution
@@ -161,6 +179,14 @@ impl App {
             // === Logs view specific ===
             (KeyCode::Char('f'), _) if matches!(self.state.current_view, View::Logs { .. }) => {
                 self.state.logs_follow = !self.state.logs_follow;
+            }
+
+            // === Tab toggles Chat/Plan mode in REPL view ===
+            (KeyCode::Tab, _) if matches!(self.state.current_view, View::Repl) && !self.state.repl_streaming => {
+                self.state.repl_mode = match self.state.repl_mode {
+                    ReplMode::Chat => ReplMode::Plan,
+                    ReplMode::Plan => ReplMode::Chat,
+                };
             }
 
             // === REPL view specific: any other character starts input ===
@@ -405,6 +431,13 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.state.repl_input.push(c);
+            }
+            // Tab toggles Chat/Plan mode
+            KeyCode::Tab => {
+                self.state.repl_mode = match self.state.repl_mode {
+                    ReplMode::Chat => ReplMode::Plan,
+                    ReplMode::Plan => ReplMode::Chat,
+                };
             }
             // Allow view navigation with arrow keys even in input mode
             KeyCode::Left => {

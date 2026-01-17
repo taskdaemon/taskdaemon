@@ -4,12 +4,12 @@
 //! for drawing the UI based on AppState, but never modifies state.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 
-use super::state::{AppState, ConfirmDialog, InteractionMode, ReplRole, View};
+use super::state::{AppState, ConfirmDialog, InteractionMode, ReplMode, ReplRole, View};
 
 /// Status colors (k9s-inspired)
 mod colors {
@@ -109,18 +109,37 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
         Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
     )];
 
-    // View tabs - show all three with current one highlighted
-    let view_tabs = [
-        ("REPL", matches!(state.current_view, View::Repl)),
+    left_spans.push(Span::raw("│ "));
+
+    // First view tab: Chat|Plan (special handling)
+    let is_repl_view = matches!(state.current_view, View::Repl);
+    if is_repl_view {
+        // Show Chat|Plan with active mode highlighted
+        if state.repl_mode == ReplMode::Chat {
+            left_spans.push(Span::styled(
+                "Chat",
+                Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
+            ));
+            left_spans.push(Span::styled("|Plan", Style::default().fg(colors::DIM)));
+        } else {
+            left_spans.push(Span::styled("Chat|", Style::default().fg(colors::DIM)));
+            left_spans.push(Span::styled(
+                "Plan",
+                Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
+            ));
+        }
+    } else {
+        left_spans.push(Span::styled("Chat|Plan", Style::default().fg(colors::DIM)));
+    }
+
+    // Remaining view tabs
+    let other_tabs = [
         ("Executions", matches!(state.current_view, View::Executions)),
         ("Records", matches!(state.current_view, View::Records { .. })),
     ];
 
-    left_spans.push(Span::raw("│ "));
-    for (i, (name, is_active)) in view_tabs.iter().enumerate() {
-        if i > 0 {
-            left_spans.push(Span::styled(" · ", Style::default().fg(colors::DIM)));
-        }
+    for (name, is_active) in other_tabs.iter() {
+        left_spans.push(Span::styled(" · ", Style::default().fg(colors::DIM)));
         if *is_active {
             left_spans.push(Span::styled(
                 *name,
@@ -282,28 +301,45 @@ fn render_repl_view(state: &AppState, frame: &mut Frame, area: Rect) {
         )]));
     }
 
-    // Show welcome message if empty
+    // Show welcome message if empty (varies by mode)
     if state.repl_history.is_empty() && !state.repl_streaming {
+        let (welcome_title, welcome_desc) = match state.repl_mode {
+            ReplMode::Chat => (
+                "Welcome to TaskDaemon Chat",
+                "Type a message and press Enter to chat with the AI assistant.",
+            ),
+            ReplMode::Plan => (
+                "Welcome to TaskDaemon Plan",
+                "Describe your goal and press Enter to create an execution plan.",
+            ),
+        };
+
         lines.push(Line::from(vec![Span::styled(
-            "Welcome to TaskDaemon REPL",
+            welcome_title,
             Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
         )]));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            "Type a message and press Enter to chat with the AI assistant.",
+            welcome_desc,
             Style::default().fg(colors::DIM),
         )]));
         lines.push(Line::from(vec![Span::styled(
-            "Use /help for available commands, /quit to exit.",
+            "Use Tab to switch modes, /help for commands, /quit to exit.",
             Style::default().fg(colors::DIM),
         )]));
     }
+
+    // Title changes based on REPL mode
+    let title = match state.repl_mode {
+        ReplMode::Chat => " Chat ",
+        ReplMode::Plan => " Plan ",
+    };
 
     let history = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" REPL ")
+                .title(title)
                 .border_style(Style::default().fg(colors::HEADER)),
         )
         .wrap(Wrap { trim: false })
@@ -645,7 +681,14 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
             } else {
                 // Show keybinds based on current view
                 let keybinds = match &state.current_view {
-                    View::Repl => vec![("[Enter]", "Submit"), ("[←/→]", "Views"), ("/clear", "Clear")],
+                    View::Repl => {
+                        let mode_label = if state.repl_mode == ReplMode::Chat {
+                            "Plan"
+                        } else {
+                            "Chat"
+                        };
+                        vec![("[Enter]", "Submit"), ("[Tab]", mode_label), ("/clear", "Clear")]
+                    }
                     View::Records { .. } => vec![
                         ("[Enter]", "Children"),
                         ("[d]", "Describe"),
@@ -663,27 +706,51 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                     View::Describe { .. } => vec![("[Esc]", "Back"), ("[l]", "Logs")],
                 };
 
-                let mut spans = vec![Span::raw(" ")];
+                // Left side: view-specific keybinds
+                let mut left_spans = vec![Span::raw(" ")];
                 for (key, action) in keybinds {
-                    spans.push(Span::styled(
+                    left_spans.push(Span::styled(
                         key,
                         Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
                     ));
-                    spans.push(Span::raw(format!(" {} ", action)));
+                    left_spans.push(Span::raw(format!(" {} ", action)));
                 }
-                spans.push(Span::raw("│ "));
-                spans.push(Span::styled(
-                    "[?]",
-                    Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::raw(" Help "));
-                spans.push(Span::styled(
-                    "[q]",
-                    Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::raw(" Quit"));
 
-                Line::from(spans)
+                // Right side: Help, Quit, and view navigation
+                let right_spans = vec![
+                    Span::styled(
+                        "[?]",
+                        Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" Help "),
+                    Span::styled(
+                        "[q]",
+                        Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" Quit "),
+                    Span::styled(
+                        "[←/→]",
+                        Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                ];
+
+                // Render with layout split
+                let footer_block = Block::default().borders(Borders::ALL);
+                let inner = footer_block.inner(area);
+                frame.render_widget(footer_block, area);
+
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Min(0), Constraint::Length(28)])
+                    .split(inner);
+
+                let left_para = Paragraph::new(Line::from(left_spans));
+                let right_para = Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right);
+
+                frame.render_widget(left_para, chunks[0]);
+                frame.render_widget(right_para, chunks[1]);
+                return;
             }
         }
     };

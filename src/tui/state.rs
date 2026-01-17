@@ -217,6 +217,16 @@ pub enum PendingAction {
     DeleteExecution(String),
 }
 
+/// REPL mode (Chat vs Plan)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReplMode {
+    /// Interactive chat mode (default)
+    #[default]
+    Chat,
+    /// Plan mode for structured planning
+    Plan,
+}
+
 /// REPL message role
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplRole {
@@ -361,6 +371,8 @@ pub struct AppState {
     pub last_refresh: i64,
 
     // === REPL state ===
+    /// Current REPL mode (Chat or Plan)
+    pub repl_mode: ReplMode,
     /// Conversation history for display
     pub repl_history: Vec<ReplMessage>,
     /// Current input buffer
@@ -401,6 +413,7 @@ impl Default for AppState {
             pending_action: None,
             last_refresh: 0,
             // REPL state
+            repl_mode: ReplMode::default(),
             repl_history: Vec::new(),
             repl_input: String::new(),
             repl_streaming: false,
