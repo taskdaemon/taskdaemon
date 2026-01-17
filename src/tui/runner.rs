@@ -501,6 +501,15 @@ Working directory: {}"#,
 
     /// Start a new REPL request (spawns background task)
     fn start_repl_request(&mut self, input: &str) {
+        // Don't start a new request if we're already streaming
+        if self.app.state().repl_streaming {
+            self.app
+                .state_mut()
+                .repl_history
+                .push(ReplMessage::error("Please wait for the current response to complete."));
+            return;
+        }
+
         // Check if we have an LLM client
         let llm = match &self.llm_client {
             Some(llm) => Arc::clone(llm),
