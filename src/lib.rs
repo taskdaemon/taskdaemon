@@ -31,6 +31,7 @@ pub mod daemon;
 pub mod domain;
 pub mod llm;
 pub mod progress;
+pub mod prompts;
 pub mod scheduler;
 pub mod state;
 pub mod tools;
@@ -60,6 +61,7 @@ pub use r#loop::{
     validate_dependency_graph,
 };
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
+pub use prompts::{FocusArea, PromptContext, PromptLoader};
 pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};
 pub use state::{RecoveryStats, StateCommand, StateError, StateManager, StateResponse, recover, scan_for_recovery};
 pub use tools::{Tool, ToolContext, ToolError, ToolExecutor, ToolResult};
