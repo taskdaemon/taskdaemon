@@ -26,7 +26,8 @@ use super::Tui;
 use super::app::App;
 use super::events::{Event, EventHandler};
 use super::state::{
-    DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, RecordItem, ReplMessage, ReplMode, View,
+    DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, PlanCreateRequest, RecordItem, ReplMessage,
+    ReplMode, ReplRole, View,
 };
 use super::views;
 
@@ -290,7 +291,12 @@ Working directory: {}"#,
             self.start_task(&task).await;
         }
 
-        // Check for pending action (cancel/pause/resume)
+        // Check for pending plan creation
+        if let Some(request) = self.app.state_mut().pending_plan_create.take() {
+            self.create_plan_draft(request).await;
+        }
+
+        // Check for pending action (cancel/pause/resume/start draft)
         if let Some(action) = self.app.state_mut().pending_action.take() {
             self.execute_action(action).await;
         }
@@ -644,7 +650,168 @@ Working directory: {}"#,
         }
     }
 
-    /// Execute a pending action (cancel/pause/resume)
+    /// Create a plan draft from conversation
+    async fn create_plan_draft(&mut self, request: PlanCreateRequest) {
+        let state_manager = match &self.state_manager {
+            Some(sm) => sm,
+            None => {
+                self.app.state_mut().set_error("No state manager - cannot create plan");
+                return;
+            }
+        };
+
+        let llm = match &self.llm_client {
+            Some(llm) => Arc::clone(llm),
+            None => {
+                self.app
+                    .state_mut()
+                    .set_error("No LLM client - cannot summarize conversation");
+                return;
+            }
+        };
+
+        debug!("Creating plan draft from {} messages", request.messages.len());
+
+        // Format conversation for summarization
+        let conversation_text = request
+            .messages
+            .iter()
+            .map(|msg| {
+                let role = match &msg.role {
+                    ReplRole::User => "User",
+                    ReplRole::Assistant => "Assistant",
+                    ReplRole::ToolResult { tool_name } => tool_name.as_str(),
+                    ReplRole::Error => "Error",
+                };
+                format!("{}: {}", role, msg.content)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        // Summarize conversation using LLM
+        let summarize_prompt = r#"Analyze this conversation and extract a structured requirements summary.
+
+Output format:
+## Goal
+[One sentence describing what the user wants to build/change]
+
+## Requirements
+- [Requirement 1]
+- [Requirement 2]
+...
+
+## Constraints
+- [Constraint 1]
+- [Constraint 2]
+...
+
+## Key Decisions
+- [Decision made during conversation]
+...
+
+Be comprehensive but concise. Include all requirements discussed."#;
+
+        let summarize_request = CompletionRequest {
+            system_prompt: summarize_prompt.to_string(),
+            messages: vec![Message::user(&conversation_text)],
+            tools: vec![],
+            max_tokens: 2048,
+        };
+
+        let summary = match llm.complete(summarize_request).await {
+            Ok(response) => response.content.unwrap_or_else(|| "No summary generated".to_string()),
+            Err(e) => {
+                warn!("Failed to summarize conversation: {}", e);
+                self.app
+                    .state_mut()
+                    .set_error(format!("Failed to summarize conversation: {}. Try again.", e));
+                return;
+            }
+        };
+
+        // Generate a short title
+        let title = self
+            .generate_title(&summary)
+            .await
+            .unwrap_or_else(|| "New Plan".to_string());
+
+        // Create the plan execution with Draft status
+        let mut execution = crate::domain::LoopExecution::new("plan", &title);
+        execution.set_title(title.clone());
+        execution.set_status(crate::domain::LoopExecutionStatus::Draft);
+
+        // Store the summary in context
+        execution.set_context(serde_json::json!({
+            "user-request": summary,
+            "conversation-summary": conversation_text,
+            "review-pass": 0
+        }));
+
+        // Create the execution record
+        let exec_id = match state_manager.create_execution(execution).await {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("Failed to create draft execution: {}", e);
+                self.app.state_mut().set_error(format!("Failed to create draft: {}", e));
+                return;
+            }
+        };
+
+        // Create the plan directory and file
+        let plan_dir = self.worktree.join(".taskdaemon/plans").join(&exec_id);
+        if let Err(e) = std::fs::create_dir_all(&plan_dir) {
+            warn!("Failed to create plan directory: {}", e);
+            self.app
+                .state_mut()
+                .set_error(format!("Failed to create plan directory: {}", e));
+            return;
+        }
+
+        // Write the initial plan.md file
+        let plan_content = format!(
+            r#"# Plan: {}
+
+**Status:** Draft
+**Created:** {}
+**ID:** {}
+
+{}
+
+---
+
+*This is a draft plan. Review and edit as needed, then use `s` in the Executions view to start execution.*
+"#,
+            title,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
+            exec_id,
+            summary
+        );
+
+        let plan_path = plan_dir.join("plan.md");
+        if let Err(e) = std::fs::write(&plan_path, plan_content) {
+            warn!("Failed to write plan file: {}", e);
+            self.app
+                .state_mut()
+                .set_error(format!("Failed to write plan file: {}", e));
+            return;
+        }
+
+        // Extract hash for display (first 6 chars)
+        let hash = &exec_id[..6.min(exec_id.len())];
+
+        // Show success message
+        self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+            "Created draft plan: {} ({})\nView in Executions with `2` key or arrow right, or continue chatting.",
+            title, hash
+        )));
+
+        debug!("Created draft plan: {} at {:?}", exec_id, plan_path);
+
+        // Force refresh to show the new draft
+        self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+    }
+
+    /// Execute a pending action (cancel/pause/resume/start draft)
     async fn execute_action(&mut self, action: PendingAction) {
         let state_manager = match &self.state_manager {
             Some(sm) => sm,
@@ -707,6 +874,19 @@ Working directory: {}"#,
                     Err(e) => {
                         warn!("Failed to delete execution: {}", e);
                         self.app.state_mut().set_error(format!("Failed to delete: {}", e));
+                    }
+                }
+            }
+            PendingAction::StartDraft(id) => {
+                debug!("Starting draft: {}", id);
+                match state_manager.start_draft(&id).await {
+                    Ok(()) => {
+                        debug!("Started draft {}", id);
+                        self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                    }
+                    Err(e) => {
+                        warn!("Failed to start draft: {}", e);
+                        self.app.state_mut().set_error(format!("Failed to start draft: {}", e));
                     }
                 }
             }

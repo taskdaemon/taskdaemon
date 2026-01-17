@@ -215,6 +215,14 @@ pub enum PendingAction {
     PauseLoop(String),
     ResumeLoop(String),
     DeleteExecution(String),
+    StartDraft(String),
+}
+
+/// Request to create a plan from the current conversation
+#[derive(Debug, Clone)]
+pub struct PlanCreateRequest {
+    /// The conversation messages to summarize
+    pub messages: Vec<ReplMessage>,
 }
 
 /// REPL mode (Chat vs Plan)
@@ -385,6 +393,8 @@ pub struct AppState {
     pub pending_repl_submit: Option<String>,
     /// Scroll offset for REPL history view
     pub repl_scroll: usize,
+    /// Pending plan creation request
+    pub pending_plan_create: Option<PlanCreateRequest>,
 }
 
 impl Default for AppState {
@@ -420,6 +430,7 @@ impl Default for AppState {
             repl_response_buffer: String::new(),
             pending_repl_submit: None,
             repl_scroll: 0,
+            pending_plan_create: None,
         }
     }
 }

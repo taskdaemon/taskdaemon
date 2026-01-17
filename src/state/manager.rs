@@ -333,6 +333,21 @@ impl StateManager {
         execution.set_status(LoopExecutionStatus::Running);
         self.update_execution(execution).await
     }
+
+    /// Start a draft execution (transitions Draft -> Pending)
+    pub async fn start_draft(&self, id: &str) -> StateResponse<()> {
+        let mut execution = self
+            .get_execution(id)
+            .await?
+            .ok_or_else(|| StateError::NotFound(format!("Execution {}", id)))?;
+
+        if !execution.is_draft() {
+            return Err(StateError::StoreError("Can only start draft executions".to_string()));
+        }
+
+        execution.mark_ready();
+        self.update_execution(execution).await
+    }
 }
 
 /// The actor loop that owns the Store and processes commands

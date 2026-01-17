@@ -6,8 +6,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::state::{
-    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, ReplMode, TOP_LEVEL_VIEWS, View,
-    top_level_view_index,
+    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, PlanCreateRequest, ReplMode,
+    TOP_LEVEL_VIEWS, View, top_level_view_index,
 };
 
 /// TUI application
@@ -454,6 +454,33 @@ impl App {
         false
     }
 
+    /// Handle /create command to generate a plan from the conversation
+    fn handle_create_plan_command(&mut self) {
+        // Check we're in Plan mode
+        if self.state.repl_mode != ReplMode::Plan {
+            self.state.set_error("Switch to Plan mode first (Tab key)");
+            return;
+        }
+
+        // Check we have conversation history
+        if self.state.repl_history.is_empty() {
+            self.state
+                .set_error("No conversation to create plan from. Describe your requirements first.");
+            return;
+        }
+
+        // Check we're not already creating a plan
+        if self.state.pending_plan_create.is_some() {
+            self.state.set_error("Plan creation already in progress");
+            return;
+        }
+
+        // Queue the plan creation request
+        self.state.pending_plan_create = Some(PlanCreateRequest {
+            messages: self.state.repl_history.clone(),
+        });
+    }
+
     /// Handle REPL slash commands
     fn handle_repl_slash_command(&mut self, input: &str) {
         let parts: Vec<&str> = input.split_whitespace().collect();
@@ -474,6 +501,9 @@ impl App {
                 self.state.repl_history.clear();
                 self.state.repl_response_buffer.clear();
                 self.state.repl_scroll = 0;
+            }
+            "/create" => {
+                self.handle_create_plan_command();
             }
             "/executions" | "/exec" => {
                 self.state.current_view = View::Executions;
