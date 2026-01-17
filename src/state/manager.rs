@@ -15,6 +15,8 @@ use super::messages::{StateCommand, StateError, StateResponse};
 pub struct DaemonMetrics {
     /// Total number of loop executions
     pub total_executions: u64,
+    /// Draft plans awaiting approval
+    pub drafts: u64,
     /// Currently running loops
     pub running: u64,
     /// Loops waiting to start
@@ -256,6 +258,7 @@ impl StateManager {
         for exec in executions {
             metrics.total_executions += 1;
             match exec.status {
+                LoopExecutionStatus::Draft => metrics.drafts += 1,
                 LoopExecutionStatus::Running => metrics.running += 1,
                 LoopExecutionStatus::Pending => metrics.pending += 1,
                 LoopExecutionStatus::Complete => metrics.completed += 1,

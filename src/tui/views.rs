@@ -682,11 +682,7 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                 // Show keybinds based on current view
                 let keybinds = match &state.current_view {
                     View::Repl => {
-                        let mode_label = if state.repl_mode == ReplMode::Chat {
-                            "Plan"
-                        } else {
-                            "Chat"
-                        };
+                        let mode_label = if state.repl_mode == ReplMode::Chat { "Plan" } else { "Chat" };
                         vec![("[Enter]", "Submit"), ("[Tab]", mode_label), ("/clear", "Clear")]
                     }
                     View::Records { .. } => vec![
@@ -718,15 +714,9 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
 
                 // Right side: Help, Quit, and view navigation
                 let right_spans = vec![
-                    Span::styled(
-                        "[?]",
-                        Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled("[?]", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
                     Span::raw(" Help "),
-                    Span::styled(
-                        "[q]",
-                        Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled("[q]", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
                     Span::raw(" Quit "),
                     Span::styled(
                         "[←/→]",

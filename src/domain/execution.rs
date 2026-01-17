@@ -13,6 +13,8 @@ use super::id::generate_id;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum LoopExecutionStatus {
+    /// Plan created, awaiting user approval
+    Draft,
     /// Waiting to start
     #[default]
     Pending,
@@ -35,6 +37,7 @@ pub enum LoopExecutionStatus {
 impl std::fmt::Display for LoopExecutionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Draft => write!(f, "draft"),
             Self::Pending => write!(f, "pending"),
             Self::Running => write!(f, "running"),
             Self::Paused => write!(f, "paused"),
@@ -219,6 +222,23 @@ impl LoopExecution {
         matches!(self.status, LoopExecutionStatus::Paused | LoopExecutionStatus::Blocked)
     }
 
+    /// Check if the loop is in draft status (awaiting user approval)
+    pub fn is_draft(&self) -> bool {
+        matches!(self.status, LoopExecutionStatus::Draft)
+    }
+
+    /// Transition from Draft to Pending (marks the draft as ready to run)
+    /// Returns true if the transition was made, false if not in Draft status
+    pub fn mark_ready(&mut self) -> bool {
+        if self.status == LoopExecutionStatus::Draft {
+            self.status = LoopExecutionStatus::Pending;
+            self.updated_at = now_ms();
+            true
+        } else {
+            false
+        }
+    }
+
     // === Builder methods for cascade logic ===
 
     /// Set the parent and return self (builder pattern)
@@ -393,5 +413,51 @@ mod tests {
 
         assert_eq!(exec.id, deserialized.id);
         assert_eq!(exec.context, deserialized.context);
+    }
+
+    #[test]
+    fn test_loop_execution_draft_status() {
+        let mut exec = LoopExecution::new("plan", "test-plan");
+        exec.set_status(LoopExecutionStatus::Draft);
+
+        assert!(exec.is_draft());
+        assert!(!exec.is_terminal());
+        assert!(!exec.is_active());
+        assert!(!exec.is_resumable());
+    }
+
+    #[test]
+    fn test_loop_execution_mark_ready() {
+        let mut exec = LoopExecution::new("plan", "test-plan");
+        exec.set_status(LoopExecutionStatus::Draft);
+        assert!(exec.is_draft());
+
+        // mark_ready should transition Draft -> Pending
+        let result = exec.mark_ready();
+        assert!(result);
+        assert_eq!(exec.status, LoopExecutionStatus::Pending);
+        assert!(!exec.is_draft());
+
+        // Calling mark_ready when not in Draft should return false
+        let result = exec.mark_ready();
+        assert!(!result);
+        assert_eq!(exec.status, LoopExecutionStatus::Pending);
+    }
+
+    #[test]
+    fn test_draft_status_serialization() {
+        let mut exec = LoopExecution::new("plan", "test-plan");
+        exec.set_status(LoopExecutionStatus::Draft);
+
+        let json = serde_json::to_string(&exec).unwrap();
+        assert!(json.contains("\"status\":\"draft\""));
+
+        let deserialized: LoopExecution = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.status, LoopExecutionStatus::Draft);
+    }
+
+    #[test]
+    fn test_draft_status_display() {
+        assert_eq!(LoopExecutionStatus::Draft.to_string(), "draft");
     }
 }
