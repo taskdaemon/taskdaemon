@@ -30,23 +30,47 @@ pub enum View {
     },
 }
 
-/// Top-level views for arrow key navigation (in order)
-pub const TOP_LEVEL_VIEWS: [View; 3] = [
-    View::Repl,
-    View::Executions,
-    View::Records {
-        type_filter: None,
-        parent_filter: None,
-    },
-];
+/// Top-level panes for Tab cycling (in order): Chat, Plan, Executions, Records
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopLevelPane {
+    Chat,
+    Plan,
+    Executions,
+    Records,
+}
 
-/// Get the index of a view in the top-level views list
-pub fn top_level_view_index(view: &View) -> usize {
+impl TopLevelPane {
+    /// Get the next pane in the cycle
+    pub fn next(self) -> Self {
+        match self {
+            Self::Chat => Self::Plan,
+            Self::Plan => Self::Executions,
+            Self::Executions => Self::Records,
+            Self::Records => Self::Chat,
+        }
+    }
+
+    /// Get the previous pane in the cycle
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Chat => Self::Records,
+            Self::Plan => Self::Chat,
+            Self::Executions => Self::Plan,
+            Self::Records => Self::Executions,
+        }
+    }
+}
+
+/// Get the current top-level pane based on view and repl_mode
+pub fn current_pane(view: &View, repl_mode: ReplMode) -> TopLevelPane {
     match view {
-        View::Repl => 0,
-        View::Executions => 1,
-        View::Records { .. } => 2,
-        _ => 0, // Default to Repl for non-top-level views
+        View::Repl => match repl_mode {
+            ReplMode::Chat => TopLevelPane::Chat,
+            ReplMode::Plan => TopLevelPane::Plan,
+        },
+        View::Executions => TopLevelPane::Executions,
+        View::Records { .. } => TopLevelPane::Records,
+        _ => TopLevelPane::Chat, // Default for nested views
     }
 }
 
@@ -361,6 +385,7 @@ pub struct AppState {
 
     // === Metrics ===
     pub total_records: usize,
+    pub executions_draft: usize,
     pub executions_active: usize,
     pub executions_complete: usize,
     pub executions_failed: usize,
@@ -392,8 +417,10 @@ pub struct AppState {
     pub repl_response_buffer: String,
     /// Queued input for async processing
     pub pending_repl_submit: Option<String>,
-    /// Scroll offset for REPL history view
-    pub repl_scroll: usize,
+    /// Scroll offset for REPL history view (manual override, None = auto-scroll to bottom)
+    pub repl_scroll: Option<usize>,
+    /// Cached max scroll offset (updated during render via set_repl_max_scroll)
+    pub repl_max_scroll: usize,
     /// Pending plan creation request
     pub pending_plan_create: Option<PlanCreateRequest>,
 }
@@ -414,6 +441,7 @@ impl Default for AppState {
             records_selection: SelectionState::default(),
             executions_selection: SelectionState::default(),
             total_records: 0,
+            executions_draft: 0,
             executions_active: 0,
             executions_complete: 0,
             executions_failed: 0,
@@ -430,7 +458,8 @@ impl Default for AppState {
             repl_streaming: false,
             repl_response_buffer: String::new(),
             pending_repl_submit: None,
-            repl_scroll: 0,
+            repl_scroll: None, // None = auto-scroll to bottom
+            repl_max_scroll: 0,
             pending_plan_create: None,
         }
     }
@@ -568,12 +597,52 @@ impl AppState {
         self.current_view.display_name()
     }
 
+    /// Scroll REPL view up by given lines
+    /// max_scroll is the maximum valid scroll offset (content_height - viewport_height)
+    pub fn repl_scroll_up(&mut self, lines: usize, max_scroll: usize) {
+        // When at auto-scroll (None), current position is at max_scroll (bottom)
+        let current = self.repl_scroll.unwrap_or(max_scroll);
+        // Clamp current to actual max first (in case it was out of bounds)
+        let clamped_current = current.min(max_scroll);
+        self.repl_scroll = Some(clamped_current.saturating_sub(lines));
+    }
+
+    /// Scroll REPL view down by given lines (towards bottom)
+    /// max_scroll is the maximum valid scroll offset (content_height - viewport_height)
+    pub fn repl_scroll_down(&mut self, lines: usize, max_scroll: usize) {
+        // When at auto-scroll (None), current position is at max_scroll (bottom)
+        let current = self.repl_scroll.unwrap_or(max_scroll);
+        // Clamp current to actual max first (in case it was out of bounds)
+        let clamped_current = current.min(max_scroll);
+        let new_scroll = clamped_current.saturating_add(lines).min(max_scroll);
+        // If we're at the bottom, switch back to auto-scroll mode
+        if new_scroll >= max_scroll {
+            self.repl_scroll = None;
+        } else {
+            self.repl_scroll = Some(new_scroll);
+        }
+    }
+
+    /// Reset REPL scroll to auto-scroll mode (follow latest)
+    pub fn repl_scroll_to_bottom(&mut self) {
+        self.repl_scroll = None;
+    }
+
+    /// Check if REPL is in manual scroll mode
+    pub fn repl_is_manual_scroll(&self) -> bool {
+        self.repl_scroll.is_some()
+    }
+
     /// Tick - called on each frame update
     pub fn tick(&mut self) {
         // Update logs scroll if following
         if self.logs_follow && !self.logs.is_empty() {
             self.logs_scroll = self.logs.len().saturating_sub(1);
         }
+
+        // Scroll is handled in render with viewport awareness
+        // repl_scroll = None means auto-scroll to bottom
+        // repl_scroll = Some(n) means manual scroll offset
     }
 
     /// Filter records by current filter text
@@ -762,22 +831,51 @@ mod tests {
     }
 
     #[test]
-    fn test_top_level_view_index() {
-        assert_eq!(top_level_view_index(&View::Repl), 0);
-        assert_eq!(top_level_view_index(&View::Executions), 1);
+    fn test_current_pane() {
+        // Chat mode
+        assert_eq!(current_pane(&View::Repl, ReplMode::Chat), TopLevelPane::Chat);
+        // Plan mode
+        assert_eq!(current_pane(&View::Repl, ReplMode::Plan), TopLevelPane::Plan);
+        // Executions
         assert_eq!(
-            top_level_view_index(&View::Records {
-                type_filter: None,
-                parent_filter: None
-            }),
-            2
+            current_pane(&View::Executions, ReplMode::Chat),
+            TopLevelPane::Executions
         );
-        // Non-top-level views should default to 0
+        // Records
         assert_eq!(
-            top_level_view_index(&View::Logs {
-                target_id: "test".to_string()
-            }),
-            0
+            current_pane(
+                &View::Records {
+                    type_filter: None,
+                    parent_filter: None
+                },
+                ReplMode::Chat
+            ),
+            TopLevelPane::Records
         );
+        // Non-top-level views default to Chat
+        assert_eq!(
+            current_pane(
+                &View::Logs {
+                    target_id: "test".to_string()
+                },
+                ReplMode::Chat
+            ),
+            TopLevelPane::Chat
+        );
+    }
+
+    #[test]
+    fn test_pane_cycling() {
+        // Test next cycle
+        assert_eq!(TopLevelPane::Chat.next(), TopLevelPane::Plan);
+        assert_eq!(TopLevelPane::Plan.next(), TopLevelPane::Executions);
+        assert_eq!(TopLevelPane::Executions.next(), TopLevelPane::Records);
+        assert_eq!(TopLevelPane::Records.next(), TopLevelPane::Chat);
+
+        // Test prev cycle
+        assert_eq!(TopLevelPane::Chat.prev(), TopLevelPane::Records);
+        assert_eq!(TopLevelPane::Records.prev(), TopLevelPane::Executions);
+        assert_eq!(TopLevelPane::Executions.prev(), TopLevelPane::Plan);
+        assert_eq!(TopLevelPane::Plan.prev(), TopLevelPane::Chat);
     }
 }

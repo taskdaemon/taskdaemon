@@ -242,7 +242,7 @@ Working directory: {}"#,
 
         loop {
             // Draw the UI
-            self.terminal.draw(|frame| views::render(self.app.state(), frame))?;
+            self.terminal.draw(|frame| views::render(self.app.state_mut(), frame))?;
 
             // Handle events
             match self.event_handler.next().await? {
@@ -744,17 +744,32 @@ Working directory: {}"#,
 
     /// Create a plan draft from conversation
     async fn create_plan_draft(&mut self, request: PlanCreateRequest) {
+        info!("=== create_plan_draft START ===");
+        info!(
+            "StateManager present: {}, LLM client present: {}",
+            self.state_manager.is_some(),
+            self.llm_client.is_some()
+        );
+
         let state_manager = match &self.state_manager {
-            Some(sm) => sm,
+            Some(sm) => {
+                info!("StateManager connected");
+                sm
+            }
             None => {
+                warn!("No StateManager - cannot create plan");
                 self.app.state_mut().set_error("No state manager - cannot create plan");
                 return;
             }
         };
 
         let llm = match &self.llm_client {
-            Some(llm) => Arc::clone(llm),
+            Some(llm) => {
+                info!("LLM client connected");
+                Arc::clone(llm)
+            }
             None => {
+                warn!("No LLM client - cannot summarize conversation");
                 self.app
                     .state_mut()
                     .set_error("No LLM client - cannot summarize conversation");
@@ -762,7 +777,7 @@ Working directory: {}"#,
             }
         };
 
-        debug!("Creating plan draft from {} messages", request.messages.len());
+        info!("Creating plan draft from {} messages", request.messages.len());
 
         // Format conversation for summarization
         let conversation_text = request
@@ -810,8 +825,13 @@ Be comprehensive but concise. Include all requirements discussed."#;
             max_tokens: 2048,
         };
 
+        info!("Sending summarization request to LLM...");
         let summary = match llm.complete(summarize_request).await {
-            Ok(response) => response.content.unwrap_or_else(|| "No summary generated".to_string()),
+            Ok(response) => {
+                let s = response.content.unwrap_or_else(|| "No summary generated".to_string());
+                info!("LLM summarization complete: {} chars", s.len());
+                s
+            }
             Err(e) => {
                 warn!("Failed to summarize conversation: {}", e);
                 self.app
@@ -822,15 +842,22 @@ Be comprehensive but concise. Include all requirements discussed."#;
         };
 
         // Generate a short title
+        info!("Generating title from summary...");
         let title = self
             .generate_title(&summary)
             .await
             .unwrap_or_else(|| "New Plan".to_string());
+        info!("Generated title: {}", title);
 
         // Create the plan execution with Draft status
+        info!("Creating LoopExecution with Draft status...");
         let mut execution = crate::domain::LoopExecution::new("plan", &title);
         execution.set_title(title.clone());
         execution.set_status(crate::domain::LoopExecutionStatus::Draft);
+        info!(
+            "LoopExecution created: id={}, loop_type={}, status={:?}",
+            execution.id, execution.loop_type, execution.status
+        );
 
         // Store the summary in context
         execution.set_context(serde_json::json!({
@@ -840,8 +867,12 @@ Be comprehensive but concise. Include all requirements discussed."#;
         }));
 
         // Create the execution record
+        info!("Calling state_manager.create_execution()...");
         let exec_id = match state_manager.create_execution(execution).await {
-            Ok(id) => id,
+            Ok(id) => {
+                info!("Draft execution created successfully: {}", id);
+                id
+            }
             Err(e) => {
                 warn!("Failed to create draft execution: {}", e);
                 self.app.state_mut().set_error(format!("Failed to create draft: {}", e));
@@ -851,6 +882,7 @@ Be comprehensive but concise. Include all requirements discussed."#;
 
         // Create the plan directory and file
         let plan_dir = self.worktree.join(".taskdaemon/plans").join(&exec_id);
+        info!("Creating plan directory: {:?}", plan_dir);
         if let Err(e) = std::fs::create_dir_all(&plan_dir) {
             warn!("Failed to create plan directory: {}", e);
             self.app
@@ -858,6 +890,7 @@ Be comprehensive but concise. Include all requirements discussed."#;
                 .set_error(format!("Failed to create plan directory: {}", e));
             return;
         }
+        info!("Plan directory created successfully");
 
         // Write the initial plan.md file
         let plan_content = format!(
@@ -880,6 +913,7 @@ Be comprehensive but concise. Include all requirements discussed."#;
         );
 
         let plan_path = plan_dir.join("plan.md");
+        info!("Writing plan.md to {:?}", plan_path);
         if let Err(e) = std::fs::write(&plan_path, plan_content) {
             warn!("Failed to write plan file: {}", e);
             self.app
@@ -887,17 +921,21 @@ Be comprehensive but concise. Include all requirements discussed."#;
                 .set_error(format!("Failed to write plan file: {}", e));
             return;
         }
+        info!("plan.md written successfully");
 
         // Extract hash for display (first 6 chars)
         let hash = &exec_id[..6.min(exec_id.len())];
 
         // Show success message
         self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-            "Created draft plan: {} ({})\nView in Executions with `2` key or arrow right, or continue chatting.",
+            "Created draft plan: {} ({})\nView in Executions with `E` key or Tab, then press `s` to start execution.",
             title, hash
         )));
 
-        debug!("Created draft plan: {} at {:?}", exec_id, plan_path);
+        info!(
+            "=== create_plan_draft COMPLETE: exec_id={}, title={}, plan_path={:?} ===",
+            exec_id, title, plan_path
+        );
 
         // Force refresh to show the new draft
         self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
@@ -991,8 +1029,28 @@ Be comprehensive but concise. Include all requirements discussed."#;
     }
 
     /// Handle mouse event
-    fn handle_mouse(&mut self, _mouse: crossterm::event::MouseEvent) {
-        // Mouse support is secondary to keyboard; implement basic click-to-select later
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::MouseEventKind;
+
+        let state = self.app.state_mut();
+
+        // Only handle scroll in REPL view
+        if !matches!(state.current_view, View::Repl) {
+            return;
+        }
+
+        let max = state.repl_max_scroll;
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                state.repl_scroll_up(3, max);
+            }
+            MouseEventKind::ScrollDown => {
+                state.repl_scroll_down(3, max);
+            }
+            _ => {
+                // Other mouse events (click, drag) not handled yet
+            }
+        }
     }
 
     /// Handle terminal resize
@@ -1090,6 +1148,7 @@ Be comprehensive but concise. Include all requirements discussed."#;
                     .collect();
 
                 let state = self.app.state_mut();
+                state.executions_draft = items.iter().filter(|r| r.status == "draft").count();
                 state.executions_active = items.iter().filter(|r| r.status == "running").count();
                 state.executions_complete = items.iter().filter(|r| r.status == "complete").count();
                 state.executions_failed = items.iter().filter(|r| r.status == "failed").count();

@@ -6,8 +6,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::state::{
-    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, PlanCreateRequest, ReplMode,
-    TOP_LEVEL_VIEWS, View, top_level_view_index,
+    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, PlanCreateRequest, ReplMode, TopLevelPane,
+    View, current_pane,
 };
 
 /// TUI application
@@ -86,35 +86,78 @@ impl App {
                 self.state.interaction_mode = InteractionMode::Command(String::new());
             }
 
-            // === Top-level view navigation (left/right arrows) ===
-            (KeyCode::Left, _) => {
-                self.navigate_prev_top_level_view();
-            }
-            (KeyCode::Right, _) => {
+            // === Top-level view navigation (Tab cycles, C/P/E/R jump) ===
+            (KeyCode::Tab, _) => {
                 self.navigate_next_top_level_view();
             }
+            (KeyCode::BackTab, _) => {
+                // Shift+Tab goes backwards
+                self.navigate_prev_top_level_view();
+            }
+            (KeyCode::Char('C'), _) => {
+                self.navigate_to_pane(TopLevelPane::Chat);
+            }
+            (KeyCode::Char('P'), _) => {
+                self.navigate_to_pane(TopLevelPane::Plan);
+            }
+            (KeyCode::Char('E'), _) => {
+                self.navigate_to_pane(TopLevelPane::Executions);
+            }
+            (KeyCode::Char('R'), _) => {
+                self.navigate_to_pane(TopLevelPane::Records);
+            }
 
-            // === Navigation (only in list views) ===
+            // === Navigation (list views) or Scroll (REPL view) ===
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                if let Some(sel) = self.state.current_selection_mut() {
+                if matches!(self.state.current_view, View::Repl) {
+                    // Scroll up in REPL view
+                    let max = self.state.repl_max_scroll;
+                    self.state.repl_scroll_up(1, max);
+                } else if let Some(sel) = self.state.current_selection_mut() {
                     sel.select_prev();
                 }
             }
             (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                let max = self.state.current_item_count();
-                if let Some(sel) = self.state.current_selection_mut() {
-                    sel.select_next(max);
+                if matches!(self.state.current_view, View::Repl) {
+                    // Scroll down in REPL view
+                    let max = self.state.repl_max_scroll;
+                    self.state.repl_scroll_down(1, max);
+                } else {
+                    let max = self.state.current_item_count();
+                    if let Some(sel) = self.state.current_selection_mut() {
+                        sel.select_next(max);
+                    }
+                }
+            }
+            (KeyCode::PageUp, _) => {
+                if matches!(self.state.current_view, View::Repl) {
+                    let max = self.state.repl_max_scroll;
+                    self.state.repl_scroll_up(10, max);
+                }
+            }
+            (KeyCode::PageDown, _) => {
+                if matches!(self.state.current_view, View::Repl) {
+                    let max = self.state.repl_max_scroll;
+                    self.state.repl_scroll_down(10, max);
                 }
             }
             (KeyCode::Char('g'), _) => {
-                if let Some(sel) = self.state.current_selection_mut() {
+                if matches!(self.state.current_view, View::Repl) {
+                    // Scroll to top
+                    self.state.repl_scroll = Some(0);
+                } else if let Some(sel) = self.state.current_selection_mut() {
                     sel.select_first();
                 }
             }
             (KeyCode::Char('G'), _) => {
-                let max = self.state.current_item_count();
-                if let Some(sel) = self.state.current_selection_mut() {
-                    sel.select_last(max);
+                if matches!(self.state.current_view, View::Repl) {
+                    // Scroll to bottom (auto-scroll mode)
+                    self.state.repl_scroll_to_bottom();
+                } else {
+                    let max = self.state.current_item_count();
+                    if let Some(sel) = self.state.current_selection_mut() {
+                        sel.select_last(max);
+                    }
                 }
             }
 
@@ -126,51 +169,34 @@ impl App {
                 self.handle_escape();
             }
 
-            // === Actions ===
-            (KeyCode::Char('l'), _) => {
+            // === List view actions (Executions, Records) - not in REPL ===
+            (KeyCode::Char('l'), _) if !matches!(self.state.current_view, View::Repl) => {
                 // View logs for selected item
                 if let Some(id) = self.state.selected_item_id() {
                     self.state.push_view(View::Logs { target_id: id });
                 }
             }
-            (KeyCode::Char('d'), _) => {
+            (KeyCode::Char('d'), _) if !matches!(self.state.current_view, View::Repl) => {
                 // Describe selected item
                 self.handle_describe();
             }
-            (KeyCode::Char('x'), _) => {
+            (KeyCode::Char('x'), _) if !matches!(self.state.current_view, View::Repl) => {
                 // Cancel selected execution
                 self.handle_cancel();
             }
-            (KeyCode::Char('p'), _) => {
-                // In REPL Chat mode: switch to Plan mode
-                // Otherwise: Pause selected execution
-                if matches!(self.state.current_view, View::Repl)
-                    && self.state.repl_mode == ReplMode::Chat
-                    && !self.state.repl_streaming
-                {
-                    self.state.repl_mode = ReplMode::Plan;
-                } else {
-                    self.handle_pause();
-                }
+            (KeyCode::Char('p'), _) if !matches!(self.state.current_view, View::Repl) => {
+                // Pause selected execution
+                self.handle_pause();
             }
-            (KeyCode::Char('c'), _) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // In REPL Plan mode: switch to Chat mode
-                if matches!(self.state.current_view, View::Repl)
-                    && self.state.repl_mode == ReplMode::Plan
-                    && !self.state.repl_streaming
-                {
-                    self.state.repl_mode = ReplMode::Chat;
-                }
-            }
-            (KeyCode::Char('r'), _) => {
+            (KeyCode::Char('r'), _) if !matches!(self.state.current_view, View::Repl) => {
                 // Resume selected execution
                 self.handle_resume();
             }
-            (KeyCode::Char('s'), _) => {
+            (KeyCode::Char('s'), _) if !matches!(self.state.current_view, View::Repl) => {
                 // Start selected draft execution
                 self.handle_start_draft();
             }
-            (KeyCode::Char('D'), _) => {
+            (KeyCode::Char('D'), _) if !matches!(self.state.current_view, View::Repl) => {
                 // Delete selected execution
                 self.handle_delete();
             }
@@ -183,14 +209,6 @@ impl App {
             // === Logs view specific ===
             (KeyCode::Char('f'), _) if matches!(self.state.current_view, View::Logs { .. }) => {
                 self.state.logs_follow = !self.state.logs_follow;
-            }
-
-            // === Tab toggles Chat/Plan mode in REPL view ===
-            (KeyCode::Tab, _) if matches!(self.state.current_view, View::Repl) && !self.state.repl_streaming => {
-                self.state.repl_mode = match self.state.repl_mode {
-                    ReplMode::Chat => ReplMode::Plan,
-                    ReplMode::Plan => ReplMode::Chat,
-                };
             }
 
             // === REPL view specific: any other character starts input ===
@@ -207,19 +225,39 @@ impl App {
         false
     }
 
-    /// Navigate to the previous top-level view
+    /// Navigate to the previous top-level pane
     fn navigate_prev_top_level_view(&mut self) {
-        let current_idx = top_level_view_index(&self.state.current_view);
-        let prev_idx = if current_idx == 0 { TOP_LEVEL_VIEWS.len() - 1 } else { current_idx - 1 };
-        self.state.current_view = TOP_LEVEL_VIEWS[prev_idx].clone();
-        self.state.view_stack.clear();
+        let current = current_pane(&self.state.current_view, self.state.repl_mode);
+        self.navigate_to_pane(current.prev());
     }
 
-    /// Navigate to the next top-level view
+    /// Navigate to the next top-level pane
     fn navigate_next_top_level_view(&mut self) {
-        let current_idx = top_level_view_index(&self.state.current_view);
-        let next_idx = (current_idx + 1) % TOP_LEVEL_VIEWS.len();
-        self.state.current_view = TOP_LEVEL_VIEWS[next_idx].clone();
+        let current = current_pane(&self.state.current_view, self.state.repl_mode);
+        self.navigate_to_pane(current.next());
+    }
+
+    /// Navigate to a specific pane
+    fn navigate_to_pane(&mut self, pane: TopLevelPane) {
+        match pane {
+            TopLevelPane::Chat => {
+                self.state.current_view = View::Repl;
+                self.state.repl_mode = ReplMode::Chat;
+            }
+            TopLevelPane::Plan => {
+                self.state.current_view = View::Repl;
+                self.state.repl_mode = ReplMode::Plan;
+            }
+            TopLevelPane::Executions => {
+                self.state.current_view = View::Executions;
+            }
+            TopLevelPane::Records => {
+                self.state.current_view = View::Records {
+                    type_filter: None,
+                    parent_filter: None,
+                };
+            }
+        }
         self.state.view_stack.clear();
     }
 
@@ -455,22 +493,18 @@ impl App {
             KeyCode::Char(c) => {
                 self.state.repl_input.push(c);
             }
-            // Tab toggles Chat/Plan mode
+            // Tab cycles through views (exit input mode first)
             KeyCode::Tab => {
-                self.state.repl_mode = match self.state.repl_mode {
-                    ReplMode::Chat => ReplMode::Plan,
-                    ReplMode::Plan => ReplMode::Chat,
-                };
-            }
-            // Allow view navigation with arrow keys even in input mode
-            KeyCode::Left => {
-                self.state.interaction_mode = InteractionMode::Normal;
-                self.navigate_prev_top_level_view();
-            }
-            KeyCode::Right => {
                 self.state.interaction_mode = InteractionMode::Normal;
                 self.navigate_next_top_level_view();
             }
+            KeyCode::BackTab => {
+                self.state.interaction_mode = InteractionMode::Normal;
+                self.navigate_prev_top_level_view();
+            }
+            // Left/Right arrows reserved for cursor movement (not implemented yet)
+            // For now, just ignore them
+            KeyCode::Left | KeyCode::Right => {}
             _ => {}
         }
 
@@ -481,7 +515,7 @@ impl App {
     fn handle_create_plan_command(&mut self) {
         // Check we're in Plan mode
         if self.state.repl_mode != ReplMode::Plan {
-            self.state.set_error("Switch to Plan mode first (Tab key)");
+            self.state.set_error("Switch to Plan mode first (press P)");
             return;
         }
 
@@ -523,7 +557,7 @@ impl App {
             "/clear" | "/c" => {
                 self.state.repl_history.clear();
                 self.state.repl_response_buffer.clear();
-                self.state.repl_scroll = 0;
+                self.state.repl_scroll = None; // Reset to auto-scroll
             }
             "/create" => {
                 self.handle_create_plan_command();

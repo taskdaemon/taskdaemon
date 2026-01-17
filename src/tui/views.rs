@@ -4,10 +4,11 @@
 //! for drawing the UI based on AppState, but never modifies state.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
+use tracing::debug;
 
 use super::state::{AppState, ConfirmDialog, InteractionMode, ReplMode, ReplRole, View};
 
@@ -68,7 +69,7 @@ fn status_icon(status: &str) -> &'static str {
 }
 
 /// Main render function
-pub fn render(state: &AppState, frame: &mut Frame) {
+pub fn render(state: &mut AppState, frame: &mut Frame) {
     // Create main layout: header, content, footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -163,6 +164,9 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
     // Build right side: metrics
     let mut right_parts: Vec<String> = Vec::new();
     right_parts.push(format!("{} records", state.total_records));
+    if state.executions_draft > 0 {
+        right_parts.push(format!("{} drafts", state.executions_draft));
+    }
     right_parts.push(format!("{} active", state.executions_active));
     if state.executions_complete > 0 {
         right_parts.push(format!("{} complete", state.executions_complete));
@@ -194,6 +198,8 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
         }
         let color = if part.contains("records") {
             Color::Cyan
+        } else if part.contains("drafts") {
+            colors::DRAFT
         } else if part.contains("active") {
             colors::RUNNING
         } else if part.contains("complete") {
@@ -213,7 +219,7 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 /// Render REPL view with conversation history and input
-fn render_repl_view(state: &AppState, frame: &mut Frame, area: Rect) {
+fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
     // Split area: message history (scrollable) + input line at bottom
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -304,6 +310,12 @@ fn render_repl_view(state: &AppState, frame: &mut Frame, area: Rect) {
 
     // Show welcome message if empty (varies by mode)
     if state.repl_history.is_empty() && !state.repl_streaming {
+        debug!(
+            "Showing welcome message: mode={:?}, lines_before={}, scroll={:?}",
+            state.repl_mode,
+            lines.len(),
+            state.repl_scroll
+        );
         let (welcome_title, welcome_desc) = match state.repl_mode {
             ReplMode::Chat => (
                 "Welcome to TaskDaemon Chat",
@@ -324,10 +336,6 @@ fn render_repl_view(state: &AppState, frame: &mut Frame, area: Rect) {
             welcome_desc,
             Style::default().fg(colors::DIM),
         )]));
-        lines.push(Line::from(vec![Span::styled(
-            "Use Tab to switch modes, /help for commands, /quit to exit.",
-            Style::default().fg(colors::DIM),
-        )]));
     }
 
     // Title changes based on REPL mode
@@ -335,6 +343,36 @@ fn render_repl_view(state: &AppState, frame: &mut Frame, area: Rect) {
         ReplMode::Chat => " Chat ",
         ReplMode::Plan => " Plan ",
     };
+
+    // Calculate scroll offset
+    // Viewport height = chunk height - 2 (for borders)
+    // Viewport width = chunk width - 2 (for borders)
+    let viewport_height = chunks[0].height.saturating_sub(2) as usize;
+    let viewport_width = chunks[0].width.saturating_sub(2) as usize;
+
+    // Calculate visual line count (accounting for line wrapping)
+    // Each logical line may wrap to multiple visual lines
+    let content_height: usize = lines
+        .iter()
+        .map(|line| {
+            let line_width = line.width();
+            if viewport_width == 0 || line_width == 0 {
+                1
+            } else {
+                // How many rows does this line occupy after wrapping?
+                line_width.div_ceil(viewport_width)
+            }
+        })
+        .sum();
+
+    let max_scroll = content_height.saturating_sub(viewport_height);
+
+    // Update cached max_scroll for scroll methods to use
+    state.repl_max_scroll = max_scroll;
+
+    // Use manual scroll if set, otherwise auto-scroll to bottom
+    // Clamp to actual max to handle content changes
+    let scroll = state.repl_scroll.unwrap_or(max_scroll).min(max_scroll);
 
     let history = Paragraph::new(lines)
         .block(
@@ -344,7 +382,7 @@ fn render_repl_view(state: &AppState, frame: &mut Frame, area: Rect) {
                 .border_style(Style::default().fg(colors::HEADER)),
         )
         .wrap(Wrap { trim: false })
-        .scroll((state.repl_scroll as u16, 0));
+        .scroll((scroll as u16, 0));
 
     frame.render_widget(history, chunks[0]);
 
@@ -683,8 +721,7 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                 // Show keybinds based on current view
                 let keybinds = match &state.current_view {
                     View::Repl => {
-                        let mode_label = if state.repl_mode == ReplMode::Chat { "Plan" } else { "Chat" };
-                        vec![("[Enter]", "Submit"), ("[Tab]", mode_label), ("/clear", "Clear")]
+                        vec![("[Enter]", "Submit"), ("/clear", "Clear")]
                     }
                     View::Records { .. } => vec![
                         ("[Enter]", "Children"),
@@ -713,18 +750,18 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                     left_spans.push(Span::raw(format!(" {} ", action)));
                 }
 
-                // Right side: Help, Quit, and view navigation
-                let right_spans = vec![
+                // Right side: Views, Help, Quit (left-justified grouping)
+                let right_line = Line::from(vec![
+                    Span::styled(
+                        "[Tab]",
+                        Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" Views "),
                     Span::styled("[?]", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
                     Span::raw(" Help "),
                     Span::styled("[q]", Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD)),
                     Span::raw(" Quit "),
-                    Span::styled(
-                        "[←/→]",
-                        Style::default().fg(colors::KEYBIND).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                ];
+                ]);
 
                 // Render with layout split
                 let footer_block = Block::default().borders(Borders::ALL);
@@ -733,11 +770,11 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
 
                 let chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(0), Constraint::Length(28)])
+                    .constraints([Constraint::Min(0), Constraint::Length(right_line.width() as u16)])
                     .split(inner);
 
                 let left_para = Paragraph::new(Line::from(left_spans));
-                let right_para = Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right);
+                let right_para = Paragraph::new(right_line);
 
                 frame.render_widget(left_para, chunks[0]);
                 frame.render_widget(right_para, chunks[1]);

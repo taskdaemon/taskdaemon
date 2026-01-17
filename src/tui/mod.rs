@@ -15,7 +15,7 @@ mod views;
 pub use app::App;
 pub use events::{Event, EventHandler};
 pub use runner::TuiRunner;
-pub use state::{AppState, InteractionMode, ReplMessage, ReplRole, TOP_LEVEL_VIEWS, View, top_level_view_index};
+pub use state::{AppState, InteractionMode, ReplMessage, ReplRole, TopLevelPane, View, current_pane};
 
 use std::io::{self, Stdout};
 use std::sync::Arc;
@@ -63,6 +63,11 @@ pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
 
 /// Run the TUI with StateManager and optional LLM client for REPL
 pub async fn run_with_state_and_llm(state_manager: StateManager, llm_client: Option<Arc<dyn LlmClient>>) -> Result<()> {
+    // Session separator for easier log reading
+    tracing::info!("********************************************************************************");
+    tracing::info!("TUI session starting");
+    tracing::info!("********************************************************************************");
+
     let terminal = init()?;
 
     // Use a guard to ensure terminal is restored even on early return/error
