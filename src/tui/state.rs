@@ -206,6 +206,7 @@ pub enum ConfirmAction {
     PauseLoop(String),
     ResumeLoop(String),
     DeleteExecution(String),
+    StartDraft(String),
 }
 
 /// Action pending execution by the runner

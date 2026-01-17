@@ -20,6 +20,7 @@ mod colors {
     pub const COMPLETE: Color = Color::Rgb(50, 205, 50); // Lime green
     pub const FAILED: Color = Color::Rgb(220, 20, 60); // Crimson
     pub const BLOCKED: Color = Color::Rgb(255, 69, 0); // Orange red
+    pub const DRAFT: Color = Color::Rgb(255, 255, 0); // Yellow - awaiting approval
     pub const HEADER: Color = Color::Rgb(0, 255, 255); // Cyan
     pub const KEYBIND: Color = Color::Rgb(0, 255, 255); // Cyan
     pub const SELECTED_BG: Color = Color::Rgb(40, 40, 40);
@@ -45,7 +46,7 @@ fn status_color(status: &str) -> Color {
         "rebasing" => Color::Magenta,
         "in_progress" => colors::RUNNING,
         "ready" => colors::PENDING,
-        "draft" => colors::DIM,
+        "draft" => colors::DRAFT,
         _ => Color::Gray,
     }
 }
@@ -791,6 +792,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         key_line("x", "Cancel selected"),
         key_line("p", "Pause selected"),
         key_line("r", "Resume selected"),
+        key_line("s", "Start draft (begin execution)"),
         key_line("D", "Delete selected"),
         Line::from(""),
         Line::from(vec![Span::styled(

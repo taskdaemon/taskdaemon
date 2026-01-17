@@ -166,6 +166,10 @@ impl App {
                 // Resume selected execution
                 self.handle_resume();
             }
+            (KeyCode::Char('s'), _) => {
+                // Start selected draft execution
+                self.handle_start_draft();
+            }
             (KeyCode::Char('D'), _) => {
                 // Delete selected execution
                 self.handle_delete();
@@ -337,6 +341,25 @@ impl App {
 
         if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
             self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::delete_execution(id, &name));
+        }
+    }
+
+    /// Handle start draft action (transitions Draft -> Pending)
+    fn handle_start_draft(&mut self) {
+        if !matches!(self.state.current_view, View::Executions) {
+            return;
+        }
+
+        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+            let filtered = self.state.filtered_executions();
+            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
+                && exec_item.status == "draft"
+            {
+                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
+                    ConfirmAction::StartDraft(id),
+                    format!("Start execution of {}?", name),
+                ));
+            }
         }
     }
 
@@ -577,6 +600,9 @@ impl App {
                         }
                         ConfirmAction::DeleteExecution(id) => {
                             self.state.pending_action = Some(PendingAction::DeleteExecution(id.clone()));
+                        }
+                        ConfirmAction::StartDraft(id) => {
+                            self.state.pending_action = Some(PendingAction::StartDraft(id.clone()));
                         }
                     }
                 }
