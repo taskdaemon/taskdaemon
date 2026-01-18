@@ -43,6 +43,9 @@ chrono = { version = "0.4", features = ["serde"] }
 rustyline = "17.0.2"
 walkdir = "2.5.0"
 scraper = "0.25.0"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.16"
+grep-matcher = "0.1.8"
 # Dependencies will be added via cargo add
 
 [build-dependencies]
