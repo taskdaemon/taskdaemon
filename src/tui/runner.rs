@@ -643,7 +643,8 @@ Working directory: {}"#,
             // Log tool result
             self.conversation_logger.log_tool_result(&tc.name, &result.content);
 
-            // Show result with full content (collapsing handled by view)
+            // Replace the "Running..." message with actual result
+            self.app.state_mut().repl_history.pop();
             self.app
                 .state_mut()
                 .repl_history
