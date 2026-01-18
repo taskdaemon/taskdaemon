@@ -325,19 +325,12 @@ fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
                 }
             }
             ReplRole::Assistant => {
-                // Assistant messages: "  content"
-                for (i, content_line) in msg.content.lines().enumerate() {
-                    if i == 0 {
-                        lines.push(Line::from(vec![
-                            Span::styled("  ", Style::default().fg(colors::REPL_ASSISTANT)),
-                            Span::styled(content_line, Style::default().fg(Color::White)),
-                        ]));
-                    } else {
-                        lines.push(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(content_line, Style::default().fg(Color::White)),
-                        ]));
-                    }
+                // Assistant messages: "  content" (rendered as markdown)
+                let markdown_text = tui_markdown::from_str(&msg.content);
+                for line in markdown_text.lines.iter() {
+                    let mut spans = vec![Span::raw("  ")];
+                    spans.extend(line.spans.iter().cloned());
+                    lines.push(Line::from(spans));
                 }
             }
             ReplRole::ToolResult { tool_name } => {
