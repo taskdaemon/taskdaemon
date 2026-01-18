@@ -1007,6 +1007,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         key_line("Enter", "Send message (Chat) or create plan (Plan)"),
         key_line("/create", "Create plan from conversation (Rule of Five)"),
         key_line("/clear", "Clear conversation history"),
+        key_line("o", "Toggle tool output expand/collapse"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Navigation",
