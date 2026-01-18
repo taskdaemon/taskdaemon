@@ -778,6 +778,10 @@ Working directory: {}"#,
             self.repl_conversation.len()
         );
 
+        // Set streaming state (was missing - caused "Analyzing results..." to hang visually)
+        self.app.state_mut().repl_streaming = true;
+        self.app.state_mut().repl_response_buffer.clear();
+
         // Create channel for streaming chunks
         let (stream_tx, stream_rx) = mpsc::channel::<StreamChunk>(100);
         self.stream_rx = Some(stream_rx);
