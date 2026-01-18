@@ -269,12 +269,22 @@ pub enum ReplRole {
     Error,
 }
 
+/// Minimum lines before collapsing (don't collapse short output)
+pub const COLLAPSE_THRESHOLD: usize = 6;
+
+/// Number of lines to show when collapsed
+pub const COLLAPSE_PREVIEW_LINES: usize = 3;
+
 /// REPL message for display
 #[derive(Debug, Clone)]
 pub struct ReplMessage {
     pub role: ReplRole,
     pub content: String,
     pub timestamp: i64,
+    /// Tool arguments for display (e.g., "pattern: \"fn \", path: \"src/\"")
+    pub tool_args: Option<String>,
+    /// Whether tool output is expanded (only relevant for ToolResult)
+    pub expanded: bool,
 }
 
 impl ReplMessage {
@@ -283,6 +293,8 @@ impl ReplMessage {
             role: ReplRole::User,
             content: content.into(),
             timestamp: taskstore::now_ms(),
+            tool_args: None,
+            expanded: false,
         }
     }
 
@@ -291,6 +303,8 @@ impl ReplMessage {
             role: ReplRole::Assistant,
             content: content.into(),
             timestamp: taskstore::now_ms(),
+            tool_args: None,
+            expanded: false,
         }
     }
 
@@ -301,6 +315,25 @@ impl ReplMessage {
             },
             content: content.into(),
             timestamp: taskstore::now_ms(),
+            tool_args: None,
+            expanded: false,
+        }
+    }
+
+    /// Create a tool result with arguments for display
+    pub fn tool_result_with_args(
+        tool_name: impl Into<String>,
+        tool_args: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: ReplRole::ToolResult {
+                tool_name: tool_name.into(),
+            },
+            content: content.into(),
+            timestamp: taskstore::now_ms(),
+            tool_args: Some(tool_args.into()),
+            expanded: false,
         }
     }
 
@@ -309,7 +342,25 @@ impl ReplMessage {
             role: ReplRole::Error,
             content: content.into(),
             timestamp: taskstore::now_ms(),
+            tool_args: None,
+            expanded: false,
         }
+    }
+
+    /// Check if this is a tool result that can be collapsed
+    pub fn is_collapsible(&self) -> bool {
+        matches!(self.role, ReplRole::ToolResult { .. })
+            && self.content.lines().count() > COLLAPSE_THRESHOLD
+    }
+
+    /// Toggle expanded state
+    pub fn toggle_expanded(&mut self) {
+        self.expanded = !self.expanded;
+    }
+
+    /// Get the line count for this message's content
+    pub fn line_count(&self) -> usize {
+        self.content.lines().count()
     }
 }
 

@@ -636,16 +636,14 @@ Working directory: {}"#,
             // Log tool result
             self.conversation_logger.log_tool_result(&tc.name, &result.content);
 
-            // Show result (truncated)
-            let display_content = if result.content.len() > 500 {
-                format!("{}... ({} chars)", &result.content[..500], result.content.len())
-            } else {
-                result.content.clone()
-            };
+            // Format tool args for display (compact form)
+            let tool_args = Self::format_tool_args(&tc.input);
+
+            // Show result with full content (collapsing handled by view)
             self.app
                 .state_mut()
                 .repl_history
-                .push(ReplMessage::tool_result(&tc.name, display_content));
+                .push(ReplMessage::tool_result_with_args(&tc.name, tool_args, &result.content));
 
             result_blocks.push(ContentBlock::tool_result(&tc.id, &result.content, result.is_error));
         }
@@ -1146,6 +1144,34 @@ Working directory: {}"#,
                 plan_content,
             })
             .await;
+    }
+
+    /// Format tool arguments for display (compact form)
+    fn format_tool_args(input: &serde_json::Value) -> String {
+        if let Some(obj) = input.as_object() {
+            let parts: Vec<String> = obj
+                .iter()
+                .filter_map(|(k, v)| {
+                    let val_str = match v {
+                        serde_json::Value::String(s) => {
+                            // Truncate long strings
+                            if s.len() > 40 {
+                                format!("\"{}...\"", &s[..37])
+                            } else {
+                                format!("\"{}\"", s)
+                            }
+                        }
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        _ => return None, // Skip complex values
+                    };
+                    Some(format!("{}: {}", k, val_str))
+                })
+                .collect();
+            parts.join(", ")
+        } else {
+            String::new()
+        }
     }
 
     /// Extract the final plan from LLM output (content after "=== FINAL PLAN ===" marker)

@@ -273,55 +273,141 @@ fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
     render_repl_input(state, frame, chunks[1]);
 }
 
+/// Generate a tool-aware summary for collapsed tool output
+fn tool_summary(tool_name: &str, content: &str) -> Option<String> {
+    let line_count = content.lines().count();
+
+    match tool_name {
+        "grep" | "Grep" => Some(format!("Found {} lines", line_count)),
+        "glob" | "Glob" => {
+            let file_count = content.lines().filter(|l| !l.is_empty()).count();
+            Some(format!("Found {} files", file_count))
+        }
+        "edit_file" | "Edit" => {
+            // Count + and - lines for diff summary
+            let added = content.lines().filter(|l| l.starts_with('+')).count();
+            let removed = content.lines().filter(|l| l.starts_with('-')).count();
+            if added > 0 || removed > 0 {
+                Some(format!("Added {} lines, removed {} lines", added, removed))
+            } else {
+                None
+            }
+        }
+        _ => None, // No summary, show content preview
+    }
+}
+
 /// Render REPL history content (no borders)
 fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
+    use super::state::{COLLAPSE_PREVIEW_LINES, COLLAPSE_THRESHOLD};
+
     let mut lines: Vec<Line> = Vec::new();
 
     for msg in &state.repl_history {
-        let (prefix, prefix_style, content_style) = match &msg.role {
-            ReplRole::User => (
-                "> ",
-                Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD),
-                Style::default().fg(colors::REPL_USER),
-            ),
-            ReplRole::Assistant => (
-                "  ",
-                Style::default().fg(colors::REPL_ASSISTANT),
-                Style::default().fg(Color::White),
-            ),
-            ReplRole::ToolResult { .. } => (
-                "",
-                Style::default().fg(colors::REPL_TOOL),
-                Style::default().fg(colors::DIM),
-            ),
-            ReplRole::Error => (
-                "! ",
-                Style::default().fg(colors::REPL_ERROR).add_modifier(Modifier::BOLD),
-                Style::default().fg(colors::REPL_ERROR),
-            ),
-        };
+        match &msg.role {
+            ReplRole::User => {
+                // User messages: "> content"
+                for (i, content_line) in msg.content.lines().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled("> ", Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD)),
+                            Span::styled(content_line, Style::default().fg(colors::REPL_USER)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(content_line, Style::default().fg(colors::REPL_USER)),
+                        ]));
+                    }
+                }
+            }
+            ReplRole::Assistant => {
+                // Assistant messages: "  content"
+                for (i, content_line) in msg.content.lines().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled("  ", Style::default().fg(colors::REPL_ASSISTANT)),
+                            Span::styled(content_line, Style::default().fg(Color::White)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(content_line, Style::default().fg(Color::White)),
+                        ]));
+                    }
+                }
+            }
+            ReplRole::ToolResult { tool_name } => {
+                // Tool results: "● ToolName(args)" header, "└" content
+                let args_str = msg.tool_args.as_deref().unwrap_or("");
+                let header = if args_str.is_empty() {
+                    format!("● {}()", tool_name)
+                } else {
+                    format!("● {}({})", tool_name, args_str)
+                };
 
-        // For tool results, show the tool name as prefix
-        let actual_prefix = if let ReplRole::ToolResult { tool_name } = &msg.role {
-            format!("[{}] ", tool_name)
-        } else {
-            prefix.to_string()
-        };
+                // Header line
+                lines.push(Line::from(vec![
+                    Span::styled(header, Style::default().fg(colors::REPL_TOOL)),
+                ]));
 
-        // Split content into lines for proper wrapping
-        for (i, content_line) in msg.content.lines().enumerate() {
-            if i == 0 {
-                lines.push(Line::from(vec![
-                    Span::styled(actual_prefix.clone(), prefix_style),
-                    Span::styled(content_line, content_style),
-                ]));
-            } else {
-                // Continuation lines are indented
-                let indent = " ".repeat(actual_prefix.len());
-                lines.push(Line::from(vec![
-                    Span::raw(indent),
-                    Span::styled(content_line, content_style),
-                ]));
+                let line_count = msg.line_count();
+                let is_collapsible = line_count > COLLAPSE_THRESHOLD;
+                let show_collapsed = is_collapsible && !msg.expanded;
+
+                if show_collapsed {
+                    // Check for tool-aware summary
+                    if let Some(summary) = tool_summary(tool_name, &msg.content) {
+                        // Show summary line
+                        lines.push(Line::from(vec![
+                            Span::styled("└ ", Style::default().fg(colors::DIM)),
+                            Span::styled(summary, Style::default().fg(colors::DIM)),
+                            Span::styled(" (ctrl+o to expand)", Style::default().fg(colors::DIM)),
+                        ]));
+                    } else {
+                        // Show preview lines
+                        for (i, content_line) in msg.content.lines().take(COLLAPSE_PREVIEW_LINES).enumerate() {
+                            let prefix = if i == 0 { "└ " } else { "  " };
+                            lines.push(Line::from(vec![
+                                Span::styled(prefix, Style::default().fg(colors::DIM)),
+                                Span::styled(content_line, Style::default().fg(colors::DIM)),
+                            ]));
+                        }
+                        // Show collapse indicator
+                        let hidden = line_count - COLLAPSE_PREVIEW_LINES;
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("  … +{} lines (ctrl+o to expand)", hidden),
+                                Style::default().fg(colors::DIM),
+                            ),
+                        ]));
+                    }
+                } else {
+                    // Show all content
+                    for (i, content_line) in msg.content.lines().enumerate() {
+                        let prefix = if i == 0 { "└ " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix, Style::default().fg(colors::DIM)),
+                            Span::styled(content_line, Style::default().fg(colors::DIM)),
+                        ]));
+                    }
+                }
+            }
+            ReplRole::Error => {
+                // Error messages: "! content"
+                for (i, content_line) in msg.content.lines().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled("! ", Style::default().fg(colors::REPL_ERROR).add_modifier(Modifier::BOLD)),
+                            Span::styled(content_line, Style::default().fg(colors::REPL_ERROR)),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(content_line, Style::default().fg(colors::REPL_ERROR)),
+                        ]));
+                    }
+                }
             }
         }
 

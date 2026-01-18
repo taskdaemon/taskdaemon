@@ -7,42 +7,43 @@
 
 ## Summary
 
-Implement collapsed tool output display in the REPL view, similar to Claude Code. Tool results will show a header line with the tool name, first few lines of output, and a "... +N lines" indicator. Users can expand/collapse with a keybind.
+Implement collapsed tool output display in the REPL view, matching Claude Code's behavior. Each tool type gets a custom summary format. Users can expand/collapse with Ctrl+O.
 
 ## Problem Statement
 
 ### Background
 
-Currently, the REPL displays full tool output inline, which can be very long (e.g., `read_file` showing 50+ lines of a file). This causes:
-1. Important context (like the agent's questions) to scroll off screen
-2. Difficulty scanning the conversation flow
-3. Overwhelming visual noise
+Currently, the REPL displays full tool output inline, which can be very long (e.g., `read_file` showing 50+ lines). This causes important context to scroll off screen.
 
-Claude Code solves this elegantly by showing collapsed tool output:
+Claude Code solves this with **tool-aware summaries**:
 ```
-● Bash(otto ci 2>&1 | tail -15)
-└ [test] running 1 test
-  … +18 lines (ctrl+o to expand)
+● Bash(wc -l src/tui/runner.rs)
+└ 1663 src/tui/runner.rs
+
+● Search(pattern: "fn ", path: "src/", output_mode: "content")
+└ Found 34 lines (ctrl+o to expand)
+
+● Update(docs/design/example.md)
+└ Added 1 line, removed 1 line
+    5  -**Status:** Ready for Review
+    5  +**Status:** Deferred
 ```
 
 ### Problem
 
-Tool output dominates the REPL view, making it hard to follow the conversation and see the agent's responses/questions.
+Tool output dominates the REPL view, making conversation hard to follow.
 
 ### Goals
 
-- Show tool results in collapsed form by default (header + first 3 lines + indicator)
-- Display line count for hidden content: `… +N lines`
-- Allow toggling expand/collapse with a keybind (Ctrl+O or 'o' in normal mode)
-- Preserve full content for expanded view
-- Maintain readable conversation flow
+- Tool-aware collapsed summaries (not just truncation)
+- Visual format: `● ToolName(args)` header, `└` tree connector for output
+- Ctrl+O to expand/collapse
+- Short output stays full (no collapse needed)
 
 ### Non-Goals
 
-- Syntax highlighting of tool output (future enhancement)
-- Different collapse thresholds per tool type
+- Syntax highlighting (future)
 - Persisting expand/collapse state across sessions
-- Nested collapsing (e.g., collapsing within collapsed)
 
 ## Proposed Solution
 
