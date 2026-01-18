@@ -1076,8 +1076,7 @@ Working directory: {}"#,
         execution.set_status(crate::domain::LoopExecutionStatus::Draft);
 
         execution.set_context(serde_json::json!({
-            "user-request": conversation_text,
-            "final-plan": final_plan
+            "user-request": conversation_text
         }));
 
         // Create the execution record
@@ -1513,12 +1512,13 @@ Working directory: {}"#,
                         "-".to_string()
                     };
 
-                    // Extract plan content from context if available
-                    let plan_content = exec
-                        .context
-                        .get("final-plan")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                    // Load plan content from disk if it exists
+                    let plan_path = self
+                        .worktree
+                        .join(".taskdaemon/plans")
+                        .join(&exec.id)
+                        .join("plan.md");
+                    let plan_content = std::fs::read_to_string(&plan_path).ok();
 
                     Some(DescribeData {
                         id: exec.id.clone(),
