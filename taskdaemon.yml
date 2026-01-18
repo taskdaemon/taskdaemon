@@ -7,6 +7,11 @@
 #   - ~/.config/taskdaemon/taskdaemon.yml (global)
 #   - <project>/.taskdaemon.yml (per-project)
 
+# === Debug Configuration ===
+debug:
+  # Log all REPL conversations to ~/.taskdaemon/conversations/ as JSONL
+  log-conversations: true
+
 # === LLM Configuration ===
 llm:
   provider: anthropic

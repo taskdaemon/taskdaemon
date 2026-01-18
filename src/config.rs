@@ -33,6 +33,9 @@ pub struct Config {
 
     /// Loop type paths configuration
     pub loops: LoopsConfig,
+
+    /// Debug configuration
+    pub debug: DebugConfig,
 }
 
 impl Config {
@@ -360,6 +363,16 @@ impl LoopsConfig {
     pub fn use_builtin(&self) -> bool {
         self.paths.iter().any(|p| p == "builtin")
     }
+}
+
+/// Debug configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugConfig {
+    /// Log REPL conversations to files for debugging
+    /// Files are written to ~/.taskdaemon/conversations/
+    #[serde(rename = "log-conversations")]
+    pub log_conversations: bool,
 }
 
 #[cfg(test)]

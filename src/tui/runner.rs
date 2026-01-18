@@ -25,6 +25,7 @@ use crate::tools::{ToolContext, ToolExecutor};
 
 use super::Tui;
 use super::app::App;
+use super::conversation_log::ConversationLogger;
 use super::events::{Event, EventHandler};
 use super::state::{
     DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, PlanCreateRequest, RecordItem, ReplMessage,
@@ -80,6 +81,32 @@ pub struct TuiRunner {
     llm_result_rx: Option<mpsc::Receiver<LlmTaskResult>>,
     /// Handle to the background LLM task
     llm_task: Option<JoinHandle<()>>,
+    /// Conversation logger for debug mode
+    conversation_logger: ConversationLogger,
+
+    // === Plan creation state ===
+    /// Receiver for plan creation progress messages
+    plan_progress_rx: Option<mpsc::Receiver<PlanProgress>>,
+    /// Handle to the background plan creation task
+    plan_task: Option<JoinHandle<()>>,
+}
+
+/// Progress updates from plan creation background task
+#[derive(Debug)]
+enum PlanProgress {
+    /// Started a new pass
+    PassStarted { pass: u8, focus: String },
+    /// Pass completed with the plan output from this pass
+    PassCompleted { pass: u8, plan_output: String },
+    /// Plan creation completed successfully
+    Completed {
+        exec_id: String,
+        title: String,
+        plan_content: String,
+        passes_run: u8,
+    },
+    /// Plan creation failed
+    Failed { error: String },
 }
 
 impl TuiRunner {
@@ -104,6 +131,9 @@ impl TuiRunner {
             stream_rx: None,
             llm_result_rx: None,
             llm_task: None,
+            conversation_logger: ConversationLogger::disabled(),
+            plan_progress_rx: None,
+            plan_task: None,
         }
     }
 
@@ -128,14 +158,28 @@ impl TuiRunner {
             stream_rx: None,
             llm_result_rx: None,
             llm_task: None,
+            conversation_logger: ConversationLogger::disabled(),
+            plan_progress_rx: None,
+            plan_task: None,
         }
     }
 
     /// Create a new TuiRunner with LLM client for REPL
-    pub fn with_llm_client(terminal: Tui, state_manager: Option<StateManager>, llm_client: Arc<dyn LlmClient>) -> Self {
+    pub fn with_llm_client(
+        terminal: Tui,
+        state_manager: Option<StateManager>,
+        llm_client: Arc<dyn LlmClient>,
+        log_conversations: bool,
+    ) -> Self {
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
         let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
+
+        let conversation_logger = if log_conversations {
+            ConversationLogger::enabled()
+        } else {
+            ConversationLogger::disabled()
+        };
 
         Self {
             app: App::new(),
@@ -152,6 +196,9 @@ impl TuiRunner {
             stream_rx: None,
             llm_result_rx: None,
             llm_task: None,
+            conversation_logger,
+            plan_progress_rx: None,
+            plan_task: None,
         }
     }
 
@@ -242,24 +289,43 @@ Working directory: {}"#,
         }
 
         loop {
+            // Process stream chunks for immediate display
+            self.process_stream_chunks();
+
             // Draw the UI
             self.terminal.draw(|frame| views::render(self.app.state_mut(), frame))?;
 
-            // Handle events
-            match self.event_handler.next().await? {
-                Event::Tick => {
-                    self.handle_tick().await?;
-                }
-                Event::Key(key_event) => {
-                    if self.handle_key(key_event) {
-                        break;
+            // Wait for either an event OR a plan progress message
+            // This ensures plan progress updates trigger immediate redraws
+            tokio::select! {
+                event = self.event_handler.next() => {
+                    match event? {
+                        Event::Tick => {
+                            self.handle_tick().await?;
+                        }
+                        Event::Key(key_event) => {
+                            if self.handle_key(key_event) {
+                                break;
+                            }
+                        }
+                        Event::Mouse(mouse_event) => {
+                            self.handle_mouse(mouse_event);
+                        }
+                        Event::Resize(width, height) => {
+                            self.handle_resize(width, height);
+                        }
                     }
                 }
-                Event::Mouse(mouse_event) => {
-                    self.handle_mouse(mouse_event);
-                }
-                Event::Resize(width, height) => {
-                    self.handle_resize(width, height);
+                // Handle plan progress messages immediately when they arrive
+                Some(progress) = async {
+                    if let Some(rx) = &mut self.plan_progress_rx {
+                        rx.recv().await
+                    } else {
+                        // Return a pending future that never completes
+                        std::future::pending::<Option<PlanProgress>>().await
+                    }
+                } => {
+                    self.handle_plan_progress(progress);
                 }
             }
 
@@ -270,6 +336,54 @@ Working directory: {}"#,
         }
 
         Ok(())
+    }
+
+    /// Handle a single plan progress message
+    fn handle_plan_progress(&mut self, progress: PlanProgress) {
+        match progress {
+            PlanProgress::PassStarted { pass, focus } => {
+                self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                    "  Pass {}/5: {} review...",
+                    pass, focus
+                )));
+            }
+            PlanProgress::PassCompleted { pass, plan_output } => {
+                debug!("Pass {} completed", pass);
+                // Show the plan output from this pass in the chat
+                self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                    "  Pass {}/5 output:\n\n{}",
+                    pass, plan_output
+                )));
+            }
+            PlanProgress::Completed {
+                exec_id,
+                title,
+                plan_content: _,
+                passes_run,
+            } => {
+                info!(
+                    "Plan creation completed: {} / {} ({} passes)",
+                    exec_id, title, passes_run
+                );
+                self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                    "Plan created: {} ({})\n{} review passes completed.\nView in Executions tab (Tab to switch).",
+                    title, exec_id, passes_run
+                )));
+                // Clear plan creating flag
+                self.app.state_mut().plan_creating = false;
+                self.plan_progress_rx = None;
+                self.plan_task = None;
+            }
+            PlanProgress::Failed { error } => {
+                warn!("Plan creation failed: {}", error);
+                self.app
+                    .state_mut()
+                    .set_error(format!("Plan creation failed: {}", error));
+                self.app.state_mut().plan_creating = false;
+                self.plan_progress_rx = None;
+                self.plan_task = None;
+            }
+        }
     }
 
     /// Handle tick event - periodic updates
@@ -294,11 +408,14 @@ Working directory: {}"#,
             self.start_task(&task).await;
         }
 
-        // Check for pending plan creation
+        // Check for pending plan creation - spawn background task
         if let Some(request) = self.app.state_mut().pending_plan_create.take() {
             info!("Creating plan from {} messages", request.messages.len());
-            self.create_plan_draft(request).await;
+            self.start_plan_creation(request);
         }
+
+        // Process plan creation progress
+        self.process_plan_progress().await;
 
         // Check for pending action (cancel/pause/resume/start draft)
         if let Some(action) = self.app.state_mut().pending_action.take() {
@@ -396,6 +513,9 @@ Working directory: {}"#,
                                     .repl_history
                                     .push(ReplMessage::assistant(&response_text));
                                 self.repl_conversation.push(Message::assistant(&response_text));
+
+                                // Log assistant message
+                                self.conversation_logger.log_assistant_message(&response_text);
                             }
                             self.finish_streaming();
                         }
@@ -442,6 +562,9 @@ Working directory: {}"#,
                         .state_mut()
                         .repl_history
                         .push(ReplMessage::error(format!("LLM error: {}", err)));
+
+                    // Log error
+                    self.conversation_logger.log_error(&err);
                     self.finish_streaming();
                 }
             }
@@ -505,6 +628,10 @@ Working directory: {}"#,
                 .repl_history
                 .push(ReplMessage::tool_result(&tc.name, format!("Running {}...", tc.name)));
 
+            // Log tool call
+            let input_str = serde_json::to_string(&tc.input).unwrap_or_else(|_| "{}".to_string());
+            self.conversation_logger.log_tool_call(&tc.name, &input_str);
+
             let result = self.tool_executor.execute(tc, &ctx).await;
             debug!(
                 "Tool {} result: {} chars, is_error={}",
@@ -512,6 +639,9 @@ Working directory: {}"#,
                 result.content.len(),
                 result.is_error
             );
+
+            // Log tool result
+            self.conversation_logger.log_tool_result(&tc.name, &result.content);
 
             // Show result (truncated)
             let display_content = if result.content.len() > 500 {
@@ -584,6 +714,14 @@ Working directory: {}"#,
         // Add user message to LLM conversation
         self.repl_conversation.push(Message::user(input));
         info!("Conversation now has {} messages", self.repl_conversation.len());
+
+        // Log user message for debugging
+        let mode = match self.app.state().repl_mode {
+            ReplMode::Chat => "Chat",
+            ReplMode::Plan => "Plan",
+        };
+        self.conversation_logger.set_mode(mode);
+        self.conversation_logger.log_user_message(input);
 
         // Set streaming state
         self.app.state_mut().repl_streaming = true;
@@ -690,11 +828,13 @@ Working directory: {}"#,
     async fn generate_title(&self, task: &str) -> Option<String> {
         let llm = self.llm_client.as_ref()?;
 
+        // Load title generator prompt from embedded or file
+        let system_prompt = crate::prompts::embedded::get_embedded("title")
+            .unwrap_or("Generate a 2-5 word title. Output ONLY the title.")
+            .to_string();
+
         let request = CompletionRequest {
-            system_prompt: "Extract 2-4 key words from the task description to create a short title. \
-                           Output ONLY the title words separated by spaces, nothing else. \
-                           Examples: 'Add OAuth' 'Fix Login Bug' 'Update API Docs' 'Refactor Tests'"
-                .to_string(),
+            system_prompt,
             messages: vec![Message::user(task)],
             tools: vec![],
             max_tokens: 50,
@@ -743,16 +883,388 @@ Working directory: {}"#,
         }
     }
 
+    /// Start plan creation in a background task (non-blocking)
+    fn start_plan_creation(&mut self, request: PlanCreateRequest) {
+        // Validate we have required dependencies
+        let state_manager = match &self.state_manager {
+            Some(sm) => sm.clone(),
+            None => {
+                warn!("No StateManager - cannot create plan");
+                self.app.state_mut().set_error("No state manager - cannot create plan");
+                return;
+            }
+        };
+
+        let llm = match &self.llm_client {
+            Some(llm) => Arc::clone(llm),
+            None => {
+                warn!("No LLM client - cannot create plan");
+                self.app.state_mut().set_error("No LLM client - cannot create plan");
+                return;
+            }
+        };
+
+        // Mark plan creation as in progress
+        self.app.state_mut().plan_creating = true;
+
+        // Show initial message
+        self.app.state_mut().repl_history.push(ReplMessage::assistant(
+            "Starting plan creation (Rule of Five)...".to_string(),
+        ));
+
+        // Create channel for progress updates
+        let (progress_tx, progress_rx) = mpsc::channel::<PlanProgress>(100);
+        self.plan_progress_rx = Some(progress_rx);
+
+        // Clone what we need for the background task
+        let worktree = self.worktree.clone();
+
+        // Spawn background task
+        self.plan_task = Some(tokio::spawn(async move {
+            Self::run_plan_creation(request, llm, state_manager, worktree, progress_tx).await;
+        }));
+
+        info!("Plan creation background task spawned");
+    }
+
+    /// Process plan creation progress messages (non-blocking)
+    async fn process_plan_progress(&mut self) {
+        let progress_messages: Vec<PlanProgress> = if let Some(rx) = &mut self.plan_progress_rx {
+            let mut collected = Vec::new();
+            while let Ok(msg) = rx.try_recv() {
+                collected.push(msg);
+            }
+            collected
+        } else {
+            return;
+        };
+
+        for progress in progress_messages {
+            match progress {
+                PlanProgress::PassStarted { pass, focus } => {
+                    self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                        "  Pass {}/5: {} review...",
+                        pass, focus
+                    )));
+                }
+                PlanProgress::PassCompleted { pass, plan_output } => {
+                    debug!("Pass {} completed", pass);
+                    // Show the plan output from this pass in the chat
+                    self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                        "  Pass {}/5 output:\n\n{}",
+                        pass, plan_output
+                    )));
+                }
+                PlanProgress::Completed {
+                    exec_id,
+                    title,
+                    plan_content: _,
+                    passes_run,
+                } => {
+                    info!(
+                        "Plan creation completed: {} / {} ({} passes)",
+                        exec_id, title, passes_run
+                    );
+                    self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
+                        "Plan created: {} ({})\n{} review passes completed.\nView in Executions tab (Tab to switch).",
+                        title, exec_id, passes_run
+                    )));
+                    // Force data refresh to show the new draft
+                    self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                    // Clear plan creating flag
+                    self.app.state_mut().plan_creating = false;
+                    self.plan_progress_rx = None;
+                    self.plan_task = None;
+                }
+                PlanProgress::Failed { error } => {
+                    warn!("Plan creation failed: {}", error);
+                    self.app
+                        .state_mut()
+                        .set_error(format!("Plan creation failed: {}", error));
+                    self.app.state_mut().plan_creating = false;
+                    self.plan_progress_rx = None;
+                    self.plan_task = None;
+                }
+            }
+        }
+    }
+
+    /// Run plan creation (executes in background task)
+    async fn run_plan_creation(
+        request: PlanCreateRequest,
+        llm: Arc<dyn LlmClient>,
+        state_manager: StateManager,
+        worktree: PathBuf,
+        progress_tx: mpsc::Sender<PlanProgress>,
+    ) {
+        info!("=== run_plan_creation START (Rule of Five) ===");
+
+        // Format conversation for summarization
+        let conversation_text = request
+            .messages
+            .iter()
+            .map(|msg| {
+                let role = match &msg.role {
+                    ReplRole::User => "User",
+                    ReplRole::Assistant => "Assistant",
+                    ReplRole::ToolResult { tool_name } => tool_name.as_str(),
+                    ReplRole::Error => "Error",
+                };
+                format!("{}: {}", role, msg.content)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        // Load prompt templates
+        let prompt_loader = PromptLoader::new(&worktree);
+
+        // Get system prompt for plan creation
+        let system_prompt = match prompt_loader.system_prompt() {
+            Ok(prompt) => prompt,
+            Err(e) => {
+                warn!("Failed to load plan system prompt: {}", e);
+                let _ = progress_tx
+                    .send(PlanProgress::Failed {
+                        error: "Failed to load plan prompts".to_string(),
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        // Generate a short title
+        info!("Generating title from conversation...");
+        let title = Self::generate_title_static(&llm, &conversation_text)
+            .await
+            .unwrap_or_else(|| "New Plan".to_string());
+        info!("Generated title: {}", title);
+
+        // === RULE OF FIVE ITERATION ===
+        let mut current_plan = String::new();
+        let mut pass_outputs: Vec<String> = Vec::new();
+        let mut consecutive_unchanged = 0;
+        const MAX_PASSES: u8 = 5;
+        const MIN_PASSES: u8 = 3;
+
+        for pass_num in 1..=MAX_PASSES {
+            let focus = match FocusArea::from_pass(pass_num) {
+                Some(f) => f,
+                None => break,
+            };
+
+            info!("=== Rule of Five Pass {}: {} ===", pass_num, focus);
+
+            // Send progress update
+            let _ = progress_tx
+                .send(PlanProgress::PassStarted {
+                    pass: pass_num,
+                    focus: focus.name().to_string(),
+                })
+                .await;
+
+            // Build context for this pass
+            let ctx = if pass_num == 1 {
+                PromptContext::first_pass(conversation_text.clone())
+            } else {
+                PromptContext::review_pass(pass_num, current_plan.clone(), focus)
+            };
+
+            // Get the pass-specific prompt
+            let pass_prompt = match prompt_loader.pass_prompt(pass_num, &ctx) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Failed to load pass {} prompt: {}", pass_num, e);
+                    let _ = progress_tx
+                        .send(PlanProgress::Failed {
+                            error: format!("Failed to load pass {} prompt", pass_num),
+                        })
+                        .await;
+                    return;
+                }
+            };
+
+            // Build the LLM request
+            let user_message = if pass_num == 1 {
+                format!(
+                    "{}\n\n---\n\n# Conversation to convert to Plan:\n\n{}",
+                    pass_prompt, conversation_text
+                )
+            } else {
+                format!("{}\n\n---\n\n# Current Plan:\n\n{}", pass_prompt, current_plan)
+            };
+
+            let completion_request = CompletionRequest {
+                system_prompt: system_prompt.clone(),
+                messages: vec![Message::user(&user_message)],
+                tools: vec![],
+                max_tokens: 8192,
+            };
+
+            // Execute the pass
+            info!("Sending pass {} request to LLM...", pass_num);
+            let pass_output = match llm.complete(completion_request).await {
+                Ok(response) => {
+                    let output = response.content.unwrap_or_default();
+                    info!("Pass {} complete: {} chars", pass_num, output.len());
+                    output
+                }
+                Err(e) => {
+                    warn!("Pass {} failed: {}", pass_num, e);
+                    let _ = progress_tx
+                        .send(PlanProgress::Failed {
+                            error: format!("Pass {} failed: {}", pass_num, e),
+                        })
+                        .await;
+                    return;
+                }
+            };
+
+            let _ = progress_tx
+                .send(PlanProgress::PassCompleted {
+                    pass: pass_num,
+                    plan_output: pass_output.clone(),
+                })
+                .await;
+
+            // Check for convergence
+            let changed = Self::plan_changed_significantly_static(&current_plan, &pass_output);
+
+            if changed {
+                consecutive_unchanged = 0;
+            } else {
+                consecutive_unchanged += 1;
+            }
+
+            current_plan = pass_output.clone();
+            pass_outputs.push(pass_output);
+
+            // Check for early convergence
+            if pass_num >= MIN_PASSES && consecutive_unchanged >= 2 {
+                info!("Early convergence after pass {}", pass_num);
+                break;
+            }
+        }
+
+        info!("Rule of Five complete: {} passes executed", pass_outputs.len());
+
+        // Create the plan execution with Draft status
+        let mut execution = crate::domain::LoopExecution::new("plan", &title);
+        execution.set_title(title.clone());
+        execution.set_status(crate::domain::LoopExecutionStatus::Draft);
+
+        execution.set_context(serde_json::json!({
+            "user-request": conversation_text,
+            "review-passes-completed": pass_outputs.len(),
+            "final-plan": current_plan
+        }));
+
+        // Create the execution record
+        let exec_id = match state_manager.create_execution(execution).await {
+            Ok(id) => {
+                info!("Draft execution created: {}", id);
+                id
+            }
+            Err(e) => {
+                warn!("Failed to create draft execution: {}", e);
+                let _ = progress_tx
+                    .send(PlanProgress::Failed {
+                        error: format!("Failed to create draft: {}", e),
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        // Create the plan directory and file
+        let plan_dir = worktree.join(".taskdaemon/plans").join(&exec_id);
+        if let Err(e) = std::fs::create_dir_all(&plan_dir) {
+            warn!("Failed to create plan directory: {}", e);
+            let _ = progress_tx
+                .send(PlanProgress::Failed {
+                    error: format!("Failed to create plan directory: {}", e),
+                })
+                .await;
+            return;
+        }
+
+        // Write the final plan.md file
+        let plan_content = format!(
+            r#"# Plan: {}
+
+**Status:** Draft
+**Created:** {}
+**ID:** {}
+**Review Passes:** {} of 5
+
+---
+
+{}"#,
+            title,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
+            exec_id,
+            pass_outputs.len(),
+            current_plan
+        );
+
+        let plan_path = plan_dir.join("plan.md");
+        if let Err(e) = std::fs::write(&plan_path, &plan_content) {
+            warn!("Failed to write plan file: {}", e);
+            let _ = progress_tx
+                .send(PlanProgress::Failed {
+                    error: format!("Failed to write plan file: {}", e),
+                })
+                .await;
+            return;
+        }
+
+        info!("Plan written to: {:?}", plan_path);
+
+        // Send completion
+        let _ = progress_tx
+            .send(PlanProgress::Completed {
+                exec_id,
+                title,
+                plan_content,
+                passes_run: pass_outputs.len() as u8,
+            })
+            .await;
+    }
+
+    /// Generate title from conversation (static version for background task)
+    async fn generate_title_static(llm: &Arc<dyn LlmClient>, conversation: &str) -> Option<String> {
+        // Load title generator prompt from embedded or file
+        let system_prompt = crate::prompts::embedded::get_embedded("title")
+            .unwrap_or("Generate a 2-5 word title. Output ONLY the title.")
+            .to_string();
+
+        let request = CompletionRequest {
+            system_prompt,
+            messages: vec![Message::user(conversation)],
+            tools: vec![],
+            max_tokens: 50,
+        };
+
+        match llm.complete(request).await {
+            Ok(response) => response.content.map(|s| s.trim().to_string()),
+            Err(_) => None,
+        }
+    }
+
+    /// Check if plan changed significantly (static version)
+    fn plan_changed_significantly_static(old: &str, new: &str) -> bool {
+        if old.is_empty() {
+            return true;
+        }
+        // Simple heuristic: check if length changed by more than 5%
+        let old_len = old.len();
+        let new_len = new.len();
+        let diff = (new_len as i64 - old_len as i64).unsigned_abs() as usize;
+        diff > old_len / 20 // More than 5% change
+    }
+
     /// Create a plan draft from conversation using the Rule of Five methodology
-    ///
-    /// This iterates through 3-5 review passes, each focusing on a different quality dimension:
-    /// - Pass 1: Completeness (all sections filled?)
-    /// - Pass 2: Correctness (logical errors? wrong assumptions?)
-    /// - Pass 3: Edge Cases (error handling? failure modes?)
-    /// - Pass 4: Architecture (fits system? scalability?)
-    /// - Pass 5: Clarity (implementable? unambiguous?)
-    ///
-    /// Convergence is detected when two consecutive passes produce no changes.
+    /// (DEPRECATED - use start_plan_creation instead, this is kept for reference)
+    #[allow(dead_code)]
     async fn create_plan_draft(&mut self, request: PlanCreateRequest) {
         info!("=== create_plan_draft START (Rule of Five) ===");
         info!(
@@ -1354,6 +1866,13 @@ Working directory: {}"#,
                         "-".to_string()
                     };
 
+                    // Extract plan content from context if available
+                    let plan_content = exec
+                        .context
+                        .get("final-plan")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
                     Some(DescribeData {
                         id: exec.id.clone(),
                         loop_type: exec.loop_type.clone(),
@@ -1374,6 +1893,7 @@ Working directory: {}"#,
                             duration,
                             progress: exec.progress.lines().last().unwrap_or("").to_string(),
                         }),
+                        plan_content,
                     })
                 } else if let Ok(Some(record)) = state_manager.get_loop(target_id).await {
                     // It's a Loop record
@@ -1391,6 +1911,7 @@ Working directory: {}"#,
                         )],
                         children: vec![], // TODO: load children
                         execution: None,
+                        plan_content: None, // Loop records don't have plan content
                     })
                 } else {
                     None
@@ -1448,10 +1969,10 @@ fn format_duration(created_at_ms: i64) -> String {
     format!("{}:{:02}", mins, secs)
 }
 
-/// Format a timestamp as ISO date string
+/// Format a timestamp as ISO date string in local timezone
 fn format_timestamp(timestamp_ms: i64) -> String {
-    use chrono::{TimeZone, Utc};
-    let dt = Utc.timestamp_millis_opt(timestamp_ms);
+    use chrono::{Local, TimeZone};
+    let dt = Local.timestamp_millis_opt(timestamp_ms);
     match dt {
         chrono::LocalResult::Single(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
         _ => "unknown".to_string(),

@@ -397,6 +397,10 @@ pub struct AppState {
     pub logs_follow: bool,
     pub logs_scroll: usize,
 
+    // === Describe view state ===
+    pub describe_scroll: usize,
+    pub describe_max_scroll: usize,
+
     // === Pending actions ===
     pub pending_task: Option<String>,
     pub pending_action: Option<PendingAction>,
@@ -411,6 +415,8 @@ pub struct AppState {
     pub repl_history: Vec<ReplMessage>,
     /// Current input buffer
     pub repl_input: String,
+    /// Cursor position within the input buffer (byte offset)
+    pub repl_cursor_pos: usize,
     /// Is the LLM currently streaming a response?
     pub repl_streaming: bool,
     /// Accumulating stream response (for incremental display)
@@ -423,6 +429,8 @@ pub struct AppState {
     pub repl_max_scroll: usize,
     /// Pending plan creation request
     pub pending_plan_create: Option<PlanCreateRequest>,
+    /// Is plan creation currently in progress? (used to block double-execution)
+    pub plan_creating: bool,
 }
 
 impl Default for AppState {
@@ -448,6 +456,8 @@ impl Default for AppState {
             available_types: Vec::new(),
             logs_follow: true,
             logs_scroll: 0,
+            describe_scroll: 0,
+            describe_max_scroll: 0,
             pending_task: None,
             pending_action: None,
             last_refresh: 0,
@@ -455,12 +465,14 @@ impl Default for AppState {
             repl_mode: ReplMode::default(),
             repl_history: Vec::new(),
             repl_input: String::new(),
+            repl_cursor_pos: 0,
             repl_streaming: false,
             repl_response_buffer: String::new(),
             pending_repl_submit: None,
             repl_scroll: None, // None = auto-scroll to bottom
             repl_max_scroll: 0,
             pending_plan_create: None,
+            plan_creating: false,
         }
     }
 }
@@ -633,6 +645,22 @@ impl AppState {
         self.repl_scroll.is_some()
     }
 
+    /// Scroll Describe view up by given lines
+    pub fn describe_scroll_up(&mut self, lines: usize) {
+        self.describe_scroll = self.describe_scroll.saturating_sub(lines);
+    }
+
+    /// Scroll Describe view down by given lines
+    pub fn describe_scroll_down(&mut self, lines: usize) {
+        let new_scroll = self.describe_scroll.saturating_add(lines);
+        self.describe_scroll = new_scroll.min(self.describe_max_scroll);
+    }
+
+    /// Reset Describe scroll to top
+    pub fn describe_scroll_to_top(&mut self) {
+        self.describe_scroll = 0;
+    }
+
     /// Tick - called on each frame update
     pub fn tick(&mut self) {
         // Update logs scroll if following
@@ -731,6 +759,8 @@ pub struct DescribeData {
     pub children: Vec<String>,
     /// Current execution info if running
     pub execution: Option<ExecutionInfo>,
+    /// Plan content (markdown) for plan-type executions
+    pub plan_content: Option<String>,
 }
 
 /// Execution info for describe view

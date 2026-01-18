@@ -18,7 +18,16 @@ fn slugify(title: &str) -> String {
     title
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        // Strip apostrophes entirely, replace other non-alphanumeric with hyphens
+        .filter_map(|c| {
+            if c.is_alphanumeric() {
+                Some(c)
+            } else if c == '\'' || c == '\u{2019}' || c == '\u{2018}' {
+                None // Strip apostrophes (straight and curly)
+            } else {
+                Some('-')
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
@@ -181,6 +190,10 @@ mod tests {
         assert_eq!(slugify("Add OAuth!"), "add-oauth");
         assert_eq!(slugify("Multiple   Spaces"), "multiple-spaces");
         assert_eq!(slugify("CamelCase"), "camelcase");
+        // Apostrophes should be stripped, not converted to hyphens
+        assert_eq!(slugify("here's a test"), "heres-a-test");
+        assert_eq!(slugify("don't stop"), "dont-stop");
+        assert_eq!(slugify("it's working"), "its-working");
     }
 
     #[test]

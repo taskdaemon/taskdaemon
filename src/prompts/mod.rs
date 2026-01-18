@@ -9,7 +9,7 @@
 //!
 //! Templates use Handlebars syntax for variable substitution.
 
-mod embedded;
+pub mod embedded;
 mod loader;
 
 pub use loader::{FocusArea, PromptContext, PromptLoader};

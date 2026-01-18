@@ -210,7 +210,7 @@ async fn cmd_tui(config: &Config) -> Result<()> {
         };
 
     // Run TUI with LLM client
-    tui::run_with_state_and_llm(state_manager, llm_client).await
+    tui::run_with_state_and_llm(state_manager, llm_client, config.debug.clone()).await
 }
 
 /// Show logs

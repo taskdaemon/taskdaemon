@@ -79,10 +79,11 @@ impl App {
             }
 
             // === Mode switching ===
-            (KeyCode::Char('/'), _) => {
+            // Note: In REPL view, '/' and ':' are handled by REPL input (see below)
+            (KeyCode::Char('/'), _) if !matches!(self.state.current_view, View::Repl) => {
                 self.state.interaction_mode = InteractionMode::Filter(String::new());
             }
-            (KeyCode::Char(':'), _) => {
+            (KeyCode::Char(':'), _) if !matches!(self.state.current_view, View::Repl) => {
                 self.state.interaction_mode = InteractionMode::Command(String::new());
             }
 
@@ -107,12 +108,15 @@ impl App {
                 self.navigate_to_pane(TopLevelPane::Records);
             }
 
-            // === Navigation (list views) or Scroll (REPL view) ===
+            // === Navigation (list views) or Scroll (REPL/Describe view) ===
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                 if matches!(self.state.current_view, View::Repl) {
                     // Scroll up in REPL view
                     let max = self.state.repl_max_scroll;
                     self.state.repl_scroll_up(1, max);
+                } else if matches!(self.state.current_view, View::Describe { .. }) {
+                    // Scroll up in Describe view
+                    self.state.describe_scroll_up(1);
                 } else if let Some(sel) = self.state.current_selection_mut() {
                     sel.select_prev();
                 }
@@ -122,6 +126,9 @@ impl App {
                     // Scroll down in REPL view
                     let max = self.state.repl_max_scroll;
                     self.state.repl_scroll_down(1, max);
+                } else if matches!(self.state.current_view, View::Describe { .. }) {
+                    // Scroll down in Describe view
+                    self.state.describe_scroll_down(1);
                 } else {
                     let max = self.state.current_item_count();
                     if let Some(sel) = self.state.current_selection_mut() {
@@ -133,18 +140,24 @@ impl App {
                 if matches!(self.state.current_view, View::Repl) {
                     let max = self.state.repl_max_scroll;
                     self.state.repl_scroll_up(10, max);
+                } else if matches!(self.state.current_view, View::Describe { .. }) {
+                    self.state.describe_scroll_up(10);
                 }
             }
             (KeyCode::PageDown, _) => {
                 if matches!(self.state.current_view, View::Repl) {
                     let max = self.state.repl_max_scroll;
                     self.state.repl_scroll_down(10, max);
+                } else if matches!(self.state.current_view, View::Describe { .. }) {
+                    self.state.describe_scroll_down(10);
                 }
             }
             (KeyCode::Char('g'), _) => {
                 if matches!(self.state.current_view, View::Repl) {
                     // Scroll to top
                     self.state.repl_scroll = Some(0);
+                } else if matches!(self.state.current_view, View::Describe { .. }) {
+                    self.state.describe_scroll_to_top();
                 } else if let Some(sel) = self.state.current_selection_mut() {
                     sel.select_first();
                 }
@@ -153,6 +166,9 @@ impl App {
                 if matches!(self.state.current_view, View::Repl) {
                     // Scroll to bottom (auto-scroll mode)
                     self.state.repl_scroll_to_bottom();
+                } else if matches!(self.state.current_view, View::Describe { .. }) {
+                    // Scroll to bottom in Describe view
+                    self.state.describe_scroll = self.state.describe_max_scroll;
                 } else {
                     let max = self.state.current_item_count();
                     if let Some(sel) = self.state.current_selection_mut() {
@@ -216,6 +232,7 @@ impl App {
                 if matches!(self.state.current_view, View::Repl) && !self.state.repl_streaming =>
             {
                 self.state.repl_input.push(c);
+                self.state.repl_cursor_pos = self.state.repl_input.len();
                 self.state.interaction_mode = InteractionMode::ReplInput;
             }
 
@@ -467,11 +484,13 @@ impl App {
             KeyCode::Esc => {
                 // Clear input and return to normal mode
                 self.state.repl_input.clear();
+                self.state.repl_cursor_pos = 0;
                 self.state.interaction_mode = InteractionMode::Normal;
             }
             KeyCode::Enter => {
                 // Submit the input for processing
                 let input = std::mem::take(&mut self.state.repl_input);
+                self.state.repl_cursor_pos = 0;
                 if !input.trim().is_empty() {
                     // Handle slash commands
                     if input.starts_with('/') {
@@ -484,14 +503,27 @@ impl App {
                 self.state.interaction_mode = InteractionMode::Normal;
             }
             KeyCode::Backspace => {
-                self.state.repl_input.pop();
+                if self.state.repl_cursor_pos > 0 {
+                    // Find the previous character boundary
+                    let new_pos = self.prev_char_boundary(self.state.repl_cursor_pos);
+                    self.state.repl_input.drain(new_pos..self.state.repl_cursor_pos);
+                    self.state.repl_cursor_pos = new_pos;
+                }
                 // If input is empty, return to normal mode
                 if self.state.repl_input.is_empty() {
                     self.state.interaction_mode = InteractionMode::Normal;
                 }
             }
+            KeyCode::Delete => {
+                if self.state.repl_cursor_pos < self.state.repl_input.len() {
+                    // Find the next character boundary
+                    let end_pos = self.next_char_boundary(self.state.repl_cursor_pos);
+                    self.state.repl_input.drain(self.state.repl_cursor_pos..end_pos);
+                }
+            }
             KeyCode::Char(c) => {
-                self.state.repl_input.push(c);
+                self.state.repl_input.insert(self.state.repl_cursor_pos, c);
+                self.state.repl_cursor_pos += c.len_utf8();
             }
             // Tab cycles through views (exit input mode first)
             KeyCode::Tab => {
@@ -502,13 +534,47 @@ impl App {
                 self.state.interaction_mode = InteractionMode::Normal;
                 self.navigate_prev_top_level_view();
             }
-            // Left/Right arrows reserved for cursor movement (not implemented yet)
-            // For now, just ignore them
-            KeyCode::Left | KeyCode::Right => {}
+            // Cursor movement
+            KeyCode::Left => {
+                if self.state.repl_cursor_pos > 0 {
+                    self.state.repl_cursor_pos = self.prev_char_boundary(self.state.repl_cursor_pos);
+                }
+            }
+            KeyCode::Right => {
+                if self.state.repl_cursor_pos < self.state.repl_input.len() {
+                    self.state.repl_cursor_pos = self.next_char_boundary(self.state.repl_cursor_pos);
+                }
+            }
+            KeyCode::Home => {
+                self.state.repl_cursor_pos = 0;
+            }
+            KeyCode::End => {
+                self.state.repl_cursor_pos = self.state.repl_input.len();
+            }
             _ => {}
         }
 
         false
+    }
+
+    /// Find the previous character boundary in the input
+    fn prev_char_boundary(&self, pos: usize) -> usize {
+        let input = &self.state.repl_input;
+        let mut new_pos = pos.saturating_sub(1);
+        while new_pos > 0 && !input.is_char_boundary(new_pos) {
+            new_pos -= 1;
+        }
+        new_pos
+    }
+
+    /// Find the next character boundary in the input
+    fn next_char_boundary(&self, pos: usize) -> usize {
+        let input = &self.state.repl_input;
+        let mut new_pos = pos + 1;
+        while new_pos < input.len() && !input.is_char_boundary(new_pos) {
+            new_pos += 1;
+        }
+        new_pos.min(input.len())
     }
 
     /// Handle /create command to generate a plan from the conversation
@@ -527,7 +593,7 @@ impl App {
         }
 
         // Check we're not already creating a plan
-        if self.state.pending_plan_create.is_some() {
+        if self.state.pending_plan_create.is_some() || self.state.plan_creating {
             self.state.set_error("Plan creation already in progress");
             return;
         }
@@ -753,6 +819,8 @@ mod tests {
     #[test]
     fn test_app_filter_mode() {
         let mut app = App::new();
+        // Switch to Executions view since '/' in REPL view is treated as input
+        app.state_mut().current_view = View::Executions;
 
         // Enter filter mode
         let key = KeyEvent::from(KeyCode::Char('/'));
@@ -778,6 +846,8 @@ mod tests {
     #[test]
     fn test_app_command_mode() {
         let mut app = App::new();
+        // Switch to Executions view since ':' in REPL view is treated as input
+        app.state_mut().current_view = View::Executions;
 
         // Enter command mode
         let key = KeyEvent::from(KeyCode::Char(':'));

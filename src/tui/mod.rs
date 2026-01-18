@@ -7,6 +7,7 @@
 //! - Filter mode for instant search (/)
 
 mod app;
+mod conversation_log;
 mod events;
 mod runner;
 pub mod state;
@@ -27,6 +28,7 @@ use eyre::Result;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::config::DebugConfig;
 use crate::llm::LlmClient;
 use crate::state::StateManager;
 
@@ -58,11 +60,15 @@ pub async fn run(terminal: Tui) -> Result<()> {
 
 /// Run the TUI with StateManager connection for live data
 pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
-    run_with_state_and_llm(state_manager, None).await
+    run_with_state_and_llm(state_manager, None, DebugConfig::default()).await
 }
 
 /// Run the TUI with StateManager and optional LLM client for REPL
-pub async fn run_with_state_and_llm(state_manager: StateManager, llm_client: Option<Arc<dyn LlmClient>>) -> Result<()> {
+pub async fn run_with_state_and_llm(
+    state_manager: StateManager,
+    llm_client: Option<Arc<dyn LlmClient>>,
+    debug_config: DebugConfig,
+) -> Result<()> {
     // Session separator for easier log reading
     tracing::info!("********************************************************************************");
     tracing::info!("TUI session starting");
@@ -80,7 +86,7 @@ pub async fn run_with_state_and_llm(state_manager: StateManager, llm_client: Opt
     let _guard = TerminalGuard;
 
     let mut runner = if let Some(llm) = llm_client {
-        TuiRunner::with_llm_client(terminal, Some(state_manager), llm)
+        TuiRunner::with_llm_client(terminal, Some(state_manager), llm, debug_config.log_conversations)
     } else {
         TuiRunner::with_state_manager(terminal, state_manager)
     };

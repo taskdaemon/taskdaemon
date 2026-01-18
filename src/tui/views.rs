@@ -218,18 +218,63 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(header, area);
 }
 
-/// Render REPL view with conversation history and input
+/// Calculate the number of lines needed for wrapped input text
+fn calculate_input_height(input: &str, width: u16) -> u16 {
+    if input.is_empty() {
+        return 1; // Minimum 1 line for empty input
+    }
+
+    // Account for "> " prefix (2 chars) and cursor "_" (1 char)
+    let effective_width = width.saturating_sub(3) as usize;
+    if effective_width == 0 {
+        return 1;
+    }
+
+    // Count lines needed for wrapped content
+    let lines = input.len().div_ceil(effective_width);
+    lines.clamp(1, 10) as u16 // Cap at 10 lines max
+}
+
+/// Render REPL view with conversation history and input (unified single border)
 fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
-    // Split area: message history (scrollable) + input line at bottom
+    // Title changes based on REPL mode
+    let title = match state.repl_mode {
+        ReplMode::Chat => " Chat ",
+        ReplMode::Plan => " Plan ",
+    };
+
+    // Single outer border with title
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(colors::HEADER));
+
+    let inner = block.inner(area);
+
+    // Calculate input height dynamically based on content
+    let input_height = calculate_input_height(&state.repl_input, inner.width);
+
+    // Split inner area: history fills remaining, input at bottom
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),    // Message history
-            Constraint::Length(3), // Input line
+            Constraint::Min(0),               // History (fills remaining)
+            Constraint::Length(input_height), // Input (dynamic height)
         ])
-        .split(area);
+        .split(inner);
 
-    // Render message history
+    // Render the outer block first
+    frame.render_widget(block, area);
+
+    // Render history without borders
+    render_repl_history(state, frame, chunks[0]);
+
+    // Render input with wrapping, no borders
+    render_repl_input(state, frame, chunks[1]);
+}
+
+/// Render REPL history content (no borders)
+fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     for msg in &state.repl_history {
@@ -338,20 +383,11 @@ fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
         )]));
     }
 
-    // Title changes based on REPL mode
-    let title = match state.repl_mode {
-        ReplMode::Chat => " Chat ",
-        ReplMode::Plan => " Plan ",
-    };
-
     // Calculate scroll offset
-    // Viewport height = chunk height - 2 (for borders)
-    // Viewport width = chunk width - 2 (for borders)
-    let viewport_height = chunks[0].height.saturating_sub(2) as usize;
-    let viewport_width = chunks[0].width.saturating_sub(2) as usize;
+    let viewport_height = area.height as usize;
+    let viewport_width = area.width as usize;
 
     // Calculate visual line count (accounting for line wrapping)
-    // Each logical line may wrap to multiple visual lines
     let content_height: usize = lines
         .iter()
         .map(|line| {
@@ -359,7 +395,6 @@ fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
             if viewport_width == 0 || line_width == 0 {
                 1
             } else {
-                // How many rows does this line occupy after wrapping?
                 line_width.div_ceil(viewport_width)
             }
         })
@@ -371,46 +406,72 @@ fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
     state.repl_max_scroll = max_scroll;
 
     // Use manual scroll if set, otherwise auto-scroll to bottom
-    // Clamp to actual max to handle content changes
     let scroll = state.repl_scroll.unwrap_or(max_scroll).min(max_scroll);
 
     let history = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(Style::default().fg(colors::HEADER)),
-        )
         .wrap(Wrap { trim: false })
         .scroll((scroll as u16, 0));
 
-    frame.render_widget(history, chunks[0]);
+    frame.render_widget(history, area);
+}
 
-    // Render input line
+/// Render REPL input with wrapping (no borders)
+fn render_repl_input(state: &AppState, frame: &mut Frame, area: Rect) {
     let input_style = if state.repl_streaming {
         Style::default().fg(colors::DIM)
     } else {
         Style::default().fg(Color::White)
     };
 
-    let cursor = if !state.repl_streaming {
-        Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK))
+    // Split input at cursor position for rendering cursor in the middle
+    let cursor_pos = state.repl_cursor_pos.min(state.repl_input.len());
+    let (before_cursor, after_cursor) = state.repl_input.split_at(cursor_pos);
+
+    let mut spans = vec![Span::styled(
+        "> ",
+        Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD),
+    )];
+
+    // Text before cursor
+    if !before_cursor.is_empty() {
+        spans.push(Span::styled(before_cursor, input_style));
+    }
+
+    // Cursor (blinking underscore or block depending on whether there's text after)
+    if !state.repl_streaming {
+        if after_cursor.is_empty() {
+            // Cursor at end - show blinking underscore
+            spans.push(Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)));
+        } else {
+            // Cursor in middle - highlight the next character
+            // Get the first character after cursor
+            let mut chars = after_cursor.chars();
+            if let Some(c) = chars.next() {
+                spans.push(Span::styled(
+                    c.to_string(),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::White)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ));
+                // Rest of the text after cursor
+                let remaining: String = chars.collect();
+                if !remaining.is_empty() {
+                    spans.push(Span::styled(remaining, input_style));
+                }
+            }
+        }
     } else {
-        Span::raw("")
-    };
+        // Streaming - no cursor, just show the rest
+        if !after_cursor.is_empty() {
+            spans.push(Span::styled(after_cursor, input_style));
+        }
+    }
 
-    let input_content = Line::from(vec![
-        Span::styled(
-            "> ",
-            Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(&state.repl_input, input_style),
-        cursor,
-    ]);
+    let input_content = Line::from(spans);
+    let input = Paragraph::new(input_content).wrap(Wrap { trim: false });
 
-    let input = Paragraph::new(input_content).block(Block::default().borders(Borders::ALL));
-
-    frame.render_widget(input, chunks[1]);
+    frame.render_widget(input, area);
 }
 
 /// Render Records table (generic Loop records)
@@ -603,8 +664,8 @@ fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
     }
 }
 
-/// Render Describe view
-fn render_describe_view(state: &AppState, frame: &mut Frame, area: Rect) {
+/// Render Describe view with scroll support
+fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
     let data = match &state.describe_data {
         Some(d) => d,
         None => {
@@ -674,7 +735,44 @@ fn render_describe_view(state: &AppState, frame: &mut Frame, area: Rect) {
         }
     }
 
+    // Plan content section
+    if let Some(ref plan) = data.plan_content {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Plan Content:",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )]));
+        lines.push(Line::from(""));
+        // Add each line of the plan content
+        for line in plan.lines() {
+            lines.push(Line::from(Span::raw(line.to_string())));
+        }
+    }
+
     let title = format!(" Describe: {} ", truncate_str(&data.title, 30));
+
+    // Calculate viewport and content dimensions for scrolling
+    let viewport_height = area.height.saturating_sub(2) as usize; // -2 for borders
+    let viewport_width = area.width.saturating_sub(2) as usize; // -2 for borders
+
+    // Calculate content height accounting for line wrapping
+    let content_height: usize = lines
+        .iter()
+        .map(|line| {
+            let line_width = line.width();
+            if viewport_width == 0 || line_width == 0 {
+                1
+            } else {
+                line_width.div_ceil(viewport_width)
+            }
+        })
+        .sum();
+
+    let max_scroll = content_height.saturating_sub(viewport_height);
+    state.describe_max_scroll = max_scroll;
+
+    // Clamp scroll to valid range
+    let scroll = state.describe_scroll.min(max_scroll);
 
     let describe = Paragraph::new(lines)
         .block(
@@ -683,7 +781,8 @@ fn render_describe_view(state: &AppState, frame: &mut Frame, area: Rect) {
                 .title(title)
                 .border_style(Style::default().fg(colors::HEADER)),
         )
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: true })
+        .scroll((scroll as u16, 0));
 
     frame.render_widget(describe, area);
 }
