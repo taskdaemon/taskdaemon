@@ -9,14 +9,18 @@ A Plan describes WHAT will be built and WHY. It captures:
 - Success criteria
 
 ## What a Plan is NOT
-A Plan is NOT a technical specification. Avoid:
+A Plan is NOT a technical specification. Do NOT include:
 - Code samples or pseudocode
 - API schemas or data structures
 - Detailed algorithms
 - Diagrams (ASCII or otherwise)
-- Implementation-level details
+- Project structure or file trees
+- Cargo.toml, package.json, or dependency listings
+- Function signatures or type definitions
 
 Those belong in a separate Tech Spec document created AFTER the Plan is approved.
+
+IMPORTANT: Output ONLY the Plan document. Do not write code or create the implementation.
 
 ## Required Sections
 

@@ -13,9 +13,12 @@ pub fn generate_id(domain_type: &str, title: &str) -> String {
     format!("{}-{}-{}", hex_prefix, domain_type, slug)
 }
 
+/// Maximum slug length (keeps IDs reasonable)
+const MAX_SLUG_LENGTH: usize = 40;
+
 /// Slugify a title for use in IDs
 fn slugify(title: &str) -> String {
-    title
+    let slug: String = title
         .to_lowercase()
         .chars()
         // Strip apostrophes entirely, replace other non-alphanumeric with hyphens
@@ -32,7 +35,20 @@ fn slugify(title: &str) -> String {
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join("-")
+        .join("-");
+
+    // Truncate to max length, but don't cut mid-word
+    if slug.len() <= MAX_SLUG_LENGTH {
+        slug
+    } else {
+        // Find last hyphen before the limit
+        let truncated = &slug[..MAX_SLUG_LENGTH];
+        if let Some(last_hyphen) = truncated.rfind('-') {
+            truncated[..last_hyphen].to_string()
+        } else {
+            truncated.to_string()
+        }
+    }
 }
 
 /// Domain ID wrapper for type-safe ID handling
@@ -194,6 +210,17 @@ mod tests {
         assert_eq!(slugify("here's a test"), "heres-a-test");
         assert_eq!(slugify("don't stop"), "dont-stop");
         assert_eq!(slugify("it's working"), "its-working");
+    }
+
+    #[test]
+    fn test_slugify_truncation() {
+        // Long titles should be truncated at word boundaries
+        let long_title = "This is a very long title that should be truncated to keep IDs reasonable";
+        let slug = slugify(long_title);
+        assert!(slug.len() <= MAX_SLUG_LENGTH);
+        assert!(!slug.ends_with('-'));
+        // Should truncate at word boundary
+        assert_eq!(slug, "this-is-a-very-long-title-that-should");
     }
 
     #[test]
