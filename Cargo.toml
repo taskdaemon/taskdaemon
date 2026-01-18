@@ -47,6 +47,7 @@ grep-searcher = "0.1.16"
 grep-matcher = "0.1.8"
 fast_html2md = "0.0.55"
 tui-markdown = "0.3"
+rand = "0.9"
 
 [build-dependencies]
 

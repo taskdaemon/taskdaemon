@@ -5,6 +5,24 @@
 //!
 //! Views are dynamic based on loaded loop types from YAML configuration.
 
+use std::time::Instant;
+
+use rand::seq::IndexedRandom;
+
+/// Fun words for the streaming status indicator (Claude Code style)
+pub const STREAMING_WORDS: &[&str] = &[
+    "Pondering",
+    "Thinking",
+    "Orbiting",
+    "Crunching",
+    "Computing",
+    "Analyzing",
+    "Processing",
+    "Reasoning",
+    "Contemplating",
+    "Musing",
+];
+
 /// Which view is currently displayed (k9s-style)
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum View {
@@ -481,6 +499,26 @@ pub struct AppState {
     pub pending_plan_create: Option<PlanCreateRequest>,
     /// Is plan creation currently in progress? (used to block double-execution)
     pub plan_creating: bool,
+
+    // === Streaming status (Claude Code style) ===
+    /// Fun word for streaming indicator (e.g., "Pondering", "Orbiting")
+    pub streaming_word: String,
+    /// When streaming began (for elapsed time display)
+    pub streaming_start: Option<Instant>,
+    /// Input tokens for current request (from message_start event)
+    pub streaming_input_tokens: Option<u64>,
+    /// Output tokens for current request (from message_done event)
+    pub streaming_output_tokens: Option<u64>,
+
+    // === Session totals ===
+    /// Total input tokens sent this session
+    pub session_input_tokens: u64,
+    /// Total output tokens received this session
+    pub session_output_tokens: u64,
+    /// Total cost in USD this session
+    pub session_cost_usd: f64,
+    /// Current model name (for cost calculation)
+    pub current_model: String,
 }
 
 impl Default for AppState {
@@ -523,6 +561,16 @@ impl Default for AppState {
             repl_max_scroll: 0,
             pending_plan_create: None,
             plan_creating: false,
+            // Streaming status
+            streaming_word: String::new(),
+            streaming_start: None,
+            streaming_input_tokens: None,
+            streaming_output_tokens: None,
+            // Session totals
+            session_input_tokens: 0,
+            session_output_tokens: 0,
+            session_cost_usd: 0.0,
+            current_model: String::new(),
         }
     }
 }
@@ -765,6 +813,39 @@ impl AppState {
         {
             msg.toggle_expanded();
         }
+    }
+
+    /// Start streaming - pick random word, set start time, clear token counts
+    pub fn start_streaming(&mut self, model: &str) {
+        let mut rng = rand::rng();
+        self.streaming_word = STREAMING_WORDS.choose(&mut rng).unwrap_or(&"Thinking").to_string();
+        self.streaming_start = Some(Instant::now());
+        self.streaming_input_tokens = None;
+        self.streaming_output_tokens = None;
+        self.current_model = model.to_string();
+    }
+
+    /// Finish a request and accumulate session totals
+    pub fn finish_request(&mut self, input_tokens: u64, output_tokens: u64) {
+        self.session_input_tokens += input_tokens;
+        self.session_output_tokens += output_tokens;
+
+        // Calculate cost based on current model
+        let (input_price, output_price) = match self.current_model.as_str() {
+            m if m.contains("opus") => (15.0, 75.0),
+            m if m.contains("sonnet") => (3.0, 15.0),
+            m if m.contains("haiku") => (0.25, 1.25),
+            _ => (3.0, 15.0), // Default to sonnet pricing
+        };
+
+        let input_cost = (input_tokens as f64 / 1_000_000.0) * input_price;
+        let output_cost = (output_tokens as f64 / 1_000_000.0) * output_price;
+        self.session_cost_usd += input_cost + output_cost;
+
+        // Clear streaming state
+        self.streaming_start = None;
+        self.streaming_input_tokens = None;
+        self.streaming_output_tokens = None;
     }
 }
 

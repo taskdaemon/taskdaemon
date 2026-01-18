@@ -163,16 +163,39 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
 
     // Build right side: metrics
     let mut right_parts: Vec<String> = Vec::new();
-    right_parts.push(format!("{} records", state.total_records));
-    if state.executions_draft > 0 {
-        right_parts.push(format!("{} drafts", state.executions_draft));
+
+    // Session token stats (only show if there's been activity)
+    if state.session_input_tokens > 0 || state.session_output_tokens > 0 {
+        // Split input/output so they can have different colors
+        right_parts.push(format!("↑{}", format_tokens(state.session_input_tokens)));
+        right_parts.push(format!("↓{}", format_tokens(state.session_output_tokens)));
+        // Show cost if significant
+        if state.session_cost_usd >= 0.001 {
+            right_parts.push(format!("${:.2}", state.session_cost_usd));
+        }
     }
-    right_parts.push(format!("{} active", state.executions_active));
-    if state.executions_complete > 0 {
-        right_parts.push(format!("{} complete", state.executions_complete));
-    }
-    if state.executions_failed > 0 {
-        right_parts.push(format!("{} failed", state.executions_failed));
+
+    // Only show daemon stats if there's actually something to show
+    // (avoids cluttering Chat view with "0 records | 0 active")
+    let has_daemon_activity = state.total_records > 0
+        || state.executions_draft > 0
+        || state.executions_active > 0
+        || state.executions_complete > 0
+        || state.executions_failed > 0;
+
+    if has_daemon_activity {
+        if state.executions_active > 0 {
+            right_parts.push(format!("{} active", state.executions_active));
+        }
+        if state.executions_draft > 0 {
+            right_parts.push(format!("{} drafts", state.executions_draft));
+        }
+        if state.executions_complete > 0 {
+            right_parts.push(format!("{} done", state.executions_complete));
+        }
+        if state.executions_failed > 0 {
+            right_parts.push(format!("{} failed", state.executions_failed));
+        }
     }
 
     // Calculate widths for right-justification
@@ -196,16 +219,20 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
         if i > 0 {
             spans.push(Span::styled(" │ ", Style::default().fg(colors::DIM)));
         }
-        let color = if part.contains("records") {
-            Color::Cyan
+        let color = if part.contains("active") {
+            colors::RUNNING
         } else if part.contains("drafts") {
             colors::DRAFT
-        } else if part.contains("active") {
-            colors::RUNNING
-        } else if part.contains("complete") {
+        } else if part.contains("done") {
             colors::COMPLETE
         } else if part.contains("failed") {
             colors::FAILED
+        } else if part.starts_with('↑') {
+            Color::Green // Input tokens - cheap
+        } else if part.starts_with('↓') {
+            Color::Red // Output tokens - expensive
+        } else if part.starts_with('$') {
+            Color::Yellow // Cost
         } else {
             Color::White
         };
@@ -430,11 +457,31 @@ fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
                 }
             }
         }
-        // Show streaming indicator
-        lines.push(Line::from(vec![Span::styled(
-            "  ...",
-            Style::default().fg(colors::DIM).add_modifier(Modifier::SLOW_BLINK),
-        )]));
+        // Show rich streaming status (Claude Code style)
+        // Format: "* Pondering... (ctrl+c to interrupt · 45s · ↑1.2K ↓...)"
+        let word = if state.streaming_word.is_empty() { "Thinking" } else { &state.streaming_word };
+
+        let elapsed = state
+            .streaming_start
+            .map(|t| format_streaming_duration(t.elapsed()))
+            .unwrap_or_else(|| "0s".to_string());
+
+        let input_str = state
+            .streaming_input_tokens
+            .map(|t| format!("↑{}", format_tokens(t)))
+            .unwrap_or_else(|| "↑...".to_string());
+
+        let output_str = state
+            .streaming_output_tokens
+            .map(|t| format!("↓{}", format_tokens(t)))
+            .unwrap_or_else(|| "↓...".to_string());
+
+        let status = format!(
+            "* {}... (ctrl+c to interrupt · {} · {} {})",
+            word, elapsed, input_str, output_str
+        );
+
+        lines.push(Line::from(vec![Span::styled(status, Style::default().fg(colors::DIM))]));
     }
 
     // Show welcome message if empty (varies by mode)
@@ -1147,4 +1194,25 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 /// Truncate a string for display
 fn truncate_str(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len { s } else { &s[..max_len] }
+}
+
+/// Format token count for display (e.g., "1.2K", "3.5M")
+fn format_tokens(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
+
+/// Format duration for display (e.g., "45s", "1m 15s")
+fn format_streaming_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}s", secs)
+    }
 }

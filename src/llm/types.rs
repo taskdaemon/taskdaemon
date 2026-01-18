@@ -233,6 +233,9 @@ impl ToolDefinition {
 /// Streaming chunk for real-time TUI updates
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
+    /// Message started with input token count (from message_start event)
+    MessageStart { input_tokens: u64 },
+
     /// Text being generated
     TextDelta(String),
 

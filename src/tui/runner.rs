@@ -43,6 +43,8 @@ enum LlmTaskResult {
         content: Option<String>,
         tool_calls: Vec<ToolCall>,
         stop_reason: StopReason,
+        input_tokens: u64,
+        output_tokens: u64,
     },
     /// Error occurred
     Error(String),
@@ -294,7 +296,7 @@ Working directory: {}"#,
             self.terminal.draw(|frame| views::render(self.app.state_mut(), frame))?;
 
             // Wait for either an event OR a plan progress message
-            // This ensures plan progress updates trigger immediate redraws
+            // Stream chunks are processed at start of each loop iteration
             tokio::select! {
                 event = self.event_handler.next() => {
                     match event? {
@@ -319,7 +321,6 @@ Working directory: {}"#,
                     if let Some(rx) = &mut self.plan_progress_rx {
                         rx.recv().await
                     } else {
-                        // Return a pending future that never completes
                         std::future::pending::<Option<PlanProgress>>().await
                     }
                 } => {
@@ -428,22 +429,31 @@ Working directory: {}"#,
     /// Process pending stream chunks from LLM (non-blocking)
     fn process_stream_chunks(&mut self) {
         if let Some(rx) = &mut self.stream_rx {
-            // Try to receive all available chunks without blocking
-            let mut chunk_count = 0;
-            while let Ok(chunk) = rx.try_recv() {
-                chunk_count += 1;
+            // Collect all chunks first to avoid borrow issues
+            let chunks: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            if !chunks.is_empty() {
+                trace!("Processing {} stream chunks", chunks.len());
+            }
+            for chunk in chunks {
                 match chunk {
+                    StreamChunk::MessageStart { input_tokens } => {
+                        trace!("Message started: {} input tokens", input_tokens);
+                        self.app.state_mut().streaming_input_tokens = Some(input_tokens);
+                    }
                     StreamChunk::TextDelta(text) => {
                         trace!("Received text delta: {} chars", text.len());
                         self.app.state_mut().repl_response_buffer.push_str(&text);
                     }
                     StreamChunk::ToolUseStart { ref name, .. } => {
                         debug!("Tool use started: {}", name);
-                        // Show tool call in response buffer
                         self.app
                             .state_mut()
                             .repl_response_buffer
                             .push_str(&format!("\n[calling {}]", name));
+                    }
+                    StreamChunk::MessageDone { ref usage, .. } => {
+                        trace!("Message done: {} output tokens", usage.output_tokens);
+                        self.app.state_mut().streaming_output_tokens = Some(usage.output_tokens);
                     }
                     StreamChunk::Error(ref err) => {
                         warn!("Stream error: {}", err);
@@ -451,9 +461,6 @@ Working directory: {}"#,
                     }
                     _ => {}
                 }
-            }
-            if chunk_count > 0 {
-                trace!("Processed {} stream chunks", chunk_count);
             }
         }
     }
@@ -482,12 +489,16 @@ Working directory: {}"#,
                     content,
                     tool_calls,
                     stop_reason,
+                    input_tokens,
+                    output_tokens,
                 } => {
                     info!(
-                        "LLM response: stop_reason={:?}, has_content={}, tool_calls={}",
+                        "LLM response: stop_reason={:?}, has_content={}, tool_calls={}, tokens={}in/{}out",
                         stop_reason,
                         content.is_some(),
-                        tool_calls.len()
+                        tool_calls.len(),
+                        input_tokens,
+                        output_tokens
                     );
                     // Handle the response based on stop reason
                     match stop_reason {
@@ -510,10 +521,14 @@ Working directory: {}"#,
                                 // Log assistant message
                                 self.conversation_logger.log_assistant_message(&response_text);
                             }
+                            // Update session totals
+                            self.app.state_mut().finish_request(input_tokens, output_tokens);
                             self.finish_streaming();
                         }
                         StopReason::ToolUse => {
                             info!("Response has tool calls, executing {} tool(s)", tool_calls.len());
+                            // Update session totals (before continuing with tool calls)
+                            self.app.state_mut().finish_request(input_tokens, output_tokens);
                             // Execute tools and continue
                             self.handle_tool_calls(content, tool_calls).await;
                         }
@@ -532,6 +547,8 @@ Working directory: {}"#,
                                 .state_mut()
                                 .repl_history
                                 .push(ReplMessage::error("[Response truncated - max tokens]"));
+                            // Update session totals
+                            self.app.state_mut().finish_request(input_tokens, output_tokens);
                             self.finish_streaming();
                         }
                         StopReason::StopSequence => {
@@ -545,6 +562,8 @@ Working directory: {}"#,
                                 }
                                 self.repl_conversation.push(Message::assistant(text));
                             }
+                            // Update session totals
+                            self.app.state_mut().finish_request(input_tokens, output_tokens);
                             self.finish_streaming();
                         }
                     }
@@ -713,9 +732,10 @@ Working directory: {}"#,
         self.conversation_logger.set_mode(mode);
         self.conversation_logger.log_user_message(input);
 
-        // Set streaming state
+        // Set streaming state with fun word and start time
         self.app.state_mut().repl_streaming = true;
         self.app.state_mut().repl_response_buffer.clear();
+        self.app.state_mut().start_streaming("claude-sonnet-4"); // Default model for cost estimation
 
         // Create channel for streaming chunks
         let (stream_tx, stream_rx) = mpsc::channel::<StreamChunk>(100);
@@ -745,6 +765,8 @@ Working directory: {}"#,
                         content: response.content,
                         tool_calls: response.tool_calls,
                         stop_reason: response.stop_reason,
+                        input_tokens: response.usage.input_tokens,
+                        output_tokens: response.usage.output_tokens,
                     }
                 }
                 Err(e) => {
@@ -772,9 +794,10 @@ Working directory: {}"#,
             self.repl_conversation.len()
         );
 
-        // Set streaming state (was missing - caused "Analyzing results..." to hang visually)
+        // Set streaming state with fun word and start time
         self.app.state_mut().repl_streaming = true;
         self.app.state_mut().repl_response_buffer.clear();
+        self.app.state_mut().start_streaming("claude-sonnet-4"); // Default model for cost estimation
 
         // Create channel for streaming chunks
         let (stream_tx, stream_rx) = mpsc::channel::<StreamChunk>(100);
@@ -803,6 +826,8 @@ Working directory: {}"#,
                             content: response.content,
                             tool_calls: response.tool_calls,
                             stop_reason: response.stop_reason,
+                            input_tokens: response.usage.input_tokens,
+                            output_tokens: response.usage.output_tokens,
                         }
                     }
                     Ok(Err(e)) => {

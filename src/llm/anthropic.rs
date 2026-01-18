@@ -279,6 +279,12 @@ impl LlmClient for AnthropicClient {
                                 usage.input_tokens = u["input_tokens"].as_u64().unwrap_or(0);
                                 usage.cache_read_tokens = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
                                 usage.cache_creation_tokens = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                                // Send MessageStart chunk for early input token display
+                                let _ = chunk_tx
+                                    .send(StreamChunk::MessageStart {
+                                        input_tokens: usage.input_tokens,
+                                    })
+                                    .await;
                             }
                         }
                         Some("message_stop") => {
