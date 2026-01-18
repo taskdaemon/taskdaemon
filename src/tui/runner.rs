@@ -615,11 +615,18 @@ Working directory: {}"#,
 
         for tc in &tool_calls {
             info!("Executing tool: {} (id={})", tc.name, tc.id);
-            // Show tool call
+            // Format tool args for display
+            let tool_args = Self::format_tool_args(&tc.input);
+
+            // Show tool call with args
             self.app
                 .state_mut()
                 .repl_history
-                .push(ReplMessage::tool_result(&tc.name, format!("Running {}...", tc.name)));
+                .push(ReplMessage::tool_result_with_args(
+                    &tc.name,
+                    &tool_args,
+                    format!("Running {}...", tc.name),
+                ));
 
             // Log tool call
             let input_str = serde_json::to_string(&tc.input).unwrap_or_else(|_| "{}".to_string());
@@ -635,9 +642,6 @@ Working directory: {}"#,
 
             // Log tool result
             self.conversation_logger.log_tool_result(&tc.name, &result.content);
-
-            // Format tool args for display (compact form)
-            let tool_args = Self::format_tool_args(&tc.input);
 
             // Show result with full content (collapsing handled by view)
             self.app

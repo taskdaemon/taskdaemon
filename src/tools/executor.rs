@@ -34,7 +34,7 @@ impl ToolExecutor {
         // New tools
         tools.insert("tree".into(), Box::new(TreeTool));
         tools.insert("todo".into(), Box::new(TodoTool::new()));
-        tools.insert("fetch".into(), Box::new(FetchTool));
+        tools.insert("fetch".into(), Box::new(FetchTool::new()));
         tools.insert("search".into(), Box::new(SearchTool));
 
         // Task completion

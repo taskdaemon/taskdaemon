@@ -72,18 +72,9 @@ impl Tool for GrepTool {
 
         let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let file_pattern = input.get("file_pattern").and_then(|v| v.as_str());
-        let context_lines = input
-            .get("context_lines")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
-        let case_insensitive = input
-            .get("case_insensitive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let max_results = input
-            .get("max_results")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50) as usize;
+        let context_lines = input.get("context_lines").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+        let case_insensitive = input.get("case_insensitive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let max_results = input.get("max_results").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         // Validate path is within worktree
         let search_path = match ctx.validate_path(Path::new(path)) {
@@ -101,7 +92,7 @@ impl Tool for GrepTool {
         };
 
         // Build glob pattern matcher if specified
-        let glob_matcher = file_pattern.map(|fp| glob::Pattern::new(fp).ok()).flatten();
+        let glob_matcher = file_pattern.and_then(|fp| glob::Pattern::new(fp).ok());
 
         // Collect results
         let results: Arc<Mutex<Vec<MatchResult>>> = Arc::new(Mutex::new(Vec::new()));
@@ -223,7 +214,7 @@ fn format_results(results: &[MatchResult], max_results: usize) -> String {
         // Add file header when file changes
         if result.file != current_file {
             if !current_file.is_empty() {
-                output.push_str("\n");
+                output.push('\n');
             }
             current_file = result.file.clone();
         }
@@ -283,9 +274,7 @@ mod tests {
         let ctx = ToolContext::new(temp.path().to_path_buf(), "test-exec".to_string());
 
         let test_file = temp.path().join("test.txt");
-        fs::write(&test_file, "Hello World\nHELLO AGAIN")
-            .await
-            .unwrap();
+        fs::write(&test_file, "Hello World\nHELLO AGAIN").await.unwrap();
 
         let input = json!({
             "pattern": "hello",
@@ -328,9 +317,7 @@ mod tests {
         fs::write(temp.path().join("test.rs"), "fn main() { hello }")
             .await
             .unwrap();
-        fs::write(temp.path().join("test.txt"), "hello world")
-            .await
-            .unwrap();
+        fs::write(temp.path().join("test.txt"), "hello world").await.unwrap();
 
         let input = json!({
             "pattern": "hello",
