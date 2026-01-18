@@ -227,6 +227,14 @@ impl App {
                 self.state.logs_follow = !self.state.logs_follow;
             }
 
+            // === REPL view specific: toggle tool output expansion ===
+            (KeyCode::Char('o'), KeyModifiers::NONE) if matches!(self.state.current_view, View::Repl) => {
+                self.state.toggle_tool_expansion();
+            }
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) if matches!(self.state.current_view, View::Repl) => {
+                self.state.toggle_tool_expansion();
+            }
+
             // === REPL view specific: any other character starts input ===
             (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT)
                 if matches!(self.state.current_view, View::Repl) && !self.state.repl_streaming =>
