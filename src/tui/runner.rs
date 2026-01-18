@@ -663,13 +663,7 @@ Working directory: {}"#,
         // Clear response buffer for next LLM turn
         self.app.state_mut().repl_response_buffer.clear();
 
-        // Show that we're continuing (visual feedback)
-        self.app
-            .state_mut()
-            .repl_history
-            .push(ReplMessage::assistant("Analyzing results..."));
-
-        // Continue with another LLM call
+        // Continue with another LLM call (streaming indicator provides visual feedback)
         self.continue_llm_request();
     }
 
