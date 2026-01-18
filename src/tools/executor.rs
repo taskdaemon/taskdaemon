@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use crate::llm::{ToolCall, ToolDefinition};
 
 use super::builtin::{
-    CompleteTaskTool, EditFileTool, GlobTool, GrepTool, ListDirectoryTool, QueryTool, ReadFileTool, RunCommandTool,
-    ShareTool, WriteFileTool,
+    CompleteTaskTool, EditFileTool, FetchTool, GlobTool, GrepTool, ListDirectoryTool, QueryTool, ReadFileTool,
+    RunCommandTool, SearchTool, ShareTool, TodoTool, TreeTool, WriteFileTool,
 };
 use super::{Tool, ToolContext, ToolResult};
 
@@ -30,6 +30,12 @@ impl ToolExecutor {
 
         // Command execution
         tools.insert("bash".into(), Box::new(RunCommandTool));
+
+        // New tools
+        tools.insert("tree".into(), Box::new(TreeTool));
+        tools.insert("todo".into(), Box::new(TodoTool::new()));
+        tools.insert("fetch".into(), Box::new(FetchTool));
+        tools.insert("search".into(), Box::new(SearchTool));
 
         // Task completion
         tools.insert("complete_task".into(), Box::new(CompleteTaskTool));
