@@ -19,7 +19,6 @@ use tracing::{debug, info, trace, warn};
 use crate::llm::{
     CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
 };
-use crate::prompts::{FocusArea, PromptContext, PromptLoader};
 use crate::state::StateManager;
 use crate::tools::{ToolContext, ToolExecutor};
 
@@ -94,16 +93,15 @@ pub struct TuiRunner {
 /// Progress updates from plan creation background task
 #[derive(Debug)]
 enum PlanProgress {
-    /// Started a new pass
-    PassStarted { pass: u8, focus: String },
-    /// Pass completed with the plan output from this pass
-    PassCompleted { pass: u8, plan_output: String },
+    /// Plan creation started
+    Started,
+    /// Streaming text chunk from LLM
+    TextChunk(String),
     /// Plan creation completed successfully
     Completed {
         exec_id: String,
         title: String,
         plan_content: String,
-        passes_run: u8,
     },
     /// Plan creation failed
     Failed { error: String },
@@ -341,33 +339,28 @@ Working directory: {}"#,
     /// Handle a single plan progress message
     fn handle_plan_progress(&mut self, progress: PlanProgress) {
         match progress {
-            PlanProgress::PassStarted { pass, focus } => {
-                self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                    "  Pass {}/5: {} review...",
-                    pass, focus
-                )));
+            PlanProgress::Started => {
+                // Add initial streaming message that will be appended to
+                self.app
+                    .state_mut()
+                    .repl_history
+                    .push(ReplMessage::assistant(String::new()));
             }
-            PlanProgress::PassCompleted { pass, plan_output } => {
-                debug!("Pass {} completed", pass);
-                // Show the plan output from this pass in the chat
-                self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                    "  Pass {}/5 output:\n\n{}",
-                    pass, plan_output
-                )));
+            PlanProgress::TextChunk(chunk) => {
+                // Append chunk to the last message (streaming output)
+                if let Some(last) = self.app.state_mut().repl_history.last_mut() {
+                    last.content.push_str(&chunk);
+                }
             }
             PlanProgress::Completed {
                 exec_id,
                 title,
                 plan_content: _,
-                passes_run,
             } => {
-                info!(
-                    "Plan creation completed: {} / {} ({} passes)",
-                    exec_id, title, passes_run
-                );
+                info!("Plan creation completed: {} / {}", exec_id, title);
                 self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                    "Plan created: {} ({})\n{} review passes completed.\nView in Executions tab (Tab to switch).",
-                    title, exec_id, passes_run
+                    "\n\n---\nPlan created: {} ({})\nView in Executions tab (Tab to switch).",
+                    title, exec_id
                 )));
                 // Clear plan creating flag
                 self.app.state_mut().plan_creating = false;
@@ -941,33 +934,28 @@ Working directory: {}"#,
 
         for progress in progress_messages {
             match progress {
-                PlanProgress::PassStarted { pass, focus } => {
-                    self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                        "  Pass {}/5: {} review...",
-                        pass, focus
-                    )));
+                PlanProgress::Started => {
+                    // Add initial streaming message that will be appended to
+                    self.app
+                        .state_mut()
+                        .repl_history
+                        .push(ReplMessage::assistant(String::new()));
                 }
-                PlanProgress::PassCompleted { pass, plan_output } => {
-                    debug!("Pass {} completed", pass);
-                    // Show the plan output from this pass in the chat
-                    self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                        "  Pass {}/5 output:\n\n{}",
-                        pass, plan_output
-                    )));
+                PlanProgress::TextChunk(chunk) => {
+                    // Append chunk to the last message (streaming output)
+                    if let Some(last) = self.app.state_mut().repl_history.last_mut() {
+                        last.content.push_str(&chunk);
+                    }
                 }
                 PlanProgress::Completed {
                     exec_id,
                     title,
                     plan_content: _,
-                    passes_run,
                 } => {
-                    info!(
-                        "Plan creation completed: {} / {} ({} passes)",
-                        exec_id, title, passes_run
-                    );
+                    info!("Plan creation completed: {} / {}", exec_id, title);
                     self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                        "Plan created: {} ({})\n{} review passes completed.\nView in Executions tab (Tab to switch).",
-                        title, exec_id, passes_run
+                        "\n\n---\nPlan created: {} ({})\nView in Executions tab (Tab to switch).",
+                        title, exec_id
                     )));
                     // Force data refresh to show the new draft
                     self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
@@ -990,6 +978,7 @@ Working directory: {}"#,
     }
 
     /// Run plan creation (executes in background task)
+    /// Uses consolidated Rule of Five prompt - LLM self-reviews in a single call
     async fn run_plan_creation(
         request: PlanCreateRequest,
         llm: Arc<dyn LlmClient>,
@@ -999,7 +988,10 @@ Working directory: {}"#,
     ) {
         info!("=== run_plan_creation START (Rule of Five) ===");
 
-        // Format conversation for summarization
+        // Signal that plan creation has started
+        let _ = progress_tx.send(PlanProgress::Started).await;
+
+        // Format conversation for the LLM
         let conversation_text = request
             .messages
             .iter()
@@ -1015,22 +1007,10 @@ Working directory: {}"#,
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        // Load prompt templates
-        let prompt_loader = PromptLoader::new(&worktree);
-
-        // Get system prompt for plan creation
-        let system_prompt = match prompt_loader.system_prompt() {
-            Ok(prompt) => prompt,
-            Err(e) => {
-                warn!("Failed to load plan system prompt: {}", e);
-                let _ = progress_tx
-                    .send(PlanProgress::Failed {
-                        error: "Failed to load plan prompts".to_string(),
-                    })
-                    .await;
-                return;
-            }
-        };
+        // Load the consolidated plan prompt (includes Rule of Five instructions)
+        let plan_prompt = crate::prompts::embedded::get_embedded("plan")
+            .unwrap_or("Create a plan document for this task.")
+            .to_string();
 
         // Generate a short title
         info!("Generating title from conversation...");
@@ -1039,113 +1019,52 @@ Working directory: {}"#,
             .unwrap_or_else(|| "New Plan".to_string());
         info!("Generated title: {}", title);
 
-        // === RULE OF FIVE ITERATION ===
-        let mut current_plan = String::new();
-        let mut pass_outputs: Vec<String> = Vec::new();
-        let mut consecutive_unchanged = 0;
-        const MAX_PASSES: u8 = 5;
-        const MIN_PASSES: u8 = 3;
+        // Build the LLM request - single call with consolidated prompt
+        let user_message = format!("{}\n\n---\n\n# Conversation:\n\n{}", plan_prompt, conversation_text);
 
-        for pass_num in 1..=MAX_PASSES {
-            let focus = match FocusArea::from_pass(pass_num) {
-                Some(f) => f,
-                None => break,
-            };
+        let completion_request = CompletionRequest {
+            system_prompt: String::new(), // Instructions are in the user message
+            messages: vec![Message::user(&user_message)],
+            tools: vec![],
+            max_tokens: 8192,
+        };
 
-            info!("=== Rule of Five Pass {}: {} ===", pass_num, focus);
+        // Create channel for streaming chunks
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<crate::llm::StreamChunk>(100);
 
-            // Send progress update
-            let _ = progress_tx
-                .send(PlanProgress::PassStarted {
-                    pass: pass_num,
-                    focus: focus.name().to_string(),
-                })
-                .await;
+        // Clone progress_tx for the streaming forwarder
+        let progress_tx_clone = progress_tx.clone();
 
-            // Build context for this pass
-            let ctx = if pass_num == 1 {
-                PromptContext::first_pass(conversation_text.clone())
-            } else {
-                PromptContext::review_pass(pass_num, current_plan.clone(), focus)
-            };
-
-            // Get the pass-specific prompt
-            let pass_prompt = match prompt_loader.pass_prompt(pass_num, &ctx) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to load pass {} prompt: {}", pass_num, e);
-                    let _ = progress_tx
-                        .send(PlanProgress::Failed {
-                            error: format!("Failed to load pass {} prompt", pass_num),
-                        })
-                        .await;
-                    return;
+        // Spawn task to forward stream chunks to progress channel
+        let forward_task = tokio::spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                if let crate::llm::StreamChunk::TextDelta(text) = chunk {
+                    let _ = progress_tx_clone.send(PlanProgress::TextChunk(text)).await;
                 }
-            };
-
-            // Build the LLM request
-            let user_message = if pass_num == 1 {
-                format!(
-                    "{}\n\n---\n\n# Conversation to convert to Plan:\n\n{}",
-                    pass_prompt, conversation_text
-                )
-            } else {
-                format!("{}\n\n---\n\n# Current Plan:\n\n{}", pass_prompt, current_plan)
-            };
-
-            let completion_request = CompletionRequest {
-                system_prompt: system_prompt.clone(),
-                messages: vec![Message::user(&user_message)],
-                tools: vec![],
-                max_tokens: 8192,
-            };
-
-            // Execute the pass
-            info!("Sending pass {} request to LLM...", pass_num);
-            let pass_output = match llm.complete(completion_request).await {
-                Ok(response) => {
-                    let output = response.content.unwrap_or_default();
-                    info!("Pass {} complete: {} chars", pass_num, output.len());
-                    output
-                }
-                Err(e) => {
-                    warn!("Pass {} failed: {}", pass_num, e);
-                    let _ = progress_tx
-                        .send(PlanProgress::Failed {
-                            error: format!("Pass {} failed: {}", pass_num, e),
-                        })
-                        .await;
-                    return;
-                }
-            };
-
-            let _ = progress_tx
-                .send(PlanProgress::PassCompleted {
-                    pass: pass_num,
-                    plan_output: pass_output.clone(),
-                })
-                .await;
-
-            // Check for convergence
-            let changed = Self::plan_changed_significantly_static(&current_plan, &pass_output);
-
-            if changed {
-                consecutive_unchanged = 0;
-            } else {
-                consecutive_unchanged += 1;
             }
+        });
 
-            current_plan = pass_output.clone();
-            pass_outputs.push(pass_output);
-
-            // Check for early convergence
-            if pass_num >= MIN_PASSES && consecutive_unchanged >= 2 {
-                info!("Early convergence after pass {}", pass_num);
-                break;
+        // Execute the plan creation with streaming
+        info!("Sending plan creation request to LLM (streaming)...");
+        let plan_output = match llm.stream(completion_request, chunk_tx).await {
+            Ok(response) => {
+                let output = response.content.unwrap_or_default();
+                info!("Plan creation complete: {} chars", output.len());
+                output
             }
-        }
+            Err(e) => {
+                warn!("Plan creation failed: {}", e);
+                let _ = progress_tx
+                    .send(PlanProgress::Failed {
+                        error: format!("Plan creation failed: {}", e),
+                    })
+                    .await;
+                return;
+            }
+        };
 
-        info!("Rule of Five complete: {} passes executed", pass_outputs.len());
+        // Wait for forwarding to complete
+        let _ = forward_task.await;
 
         // Create the plan execution with Draft status
         let mut execution = crate::domain::LoopExecution::new("plan", &title);
@@ -1154,8 +1073,7 @@ Working directory: {}"#,
 
         execution.set_context(serde_json::json!({
             "user-request": conversation_text,
-            "review-passes-completed": pass_outputs.len(),
-            "final-plan": current_plan
+            "final-plan": plan_output
         }));
 
         // Create the execution record
@@ -1194,16 +1112,14 @@ Working directory: {}"#,
 **Status:** Draft
 **Created:** {}
 **ID:** {}
-**Review Passes:** {} of 5
 
 ---
 
 {}"#,
             title,
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
             exec_id,
-            pass_outputs.len(),
-            current_plan
+            plan_output
         );
 
         let plan_path = plan_dir.join("plan.md");
@@ -1225,7 +1141,6 @@ Working directory: {}"#,
                 exec_id,
                 title,
                 plan_content,
-                passes_run: pass_outputs.len() as u8,
             })
             .await;
     }
@@ -1260,295 +1175,6 @@ Working directory: {}"#,
         let new_len = new.len();
         let diff = (new_len as i64 - old_len as i64).unsigned_abs() as usize;
         diff > old_len / 20 // More than 5% change
-    }
-
-    /// Create a plan draft from conversation using the Rule of Five methodology
-    /// (DEPRECATED - use start_plan_creation instead, this is kept for reference)
-    #[allow(dead_code)]
-    async fn create_plan_draft(&mut self, request: PlanCreateRequest) {
-        info!("=== create_plan_draft START (Rule of Five) ===");
-        info!(
-            "StateManager present: {}, LLM client present: {}",
-            self.state_manager.is_some(),
-            self.llm_client.is_some()
-        );
-
-        let state_manager = match &self.state_manager {
-            Some(sm) => {
-                info!("StateManager connected");
-                sm
-            }
-            None => {
-                warn!("No StateManager - cannot create plan");
-                self.app.state_mut().set_error("No state manager - cannot create plan");
-                return;
-            }
-        };
-
-        let llm = match &self.llm_client {
-            Some(llm) => {
-                info!("LLM client connected");
-                Arc::clone(llm)
-            }
-            None => {
-                warn!("No LLM client - cannot summarize conversation");
-                self.app
-                    .state_mut()
-                    .set_error("No LLM client - cannot summarize conversation");
-                return;
-            }
-        };
-
-        info!("Creating plan draft from {} messages", request.messages.len());
-
-        // Format conversation for summarization
-        let conversation_text = request
-            .messages
-            .iter()
-            .map(|msg| {
-                let role = match &msg.role {
-                    ReplRole::User => "User",
-                    ReplRole::Assistant => "Assistant",
-                    ReplRole::ToolResult { tool_name } => tool_name.as_str(),
-                    ReplRole::Error => "Error",
-                };
-                format!("{}: {}", role, msg.content)
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        // Load prompt templates
-        let prompt_loader = PromptLoader::new(&self.worktree);
-
-        // Get system prompt for plan creation
-        let system_prompt = match prompt_loader.system_prompt() {
-            Ok(prompt) => prompt,
-            Err(e) => {
-                warn!("Failed to load plan system prompt: {}", e);
-                self.app.state_mut().set_error("Failed to load plan prompts");
-                return;
-            }
-        };
-
-        // Generate a short title first
-        info!("Generating title from conversation...");
-        let title = self
-            .generate_title(&conversation_text)
-            .await
-            .unwrap_or_else(|| "New Plan".to_string());
-        info!("Generated title: {}", title);
-
-        // Show initial progress message
-        self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-            "Creating plan: {}\nRunning Rule of Five review passes...",
-            title
-        )));
-
-        // === RULE OF FIVE ITERATION ===
-        // Start with Pass 1: Completeness
-        let mut current_plan = String::new();
-        let mut pass_outputs: Vec<String> = Vec::new();
-        let mut consecutive_unchanged = 0;
-        const MAX_PASSES: u8 = 5;
-        const MIN_PASSES: u8 = 3;
-
-        for pass_num in 1..=MAX_PASSES {
-            let focus = match FocusArea::from_pass(pass_num) {
-                Some(f) => f,
-                None => break,
-            };
-
-            info!("=== Rule of Five Pass {}: {} ===", pass_num, focus);
-
-            // Update UI with progress
-            self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                "  Pass {}/5: {} review...",
-                pass_num,
-                focus.name()
-            )));
-
-            // Build context for this pass
-            let ctx = if pass_num == 1 {
-                PromptContext::first_pass(conversation_text.clone())
-            } else {
-                PromptContext::review_pass(pass_num, current_plan.clone(), focus)
-            };
-
-            // Get the pass-specific prompt
-            let pass_prompt = match prompt_loader.pass_prompt(pass_num, &ctx) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to load pass {} prompt: {}", pass_num, e);
-                    self.app
-                        .state_mut()
-                        .set_error(format!("Failed to load pass {} prompt", pass_num));
-                    return;
-                }
-            };
-
-            // Build the LLM request
-            let user_message = if pass_num == 1 {
-                format!(
-                    "{}\n\n---\n\n# Conversation to convert to Plan:\n\n{}",
-                    pass_prompt, conversation_text
-                )
-            } else {
-                format!("{}\n\n---\n\n# Current Plan:\n\n{}", pass_prompt, current_plan)
-            };
-
-            let completion_request = CompletionRequest {
-                system_prompt: system_prompt.clone(),
-                messages: vec![Message::user(&user_message)],
-                tools: vec![],
-                max_tokens: 8192,
-            };
-
-            // Execute the pass
-            info!("Sending pass {} request to LLM...", pass_num);
-            let pass_output = match llm.complete(completion_request).await {
-                Ok(response) => {
-                    let output = response.content.unwrap_or_default();
-                    info!("Pass {} complete: {} chars", pass_num, output.len());
-                    output
-                }
-                Err(e) => {
-                    warn!("Pass {} failed: {}", pass_num, e);
-                    self.app
-                        .state_mut()
-                        .set_error(format!("Pass {} failed: {}", pass_num, e));
-                    return;
-                }
-            };
-
-            // Check for convergence (no significant changes)
-            let changed = self.plan_changed_significantly(&current_plan, &pass_output);
-
-            if changed {
-                consecutive_unchanged = 0;
-                info!("Pass {} made changes", pass_num);
-            } else {
-                consecutive_unchanged += 1;
-                info!(
-                    "Pass {} converged (no changes), consecutive={}",
-                    pass_num, consecutive_unchanged
-                );
-            }
-
-            // Update current plan
-            current_plan = pass_output.clone();
-            pass_outputs.push(pass_output);
-
-            // Check for early convergence (two consecutive unchanged passes after MIN_PASSES)
-            if pass_num >= MIN_PASSES && consecutive_unchanged >= 2 {
-                info!("Early convergence after pass {} (two consecutive unchanged)", pass_num);
-                self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-                    "  Plan converged after {} passes",
-                    pass_num
-                )));
-                break;
-            }
-        }
-
-        info!("Rule of Five complete: {} passes executed", pass_outputs.len());
-
-        // Create the plan execution with Draft status
-        info!("Creating LoopExecution with Draft status...");
-        let mut execution = crate::domain::LoopExecution::new("plan", &title);
-        execution.set_title(title.clone());
-        execution.set_status(crate::domain::LoopExecutionStatus::Draft);
-        info!(
-            "LoopExecution created: id={}, loop_type={}, status={:?}",
-            execution.id, execution.loop_type, execution.status
-        );
-
-        // Store the final plan and pass count in context
-        execution.set_context(serde_json::json!({
-            "user-request": conversation_text,
-            "review-passes-completed": pass_outputs.len(),
-            "final-plan": current_plan
-        }));
-
-        // Create the execution record
-        info!("Calling state_manager.create_execution()...");
-        let exec_id = match state_manager.create_execution(execution).await {
-            Ok(id) => {
-                info!("Draft execution created successfully: {}", id);
-                id
-            }
-            Err(e) => {
-                warn!("Failed to create draft execution: {}", e);
-                self.app.state_mut().set_error(format!("Failed to create draft: {}", e));
-                return;
-            }
-        };
-
-        // Create the plan directory and file
-        let plan_dir = self.worktree.join(".taskdaemon/plans").join(&exec_id);
-        info!("Creating plan directory: {:?}", plan_dir);
-        if let Err(e) = std::fs::create_dir_all(&plan_dir) {
-            warn!("Failed to create plan directory: {}", e);
-            self.app
-                .state_mut()
-                .set_error(format!("Failed to create plan directory: {}", e));
-            return;
-        }
-        info!("Plan directory created successfully");
-
-        // Write the final plan.md file
-        let plan_content = format!(
-            r#"# Plan: {}
-
-**Status:** Draft
-**Created:** {}
-**ID:** {}
-**Review Passes:** {} of 5
-
----
-
-{}
-
----
-
-*This plan has been reviewed through {} Rule of Five passes. Use `s` in the Executions view to start execution.*
-"#,
-            title,
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
-            exec_id,
-            pass_outputs.len(),
-            current_plan,
-            pass_outputs.len()
-        );
-
-        let plan_path = plan_dir.join("plan.md");
-        info!("Writing plan.md to {:?}", plan_path);
-        if let Err(e) = std::fs::write(&plan_path, &plan_content) {
-            warn!("Failed to write plan file: {}", e);
-            self.app
-                .state_mut()
-                .set_error(format!("Failed to write plan file: {}", e));
-            return;
-        }
-        info!("plan.md written successfully");
-
-        // Extract hash for display (first 6 chars)
-        let hash = &exec_id[..6.min(exec_id.len())];
-
-        // Show success message
-        self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
-            "Created draft plan: {} ({})\n{} review passes completed.\nView in Executions with Tab, then press `s` to start execution.",
-            title, hash, pass_outputs.len()
-        )));
-
-        info!(
-            "=== create_plan_draft COMPLETE: exec_id={}, title={}, passes={}, plan_path={:?} ===",
-            exec_id,
-            title,
-            pass_outputs.len(),
-            plan_path
-        );
-
-        // Force refresh to show the new draft
-        self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
     }
 
     /// Check if the plan changed significantly between passes

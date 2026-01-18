@@ -49,6 +49,17 @@ impl FocusArea {
             Self::Clarity => "Clarity",
         }
     }
+
+    /// Get the template name for this focus area
+    pub fn template_name(&self) -> &'static str {
+        match self {
+            Self::Completeness => "plan-completeness",
+            Self::Correctness => "plan-correctness",
+            Self::EdgeCases => "plan-edge-cases",
+            Self::Architecture => "plan-architecture",
+            Self::Clarity => "plan-clarity",
+        }
+    }
 }
 
 impl std::fmt::Display for FocusArea {
@@ -197,15 +208,9 @@ impl PromptLoader {
             .map_err(|e| eyre!("Failed to render template {}: {}", template_name, e))
     }
 
-    /// Get the system prompt for plan creation
-    pub fn system_prompt(&self) -> Result<String> {
-        self.load_template("plan-system")
-    }
-
-    /// Get the prompt for a specific pass
-    pub fn pass_prompt(&self, pass: u8, context: &PromptContext) -> Result<String> {
-        let template_name = format!("plan-pass-{}", pass);
-        self.render(&template_name, context)
+    /// Get the consolidated plan prompt (includes Rule of Five)
+    pub fn plan_prompt(&self) -> Result<String> {
+        self.load_template("plan")
     }
 }
 
@@ -254,30 +259,15 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_loader_embedded_only() {
+    fn test_prompt_loader_plan() {
         let loader = PromptLoader::embedded_only();
 
-        // Should load system prompt
-        let system = loader.system_prompt();
-        assert!(system.is_ok());
-        assert!(system.unwrap().contains("software architect"));
-    }
-
-    #[test]
-    fn test_prompt_loader_all_passes() {
-        let loader = PromptLoader::embedded_only();
-
-        for pass in 1..=5 {
-            let focus = FocusArea::from_pass(pass).unwrap();
-            let ctx = if pass == 1 {
-                PromptContext::first_pass("test".to_string())
-            } else {
-                PromptContext::review_pass(pass, "previous".to_string(), focus)
-            };
-
-            let result = loader.pass_prompt(pass, &ctx);
-            assert!(result.is_ok(), "Failed to load pass {}: {:?}", pass, result);
-        }
+        // Should load consolidated plan prompt
+        let plan = loader.plan_prompt();
+        assert!(plan.is_ok());
+        let content = plan.unwrap();
+        assert!(content.contains("software architect"));
+        assert!(content.contains("Rule of Five"));
     }
 
     #[test]

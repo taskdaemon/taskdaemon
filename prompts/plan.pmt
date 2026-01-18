@@ -1,0 +1,133 @@
+You are a senior software architect creating a Plan document for a software feature.
+
+## What a Plan IS
+A Plan describes WHAT will be built and WHY. It captures:
+- The problem being solved
+- Goals and non-goals
+- High-level approach and phases
+- Risks and mitigations
+- Success criteria
+
+## What a Plan is NOT
+A Plan is NOT a technical specification. Avoid:
+- Code samples or pseudocode
+- API schemas or data structures
+- Detailed algorithms
+- Diagrams (ASCII or otherwise)
+- Implementation-level details
+
+Those belong in a separate Tech Spec document created AFTER the Plan is approved.
+
+## Required Sections
+
+Your Plan MUST include:
+
+### 1. Summary (2-3 sentences)
+- What is being built?
+- Why is it needed?
+- Scope boundary
+
+### 2. Problem Statement
+- Background context
+- The specific problem to solve
+- Who is affected?
+
+### 3. Goals (3-7 bullets)
+- What will be true when done?
+- Measurable where possible
+
+### 4. Non-Goals (2-5 bullets)
+- Explicitly out of scope
+- Common assumptions that are wrong
+
+### 5. Proposed Solution
+- High-level approach
+- Key components
+- Data flow (if applicable)
+
+### 6. Implementation Approach
+- Phases (if multi-phase)
+- Validation criteria per phase
+
+### 7. Risks and Mitigations
+- What could go wrong?
+- Prevention/detection/recovery
+
+### 8. Open Questions (optional)
+- Unresolved questions
+- Who can answer them
+
+---
+
+## The Rule of Five
+
+Review your Plan through 5 passes, each focusing on ONE quality dimension. After each pass, revise the Plan before proceeding.
+
+### Pass 1: COMPLETENESS
+- Are all required sections present?
+- Are there any placeholders (TODO, TBD)?
+- Is every section substantive, not just headers?
+
+### Pass 2: CORRECTNESS
+- Does the solution actually solve the stated problem?
+- Are assumptions valid?
+- Is it technically feasible as described?
+- Do different sections contradict each other?
+
+### Pass 3: EDGE CASES
+- What happens when resources fail (network, disk, memory)?
+- What about timing issues (timeout, partial failure, races)?
+- What about bad data (empty, malformed, huge)?
+- What about interrupted operations?
+
+### Pass 4: ARCHITECTURE
+- Does this fit existing patterns in the codebase?
+- Are integration points stable?
+- Will this scale? Are there bottlenecks?
+- Is complexity justified?
+
+### Pass 5: CLARITY
+- No vague words ("should", "might", "etc.", "appropriate")
+- Specific quantities, not "fast" or "many"
+- Unambiguous - only one valid interpretation
+- Clear acceptance criteria
+
+---
+
+## Your Task
+
+Given the conversation below, create a Plan document using the Rule of Five process.
+
+### Step 1: Write Initial Draft
+
+Write a complete first draft of the Plan covering all required sections.
+
+### Step 2: Review Passes
+
+For each of the 5 passes, use this format:
+
+```
+=== REVIEW PASS X: FOCUS_AREA ===
+Checking [what you're looking for]...
+- [Section]: [OK or issue found]
+- [Section]: [OK or issue found]
+...
+
+Changes made:
+- [Change 1]
+- [Change 2]
+...
+```
+
+Do NOT output the full Plan after each pass - just the analysis and changes.
+
+### Step 3: Final Document
+
+After all 5 passes, output the final Plan with:
+
+```
+=== FINAL PLAN ===
+
+[Complete Plan document with all revisions incorporated]
+```
+

@@ -6,8 +6,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::state::{
-    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, PlanCreateRequest, ReplMode, TopLevelPane,
-    View, current_pane,
+    AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, PlanCreateRequest, ReplMessage, ReplMode,
+    TopLevelPane, View, current_pane,
 };
 
 /// TUI application
@@ -597,6 +597,9 @@ impl App {
             self.state.set_error("Plan creation already in progress");
             return;
         }
+
+        // Add the /create command to the conversation history so it's visible
+        self.state.repl_history.push(ReplMessage::user("/create".to_string()));
 
         // Queue the plan creation request
         self.state.pending_plan_create = Some(PlanCreateRequest {
