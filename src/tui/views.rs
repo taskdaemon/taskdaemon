@@ -826,7 +826,7 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
         }
     }
 
-    // Plan content section
+    // Plan content section (rendered as markdown)
     if let Some(ref plan) = data.plan_content {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
@@ -834,9 +834,9 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )]));
         lines.push(Line::from(""));
-        // Add each line of the plan content
-        for line in plan.lines() {
-            lines.push(Line::from(Span::raw(line.to_string())));
+        let markdown_text = tui_markdown::from_str(plan);
+        for line in markdown_text.lines {
+            lines.push(line.clone());
         }
     }
 

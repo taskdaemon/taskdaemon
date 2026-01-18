@@ -46,7 +46,7 @@ grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 grep-matcher = "0.1.8"
 fast_html2md = "0.0.55"
-# Dependencies will be added via cargo add
+tui-markdown = "0.3"
 
 [build-dependencies]
 
