@@ -283,7 +283,7 @@ fn tool_summary(tool_name: &str, content: &str) -> Option<String> {
             let file_count = content.lines().filter(|l| !l.is_empty()).count();
             Some(format!("Found {} files", file_count))
         }
-        "edit_file" | "Edit" => {
+        "edit" | "Edit" => {
             // Count + and - lines for diff summary
             let added = content.lines().filter(|l| l.starts_with('+')).count();
             let removed = content.lines().filter(|l| l.starts_with('-')).count();
@@ -310,7 +310,10 @@ fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
                 for (i, content_line) in msg.content.lines().enumerate() {
                     if i == 0 {
                         lines.push(Line::from(vec![
-                            Span::styled("> ", Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "> ",
+                                Style::default().fg(colors::REPL_USER).add_modifier(Modifier::BOLD),
+                            ),
                             Span::styled(content_line, Style::default().fg(colors::REPL_USER)),
                         ]));
                     } else {
@@ -347,9 +350,10 @@ fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
                 };
 
                 // Header line
-                lines.push(Line::from(vec![
-                    Span::styled(header, Style::default().fg(colors::REPL_TOOL)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    header,
+                    Style::default().fg(colors::REPL_TOOL),
+                )]));
 
                 let line_count = msg.line_count();
                 let is_collapsible = line_count > COLLAPSE_THRESHOLD;
@@ -375,12 +379,10 @@ fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
                         }
                         // Show collapse indicator
                         let hidden = line_count - COLLAPSE_PREVIEW_LINES;
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("  … +{} lines (ctrl+o to expand)", hidden),
-                                Style::default().fg(colors::DIM),
-                            ),
-                        ]));
+                        lines.push(Line::from(vec![Span::styled(
+                            format!("  … +{} lines (ctrl+o to expand)", hidden),
+                            Style::default().fg(colors::DIM),
+                        )]));
                     }
                 } else {
                     // Show all content
@@ -398,7 +400,10 @@ fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
                 for (i, content_line) in msg.content.lines().enumerate() {
                     if i == 0 {
                         lines.push(Line::from(vec![
-                            Span::styled("! ", Style::default().fg(colors::REPL_ERROR).add_modifier(Modifier::BOLD)),
+                            Span::styled(
+                                "! ",
+                                Style::default().fg(colors::REPL_ERROR).add_modifier(Modifier::BOLD),
+                            ),
                             Span::styled(content_line, Style::default().fg(colors::REPL_ERROR)),
                         ]));
                     } else {

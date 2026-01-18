@@ -1,4 +1,4 @@
-//! run_command tool - execute shell commands
+//! bash tool - execute shell commands
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,7 +12,7 @@ pub struct RunCommandTool;
 #[async_trait]
 impl Tool for RunCommandTool {
     fn name(&self) -> &'static str {
-        "run_command"
+        "bash"
     }
 
     fn description(&self) -> &'static str {

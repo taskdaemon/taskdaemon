@@ -391,7 +391,7 @@ mod tests {
             system_prompt: "You are helpful".to_string(),
             messages: vec![Message::user("Read a file")],
             tools: vec![ToolDefinition::new(
-                "read_file",
+                "read",
                 "Read a file",
                 serde_json::json!({
                     "type": "object",
@@ -406,7 +406,7 @@ mod tests {
         let body = client.build_request_body(&request);
 
         assert!(body["tools"].is_array());
-        assert_eq!(body["tools"][0]["name"], "read_file");
+        assert_eq!(body["tools"][0]["name"], "read");
     }
 
     #[test]

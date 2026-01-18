@@ -166,13 +166,13 @@ fn default_iteration_timeout() -> u64 {
 
 fn default_tools() -> Vec<String> {
     vec![
-        "read_file".to_string(),
-        "write_file".to_string(),
-        "edit_file".to_string(),
-        "list_directory".to_string(),
+        "read".to_string(),
+        "write".to_string(),
+        "edit".to_string(),
+        "list".to_string(),
         "glob".to_string(),
         "grep".to_string(),
-        "run_command".to_string(),
+        "bash".to_string(),
         "complete_task".to_string(),
     ]
 }
@@ -521,8 +521,8 @@ mod tests {
     fn test_builtin_phase_parses() {
         let loop_type: LoopType = serde_yaml::from_str(BUILTIN_PHASE).unwrap();
         assert!(!loop_type.prompt_template.is_empty());
-        // Phase is a decomposition step (not implementation), so no run_command
-        assert!(!loop_type.tools.contains(&"run_command".to_string()));
+        // Phase is a decomposition step (not implementation), so no bash
+        assert!(!loop_type.tools.contains(&"bash".to_string()));
         assert_eq!(loop_type.parent, Some("spec".to_string()));
     }
 
@@ -530,8 +530,8 @@ mod tests {
     fn test_builtin_ralph_has_parent_phase() {
         let loop_type: LoopType = serde_yaml::from_str(BUILTIN_RALPH).unwrap();
         assert!(!loop_type.prompt_template.is_empty());
-        // Ralph is the implementation step, needs run_command
-        assert!(loop_type.tools.contains(&"run_command".to_string()));
+        // Ralph is the implementation step, needs bash
+        assert!(loop_type.tools.contains(&"bash".to_string()));
         assert_eq!(loop_type.parent, Some("phase".to_string()));
     }
 

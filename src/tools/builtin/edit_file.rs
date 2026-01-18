@@ -1,4 +1,4 @@
-//! edit_file tool - replace strings in a file
+//! edit tool - replace strings in a file
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,11 +12,11 @@ pub struct EditFileTool;
 #[async_trait]
 impl Tool for EditFileTool {
     fn name(&self) -> &'static str {
-        "edit_file"
+        "edit"
     }
 
     fn description(&self) -> &'static str {
-        "Replace a specific string in a file. Requires prior read_file call."
+        "Replace a specific string in a file. Requires prior read call."
     }
 
     fn input_schema(&self) -> Value {
@@ -69,7 +69,7 @@ impl Tool for EditFileTool {
 
         // Must read file first
         if !ctx.was_read(&full_path).await {
-            return ToolResult::error("Must read_file before editing. Read the file first to see current content.");
+            return ToolResult::error("Must read before editing. Read the file first to see current content.");
         }
 
         let content = match tokio::fs::read_to_string(&full_path).await {
@@ -176,7 +176,7 @@ mod tests {
             .await;
 
         assert!(result.is_error);
-        assert!(result.content.contains("Must read_file before editing"));
+        assert!(result.content.contains("Must read before editing"));
     }
 
     #[tokio::test]

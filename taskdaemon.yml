@@ -119,10 +119,10 @@ plan:
   outputs:
     - plan-markdown
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
     - complete_task
@@ -185,10 +185,10 @@ spec:
     - spec-markdowns
     - specs-jsonl
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
     - complete_task
@@ -268,13 +268,13 @@ phase:
   outputs:
     - committed-code
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
-    - run_command
+    - bash
     - query_loop
     - share_data
     - complete_task
@@ -337,13 +337,13 @@ ralph:
   outputs:
     - task-artifacts
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
-    - run_command
+    - bash
     - query_loop
     - share_data
     - complete_task

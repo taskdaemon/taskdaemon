@@ -21,15 +21,15 @@ impl ToolExecutor {
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
         // File system tools
-        tools.insert("read_file".into(), Box::new(ReadFileTool));
-        tools.insert("write_file".into(), Box::new(WriteFileTool));
-        tools.insert("edit_file".into(), Box::new(EditFileTool));
-        tools.insert("list_directory".into(), Box::new(ListDirectoryTool));
+        tools.insert("read".into(), Box::new(ReadFileTool));
+        tools.insert("write".into(), Box::new(WriteFileTool));
+        tools.insert("edit".into(), Box::new(EditFileTool));
+        tools.insert("list".into(), Box::new(ListDirectoryTool));
         tools.insert("glob".into(), Box::new(GlobTool));
         tools.insert("grep".into(), Box::new(GrepTool));
 
         // Command execution
-        tools.insert("run_command".into(), Box::new(RunCommandTool));
+        tools.insert("bash".into(), Box::new(RunCommandTool));
 
         // Task completion
         tools.insert("complete_task".into(), Box::new(CompleteTaskTool));
@@ -122,11 +122,11 @@ mod tests {
     fn test_standard_executor_has_basic_tools() {
         let executor = ToolExecutor::standard();
 
-        assert!(executor.has_tool("read_file"));
-        assert!(executor.has_tool("write_file"));
-        assert!(executor.has_tool("edit_file"));
-        assert!(executor.has_tool("run_command"));
-        assert!(executor.has_tool("list_directory"));
+        assert!(executor.has_tool("read"));
+        assert!(executor.has_tool("write"));
+        assert!(executor.has_tool("edit"));
+        assert!(executor.has_tool("bash"));
+        assert!(executor.has_tool("list"));
         assert!(executor.has_tool("glob"));
     }
 
@@ -136,17 +136,17 @@ mod tests {
         let defs = executor.definitions();
 
         assert!(!defs.is_empty());
-        assert!(defs.iter().any(|d| d.name == "read_file"));
+        assert!(defs.iter().any(|d| d.name == "read"));
     }
 
     #[test]
     fn test_definitions_for_subset() {
         let executor = ToolExecutor::standard();
-        let defs = executor.definitions_for(&["read_file".to_string(), "write_file".to_string()]);
+        let defs = executor.definitions_for(&["read".to_string(), "write".to_string()]);
 
         assert_eq!(defs.len(), 2);
-        assert!(defs.iter().any(|d| d.name == "read_file"));
-        assert!(defs.iter().any(|d| d.name == "write_file"));
+        assert!(defs.iter().any(|d| d.name == "read"));
+        assert!(defs.iter().any(|d| d.name == "write"));
     }
 
     #[tokio::test]

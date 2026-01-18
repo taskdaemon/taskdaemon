@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn test_tool_definition_to_anthropic_schema() {
         let tool = ToolDefinition::new(
-            "read_file",
+            "read",
             "Read a file",
             serde_json::json!({
                 "type": "object",
@@ -324,7 +324,7 @@ mod tests {
         );
 
         let schema = tool.to_anthropic_schema();
-        assert_eq!(schema["name"], "read_file");
+        assert_eq!(schema["name"], "read");
         assert_eq!(schema["description"], "Read a file");
         assert!(schema["input_schema"].is_object());
     }

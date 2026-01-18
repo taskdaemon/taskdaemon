@@ -52,10 +52,10 @@ outputs:
   - phase-markdowns
   - phases-jsonl
 tools:
-  - read_file
-  - write_file
-  - edit_file
-  - list_directory
+  - read
+  - write
+  - edit
+  - list
   - glob
   - grep
   - query_loop

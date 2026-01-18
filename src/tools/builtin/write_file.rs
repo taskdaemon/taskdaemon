@@ -1,4 +1,4 @@
-//! write_file tool - write content to a file
+//! write tool - write content to a file
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,7 +12,7 @@ pub struct WriteFileTool;
 #[async_trait]
 impl Tool for WriteFileTool {
     fn name(&self) -> &'static str {
-        "write_file"
+        "write"
     }
 
     fn description(&self) -> &'static str {

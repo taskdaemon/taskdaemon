@@ -1,4 +1,4 @@
-//! list_directory tool - list files and directories
+//! list tool - list files and directories
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,7 +12,7 @@ pub struct ListDirectoryTool;
 #[async_trait]
 impl Tool for ListDirectoryTool {
     fn name(&self) -> &'static str {
-        "list_directory"
+        "list"
     }
 
     fn description(&self) -> &'static str {

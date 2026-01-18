@@ -1,4 +1,4 @@
-//! read_file tool - read file contents with line numbers
+//! read tool - read file contents with line numbers
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -12,7 +12,7 @@ pub struct ReadFileTool;
 #[async_trait]
 impl Tool for ReadFileTool {
     fn name(&self) -> &'static str {
-        "read_file"
+        "read"
     }
 
     fn description(&self) -> &'static str {

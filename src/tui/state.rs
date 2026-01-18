@@ -349,8 +349,7 @@ impl ReplMessage {
 
     /// Check if this is a tool result that can be collapsed
     pub fn is_collapsible(&self) -> bool {
-        matches!(self.role, ReplRole::ToolResult { .. })
-            && self.content.lines().count() > COLLAPSE_THRESHOLD
+        matches!(self.role, ReplRole::ToolResult { .. }) && self.content.lines().count() > COLLAPSE_THRESHOLD
     }
 
     /// Toggle expanded state
@@ -761,10 +760,10 @@ impl AppState {
     /// Toggle expand/collapse for the most recent collapsible tool result
     pub fn toggle_tool_expansion(&mut self) {
         // Find the most recent collapsible tool result
-        if let Some(idx) = self.repl_history.iter().rposition(|m| m.is_collapsible()) {
-            if let Some(msg) = self.repl_history.get_mut(idx) {
-                msg.toggle_expanded();
-            }
+        if let Some(idx) = self.repl_history.iter().rposition(|m| m.is_collapsible())
+            && let Some(msg) = self.repl_history.get_mut(idx)
+        {
+            msg.toggle_expanded();
         }
     }
 }

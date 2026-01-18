@@ -228,11 +228,11 @@ mod tests {
                 content: "response".to_string(),
             },
             EntryType::ToolCall {
-                name: "read_file".to_string(),
+                name: "read".to_string(),
                 input: "{\"path\": \"/tmp/test\"}".to_string(),
             },
             EntryType::ToolResult {
-                name: "read_file".to_string(),
+                name: "read".to_string(),
                 output: "file contents".to_string(),
             },
             EntryType::Error {

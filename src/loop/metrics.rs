@@ -366,12 +366,12 @@ mod tests {
     #[test]
     fn test_loop_stats_record_tool_call() {
         let mut stats = LoopStats::new("exec-1", "phase");
-        stats.record_tool_call("read_file");
-        stats.record_tool_call("write_file");
-        stats.record_tool_call("read_file");
+        stats.record_tool_call("read");
+        stats.record_tool_call("write");
+        stats.record_tool_call("read");
 
-        assert_eq!(stats.tool_calls.get("read_file"), Some(&2));
-        assert_eq!(stats.tool_calls.get("write_file"), Some(&1));
+        assert_eq!(stats.tool_calls.get("read"), Some(&2));
+        assert_eq!(stats.tool_calls.get("write"), Some(&1));
     }
 
     #[test]

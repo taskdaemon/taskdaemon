@@ -206,13 +206,13 @@ impl TuiRunner {
             r#"You are an AI coding assistant in an interactive REPL.
 
 You have access to the following tools:
-- read_file: Read file contents
-- write_file: Create or overwrite a file
-- edit_file: Make targeted edits to a file
-- list_directory: List files in a directory
+- read: Read file contents
+- write: Create or overwrite a file
+- edit: Make targeted edits to a file
+- list: List files in a directory
 - glob: Find files matching a pattern
 - grep: Search file contents with regex
-- run_command: Execute shell commands
+- bash: Execute shell commands
 
 Guidelines:
 - Execute tools directly when needed - don't ask for permission
@@ -246,8 +246,8 @@ Do NOT generate the full plan during this conversation.
 Focus on gathering comprehensive requirements first.
 
 You have access to these tools for exploring the codebase:
-- read_file: Read file contents
-- list_directory: List files in a directory
+- read: Read file contents
+- list: List files in a directory
 - glob: Find files matching a pattern
 - grep: Search file contents with regex
 
@@ -267,13 +267,13 @@ Working directory: {}"#,
     /// Get tool definitions for the REPL
     fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
         let tool_names = vec![
-            "read_file".to_string(),
-            "write_file".to_string(),
-            "edit_file".to_string(),
-            "list_directory".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+            "edit".to_string(),
+            "list".to_string(),
             "glob".to_string(),
             "grep".to_string(),
-            "run_command".to_string(),
+            "bash".to_string(),
         ];
 
         self.tool_executor.definitions_for(&tool_names)
@@ -1155,11 +1155,7 @@ Working directory: {}"#,
                     let val_str = match v {
                         serde_json::Value::String(s) => {
                             // Truncate long strings
-                            if s.len() > 40 {
-                                format!("\"{}...\"", &s[..37])
-                            } else {
-                                format!("\"{}\"", s)
-                            }
+                            if s.len() > 40 { format!("\"{}...\"", &s[..37]) } else { format!("\"{}\"", s) }
                         }
                         serde_json::Value::Bool(b) => b.to_string(),
                         serde_json::Value::Number(n) => n.to_string(),
@@ -1539,11 +1535,7 @@ Working directory: {}"#,
                     };
 
                     // Load plan content from disk if it exists
-                    let plan_path = self
-                        .worktree
-                        .join(".taskdaemon/plans")
-                        .join(&exec.id)
-                        .join("plan.md");
+                    let plan_path = self.worktree.join(".taskdaemon/plans").join(&exec.id).join("plan.md");
                     let plan_content = std::fs::read_to_string(&plan_path).ok();
 
                     Some(DescribeData {
