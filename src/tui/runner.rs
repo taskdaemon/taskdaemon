@@ -1066,6 +1066,10 @@ Working directory: {}"#,
         // Wait for forwarding to complete
         let _ = forward_task.await;
 
+        // Extract just the final plan (after "=== FINAL PLAN ===" marker)
+        let final_plan = Self::extract_final_plan(&plan_output);
+        info!("Extracted final plan: {} chars", final_plan.len());
+
         // Create the plan execution with Draft status
         let mut execution = crate::domain::LoopExecution::new("plan", &title);
         execution.set_title(title.clone());
@@ -1073,7 +1077,7 @@ Working directory: {}"#,
 
         execution.set_context(serde_json::json!({
             "user-request": conversation_text,
-            "final-plan": plan_output
+            "final-plan": final_plan
         }));
 
         // Create the execution record
@@ -1105,7 +1109,7 @@ Working directory: {}"#,
             return;
         }
 
-        // Write the final plan.md file
+        // Write the final plan.md file (just the extracted plan, not review passes)
         let plan_content = format!(
             r#"# Plan: {}
 
@@ -1119,7 +1123,7 @@ Working directory: {}"#,
             title,
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
             exec_id,
-            plan_output
+            final_plan
         );
 
         let plan_path = plan_dir.join("plan.md");
@@ -1143,6 +1147,23 @@ Working directory: {}"#,
                 plan_content,
             })
             .await;
+    }
+
+    /// Extract the final plan from LLM output (content after "=== FINAL PLAN ===" marker)
+    fn extract_final_plan(llm_output: &str) -> String {
+        // Look for the final plan marker
+        const MARKER: &str = "=== FINAL PLAN ===";
+
+        if let Some(pos) = llm_output.find(MARKER) {
+            // Extract everything after the marker
+            let after_marker = &llm_output[pos + MARKER.len()..];
+            after_marker.trim().to_string()
+        } else {
+            // Fallback: if no marker found, use the entire output
+            // This handles cases where LLM didn't follow the format
+            warn!("No '=== FINAL PLAN ===' marker found, using full output");
+            llm_output.trim().to_string()
+        }
     }
 
     /// Generate title from conversation (static version for background task)
