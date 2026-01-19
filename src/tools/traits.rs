@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tracing::debug;
 
 use super::context::ToolContext;
 
@@ -31,6 +32,7 @@ pub struct ToolResult {
 impl ToolResult {
     /// Create a successful result
     pub fn success(content: impl Into<String>) -> Self {
+        debug!("ToolResult::success: called");
         Self {
             content: content.into(),
             is_error: false,
@@ -39,6 +41,7 @@ impl ToolResult {
 
     /// Create an error result
     pub fn error(content: impl Into<String>) -> Self {
+        debug!("ToolResult::error: called");
         Self {
             content: content.into(),
             is_error: true,

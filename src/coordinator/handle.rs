@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use eyre::{Result, eyre};
 use tokio::sync::{mpsc, oneshot};
+use tracing::debug;
 use uuid::Uuid;
 
 use super::messages::{CoordMessage, CoordRequest, CoordinatorMetrics};
@@ -28,6 +29,7 @@ pub struct CoordinatorHandle {
 impl CoordinatorHandle {
     /// Create a new handle for an execution
     pub(crate) fn new(tx: mpsc::Sender<CoordRequest>, rx: mpsc::Receiver<CoordMessage>, exec_id: String) -> Self {
+        debug!(%exec_id, "CoordinatorHandle::new: called");
         Self {
             tx,
             rx: Some(std::sync::Arc::new(tokio::sync::Mutex::new(rx))),
@@ -37,16 +39,19 @@ impl CoordinatorHandle {
 
     /// Create a handle without a receiver (for sending only)
     pub(crate) fn sender_only(tx: mpsc::Sender<CoordRequest>, exec_id: String) -> Self {
+        debug!(%exec_id, "CoordinatorHandle::sender_only: called");
         Self { tx, rx: None, exec_id }
     }
 
     /// Get this handle's execution ID
     pub fn exec_id(&self) -> &str {
+        debug!(exec_id = %self.exec_id, "CoordinatorHandle::exec_id: called");
         &self.exec_id
     }
 
     /// Broadcast an event to all subscribers
     pub async fn alert(&self, event_type: &str, data: serde_json::Value) -> Result<()> {
+        debug!(exec_id = %self.exec_id, %event_type, "CoordinatorHandle::alert: called");
         self.tx
             .send(CoordRequest::Alert {
                 from_exec_id: self.exec_id.clone(),
@@ -56,11 +61,13 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::alert: sent");
         Ok(())
     }
 
     /// Send a query to a specific execution and wait for a reply
     pub async fn query(&self, target_exec_id: &str, question: &str, timeout: Duration) -> Result<String> {
+        debug!(exec_id = %self.exec_id, %target_exec_id, %question, ?timeout, "CoordinatorHandle::query: called");
         let query_id = Uuid::now_v7().to_string();
         let (reply_tx, reply_rx) = oneshot::channel();
 
@@ -76,6 +83,7 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!(%query_id, "CoordinatorHandle::query: waiting for reply");
         // Wait for reply (the coordinator handles the timeout)
         reply_rx
             .await
@@ -84,6 +92,7 @@ impl CoordinatorHandle {
 
     /// Reply to a query (called by the receiver of a Query message)
     pub async fn reply_query(&self, query_id: &str, answer: &str) -> Result<()> {
+        debug!(exec_id = %self.exec_id, %query_id, %answer, "CoordinatorHandle::reply_query: called");
         self.tx
             .send(CoordRequest::QueryReply {
                 query_id: query_id.to_string(),
@@ -92,11 +101,13 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::reply_query: sent");
         Ok(())
     }
 
     /// Cancel a pending query
     pub async fn cancel_query(&self, query_id: &str) -> Result<()> {
+        debug!(exec_id = %self.exec_id, %query_id, "CoordinatorHandle::cancel_query: called");
         self.tx
             .send(CoordRequest::QueryCancel {
                 query_id: query_id.to_string(),
@@ -104,11 +115,13 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::cancel_query: sent");
         Ok(())
     }
 
     /// Share data with a specific execution
     pub async fn share(&self, target_exec_id: &str, share_type: &str, data: serde_json::Value) -> Result<()> {
+        debug!(exec_id = %self.exec_id, %target_exec_id, %share_type, "CoordinatorHandle::share: called");
         self.tx
             .send(CoordRequest::Share {
                 from_exec_id: self.exec_id.clone(),
@@ -119,11 +132,13 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::share: sent");
         Ok(())
     }
 
     /// Subscribe to an event type
     pub async fn subscribe(&self, event_type: &str) -> Result<()> {
+        debug!(exec_id = %self.exec_id, %event_type, "CoordinatorHandle::subscribe: called");
         self.tx
             .send(CoordRequest::Subscribe {
                 exec_id: self.exec_id.clone(),
@@ -132,11 +147,13 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::subscribe: sent");
         Ok(())
     }
 
     /// Unsubscribe from an event type
     pub async fn unsubscribe(&self, event_type: &str) -> Result<()> {
+        debug!(exec_id = %self.exec_id, %event_type, "CoordinatorHandle::unsubscribe: called");
         self.tx
             .send(CoordRequest::Unsubscribe {
                 exec_id: self.exec_id.clone(),
@@ -145,11 +162,13 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::unsubscribe: sent");
         Ok(())
     }
 
     /// Request another execution to stop gracefully
     pub async fn stop(&self, target_exec_id: &str, reason: &str) -> Result<()> {
+        debug!(exec_id = %self.exec_id, %target_exec_id, %reason, "CoordinatorHandle::stop: called");
         self.tx
             .send(CoordRequest::Stop {
                 from_exec_id: self.exec_id.clone(),
@@ -159,6 +178,7 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::stop: sent");
         Ok(())
     }
 
@@ -166,23 +186,41 @@ impl CoordinatorHandle {
     ///
     /// Returns None if the channel is closed or if this is a sender-only handle.
     pub async fn recv(&self) -> Option<CoordMessage> {
+        debug!(exec_id = %self.exec_id, "CoordinatorHandle::recv: called");
         let rx = self.rx.as_ref()?;
+        debug!("CoordinatorHandle::recv: has receiver");
         let mut rx_guard = rx.lock().await;
-        rx_guard.recv().await
+        let result = rx_guard.recv().await;
+        if result.is_some() {
+            debug!("CoordinatorHandle::recv: received message");
+        } else {
+            debug!("CoordinatorHandle::recv: channel closed");
+        }
+        result
     }
 
     /// Try to receive a message without blocking
     ///
     /// Returns None if no message is available or if this is a sender-only handle.
     pub fn try_recv(&self) -> Option<CoordMessage> {
+        debug!(exec_id = %self.exec_id, "CoordinatorHandle::try_recv: called");
         let rx = self.rx.as_ref()?;
+        debug!("CoordinatorHandle::try_recv: has receiver");
         // Use try_lock to avoid blocking
         let mut rx_guard = rx.try_lock().ok()?;
-        rx_guard.try_recv().ok()
+        debug!("CoordinatorHandle::try_recv: acquired lock");
+        let result = rx_guard.try_recv().ok();
+        if result.is_some() {
+            debug!("CoordinatorHandle::try_recv: received message");
+        } else {
+            debug!("CoordinatorHandle::try_recv: no message available");
+        }
+        result
     }
 
     /// Get current coordinator metrics
     pub async fn metrics(&self) -> Result<CoordinatorMetrics> {
+        debug!(exec_id = %self.exec_id, "CoordinatorHandle::metrics: called");
         let (reply_tx, reply_rx) = oneshot::channel();
 
         self.tx
@@ -190,6 +228,7 @@ impl CoordinatorHandle {
             .await
             .map_err(|_| eyre!("Coordinator channel closed"))?;
 
+        debug!("CoordinatorHandle::metrics: waiting for reply");
         reply_rx.await.map_err(|_| eyre!("Coordinator shutdown before reply"))
     }
 }

@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::Path;
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -32,24 +33,41 @@ impl Tool for ListDirectoryTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "ListDirectoryTool::execute: called");
         let path = input["path"].as_str().unwrap_or(".");
+        debug!(%path, "ListDirectoryTool::execute: path parameter");
 
         let full_path = match ctx.validate_path(Path::new(path)) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e.to_string()),
+            Ok(p) => {
+                debug!(?p, "ListDirectoryTool::execute: path validated");
+                p
+            }
+            Err(e) => {
+                debug!(%e, "ListDirectoryTool::execute: path validation failed");
+                return ToolResult::error(e.to_string());
+            }
         };
 
         let mut entries = Vec::new();
         let mut dir = match tokio::fs::read_dir(&full_path).await {
-            Ok(d) => d,
-            Err(e) => return ToolResult::error(format!("Failed to read directory: {}", e)),
+            Ok(d) => {
+                debug!("ListDirectoryTool::execute: directory opened");
+                d
+            }
+            Err(e) => {
+                debug!(%e, "ListDirectoryTool::execute: failed to read directory");
+                return ToolResult::error(format!("Failed to read directory: {}", e));
+            }
         };
 
         while let Ok(Some(entry)) = dir.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
             let metadata = match entry.metadata().await {
                 Ok(m) => m,
-                Err(_) => continue,
+                Err(_) => {
+                    debug!(%name, "ListDirectoryTool::execute: failed to get metadata, skipping entry");
+                    continue;
+                }
             };
 
             let suffix = if metadata.is_dir() { "/" } else { "" };
@@ -57,10 +75,13 @@ impl Tool for ListDirectoryTool {
         }
 
         entries.sort();
+        debug!(entries_count = %entries.len(), "ListDirectoryTool::execute: entries collected");
 
         if entries.is_empty() {
+            debug!("ListDirectoryTool::execute: empty directory");
             ToolResult::success("(empty directory)")
         } else {
+            debug!("ListDirectoryTool::execute: returning entries");
             ToolResult::success(entries.join("\n"))
         }
     }

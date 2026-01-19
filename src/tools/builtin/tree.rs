@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::Path;
+use tracing::debug;
 use walkdir::WalkDir;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
@@ -41,18 +42,29 @@ impl Tool for TreeTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "TreeTool::execute: called");
         let path = input["path"].as_str().unwrap_or(".");
         let depth = input["depth"].as_u64().unwrap_or(3) as usize;
         let show_hidden = input["show_hidden"].as_bool().unwrap_or(false);
+        debug!(%path, %depth, %show_hidden, "TreeTool::execute: parameters");
 
         let full_path = match ctx.validate_path(Path::new(path)) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e.to_string()),
+            Ok(p) => {
+                debug!(?p, "TreeTool::execute: path validated");
+                p
+            }
+            Err(e) => {
+                debug!(%e, "TreeTool::execute: path validation failed");
+                return ToolResult::error(e.to_string());
+            }
         };
 
         if !full_path.is_dir() {
+            debug!("TreeTool::execute: path is not a directory");
             return ToolResult::error(format!("{} is not a directory", path));
         }
+
+        debug!("TreeTool::execute: path is a directory, walking tree");
 
         let mut output = Vec::new();
 
@@ -100,13 +112,17 @@ impl Tool for TreeTool {
             output.push(format!("{}{}{}{}", indent, connector, name, suffix));
         }
 
+        debug!(entries_count = %output.len(), "TreeTool::execute: entries collected");
+
         // Limit output size
         let max_lines = 500;
         if output.len() > max_lines {
+            debug!("TreeTool::execute: truncating output");
             output.truncate(max_lines);
             output.push(format!("... (truncated, {} entries total)", output.len()));
         }
 
+        debug!("TreeTool::execute: returning tree output");
         ToolResult::success(output.join("\n"))
     }
 }

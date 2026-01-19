@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -40,10 +41,15 @@ impl Tool for ShareTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "ShareTool::execute: called");
         // Check for coordinator
         let coordinator = match &ctx.coordinator {
-            Some(c) => c,
+            Some(c) => {
+                debug!("ShareTool::execute: coordinator found");
+                c
+            }
             None => {
+                debug!("ShareTool::execute: no coordinator configured");
                 return ToolResult::error(
                     "Coordination not enabled for this execution. \
                     Share tool requires a coordinator handle to be configured.",
@@ -53,39 +59,58 @@ impl Tool for ShareTool {
 
         // Extract parameters
         let target_exec_id = match input.get("target_exec_id").and_then(|v| v.as_str()) {
-            Some(id) => id,
-            None => return ToolResult::error("Missing required parameter: target_exec_id"),
+            Some(id) => {
+                debug!(%id, "ShareTool::execute: target_exec_id parameter found");
+                id
+            }
+            None => {
+                debug!("ShareTool::execute: missing target_exec_id parameter");
+                return ToolResult::error("Missing required parameter: target_exec_id");
+            }
         };
 
         let share_type = match input.get("share_type").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => return ToolResult::error("Missing required parameter: share_type"),
+            Some(t) => {
+                debug!(%t, "ShareTool::execute: share_type parameter found");
+                t
+            }
+            None => {
+                debug!("ShareTool::execute: missing share_type parameter");
+                return ToolResult::error("Missing required parameter: share_type");
+            }
         };
 
         let data = match input.get("data").and_then(|v| v.as_str()) {
-            Some(d) => d,
-            None => return ToolResult::error("Missing required parameter: data"),
+            Some(d) => {
+                debug!(data_len = %d.len(), "ShareTool::execute: data parameter found");
+                d
+            }
+            None => {
+                debug!("ShareTool::execute: missing data parameter");
+                return ToolResult::error("Missing required parameter: data");
+            }
         };
 
-        tracing::debug!(
+        debug!(
             from = %ctx.exec_id,
             to = %target_exec_id,
             share_type = %share_type,
             data_len = %data.len(),
-            "Sharing data"
+            "ShareTool::execute: sharing data"
         );
 
         // Try to parse data as JSON for better serialization, fallback to string
         let json_data: Value = serde_json::from_str(data).unwrap_or_else(|_| json!(data));
+        debug!("ShareTool::execute: data parsed as JSON");
 
         // Send the share
         match coordinator.share(target_exec_id, share_type, json_data).await {
             Ok(()) => {
-                tracing::debug!(
+                debug!(
                     from = %ctx.exec_id,
                     to = %target_exec_id,
                     share_type = %share_type,
-                    "Data shared successfully"
+                    "ShareTool::execute: data shared successfully"
                 );
                 ToolResult::success(format!(
                     "Successfully shared {} data with {}",
@@ -93,6 +118,12 @@ impl Tool for ShareTool {
                 ))
             }
             Err(e) => {
+                debug!(
+                    from = %ctx.exec_id,
+                    to = %target_exec_id,
+                    error = %e,
+                    "ShareTool::execute: share failed"
+                );
                 tracing::warn!(
                     from = %ctx.exec_id,
                     to = %target_exec_id,

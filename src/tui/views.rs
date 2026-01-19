@@ -37,6 +37,7 @@ mod colors {
 
 /// Get color for a status string
 fn status_color(status: &str) -> Color {
+    debug!(%status, "status_color: called");
     match status {
         "running" => colors::RUNNING,
         "pending" => colors::PENDING,
@@ -55,6 +56,7 @@ fn status_color(status: &str) -> Color {
 
 /// Get status icon
 fn status_icon(status: &str) -> &'static str {
+    debug!(%status, "status_icon: called");
     match status {
         "running" | "in_progress" => "●",
         "pending" | "ready" => "○",
@@ -71,6 +73,7 @@ fn status_icon(status: &str) -> &'static str {
 
 /// Main render function
 pub fn render(state: &mut AppState, frame: &mut Frame) {
+    debug!(?state.current_view, "render: called");
     // Create main layout: header, content, footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -107,6 +110,7 @@ pub fn render(state: &mut AppState, frame: &mut Frame) {
 
 /// Render header with view tabs and metrics
 fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
+    debug!("render_header: called");
     // Build left side: TaskDaemon + view tabs
     let mut left_spans = vec![Span::styled(
         " TaskDaemon ",
@@ -252,6 +256,7 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
 
 /// Calculate the number of lines needed for wrapped input text
 fn calculate_input_height(input: &str, width: u16) -> u16 {
+    debug!(input_len = input.len(), width, "calculate_input_height: called");
     if input.is_empty() {
         return 1; // Minimum 1 line for empty input
     }
@@ -269,6 +274,7 @@ fn calculate_input_height(input: &str, width: u16) -> u16 {
 
 /// Render REPL view with conversation history and input (unified single border)
 fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
+    debug!(?state.repl_mode, "render_repl_view: called");
     // Title changes based on REPL mode
     let title = match state.repl_mode {
         ReplMode::Chat => " Chat ",
@@ -307,6 +313,7 @@ fn render_repl_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
 
 /// Generate a tool-aware summary for collapsed tool output
 fn tool_summary(tool_name: &str, content: &str) -> Option<String> {
+    debug!(%tool_name, content_len = content.len(), "tool_summary: called");
     let line_count = content.lines().count();
 
     match tool_name {
@@ -331,6 +338,7 @@ fn tool_summary(tool_name: &str, content: &str) -> Option<String> {
 
 /// Render REPL history content (no borders)
 fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
+    debug!(history_len = state.repl_history.len(), "render_repl_history: called");
     use super::state::{COLLAPSE_PREVIEW_LINES, COLLAPSE_THRESHOLD};
 
     let mut lines: Vec<Line> = Vec::new();
@@ -553,6 +561,11 @@ fn render_repl_history(state: &mut AppState, frame: &mut Frame, area: Rect) {
 
 /// Render REPL input with wrapping (no borders)
 fn render_repl_input(state: &AppState, frame: &mut Frame, area: Rect) {
+    debug!(
+        input_len = state.repl_input.len(),
+        streaming = state.repl_streaming,
+        "render_repl_input: called"
+    );
     let input_style = if state.repl_streaming {
         Style::default().fg(colors::DIM)
     } else {
@@ -612,6 +625,7 @@ fn render_repl_input(state: &AppState, frame: &mut Frame, area: Rect) {
 
 /// Render Records table (generic Loop records)
 fn render_records_table(state: &AppState, frame: &mut Frame, area: Rect) {
+    debug!("render_records_table: called");
     let filtered = state.filtered_records();
     let selected_idx = state.records_selection.selected_index;
 
@@ -688,6 +702,7 @@ fn render_records_table(state: &AppState, frame: &mut Frame, area: Rect) {
 
 /// Render Executions table (running LoopExecutions)
 fn render_executions_table(state: &AppState, frame: &mut Frame, area: Rect) {
+    debug!("render_executions_table: called");
     let filtered = state.filtered_executions();
     let selected_idx = state.executions_selection.selected_index;
 
@@ -741,6 +756,7 @@ fn render_executions_table(state: &AppState, frame: &mut Frame, area: Rect) {
 
 /// Render hierarchical Loops tree view
 fn render_loops_tree(state: &AppState, frame: &mut Frame, area: Rect) {
+    debug!("render_loops_tree: called");
     let tree = &state.loops_tree;
     let selected_id = tree.selected_id();
 
@@ -835,6 +851,7 @@ fn render_loops_tree(state: &AppState, frame: &mut Frame, area: Rect) {
 
 /// Build tree prefix with Unicode box-drawing characters
 fn build_tree_prefix(tree: &LoopTree, id: &str, depth: usize) -> String {
+    debug!(%id, depth, "build_tree_prefix: called");
     if depth == 0 {
         return String::new();
     }
@@ -887,6 +904,7 @@ fn build_tree_prefix(tree: &LoopTree, id: &str, depth: usize) -> String {
 
 /// Render Logs view
 fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
+    debug!("render_logs_view: called");
     let target_id = if let View::Logs { target_id } = &state.current_view {
         target_id.clone()
     } else {
@@ -948,6 +966,7 @@ fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
 
 /// Render Describe view with scroll support
 fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
+    debug!("render_describe_view: called");
     let data = match &state.describe_data {
         Some(d) => d,
         None => {
@@ -1017,8 +1036,27 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
         }
     }
 
-    // Plan content section (rendered as markdown)
-    if let Some(ref plan) = data.plan_content {
+    // Show output or plan content based on toggle state
+    if state.describe_show_output {
+        // Output section
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Output:",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )]));
+        lines.push(Line::from(""));
+        if let Some(ref output) = data.output {
+            for line in output.lines() {
+                lines.push(Line::from(line.to_string()));
+            }
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "(No output yet)",
+                Style::default().fg(Color::DarkGray),
+            )]));
+        }
+    } else if let Some(ref plan) = data.plan_content {
+        // Plan content section (rendered as markdown)
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             "Plan Content:",
@@ -1071,6 +1109,7 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
 
 /// Render footer with context-sensitive keybinds
 fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
+    debug!(?state.interaction_mode, "render_footer: called");
     let content = match &state.interaction_mode {
         InteractionMode::Filter(text) => Line::from(vec![
             Span::styled("/", Style::default().fg(colors::KEYBIND)),
@@ -1109,11 +1148,10 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                         }
                     }
                     View::Loops => vec![
-                        ("[Enter]", "Toggle"),
-                        ("[→]", "Expand"),
-                        ("[←]", "Collapse"),
-                        ("[d]", "Describe"),
-                        ("[p/r]", "Pause/Resume"),
+                        ("[Enter]", "Describe"),
+                        ("[s]", "State"),
+                        ("[o]", "Output"),
+                        ("[L]", "Logs"),
                         ("[x]", "Cancel"),
                     ],
                     View::Records { .. } => vec![
@@ -1130,7 +1168,9 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                         ("[D]", "Delete"),
                     ],
                     View::Logs { .. } => vec![("[Esc]", "Back"), ("[f]", "Follow")],
-                    View::Describe { .. } => vec![("[Esc]", "Back"), ("[l]", "Logs")],
+                    View::Describe { .. } => {
+                        vec![("[Esc]", "Back"), ("[s]", "State"), ("[o]", "Output"), ("[l]", "Logs")]
+                    }
                 };
 
                 // Left side: view-specific keybinds
@@ -1182,6 +1222,7 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
 
 /// Render help overlay
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
+    debug!("render_help_overlay: called");
     let popup_area = centered_rect(60, 70, area);
     frame.render_widget(Clear, popup_area);
 
@@ -1265,6 +1306,7 @@ fn key_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
 
 /// Render confirmation dialog
 fn render_confirm_dialog(dialog: &ConfirmDialog, frame: &mut Frame, area: Rect) {
+    debug!("render_confirm_dialog: called");
     let popup_area = centered_rect(50, 20, area);
     frame.render_widget(Clear, popup_area);
 
@@ -1317,6 +1359,7 @@ fn render_confirm_dialog(dialog: &ConfirmDialog, frame: &mut Frame, area: Rect) 
 
 /// Render empty state message
 fn render_empty_message(frame: &mut Frame, area: Rect, message: &str) {
+    debug!(%message, "render_empty_message: called");
     let inner = area.inner(ratatui::layout::Margin {
         horizontal: 2,
         vertical: 2,
@@ -1331,6 +1374,7 @@ fn render_empty_message(frame: &mut Frame, area: Rect, message: &str) {
 
 /// Helper to create a centered rect
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    debug!(percent_x, percent_y, "centered_rect: called");
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1352,11 +1396,13 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 /// Truncate a string for display
 fn truncate_str(s: &str, max_len: usize) -> &str {
+    debug!(s_len = s.len(), max_len, "truncate_str: called");
     if s.len() <= max_len { s } else { &s[..max_len] }
 }
 
 /// Format token count for display (e.g., "1.2K", "3.5M")
 fn format_tokens(count: u64) -> String {
+    debug!(count, "format_tokens: called");
     if count >= 1_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
     } else if count >= 1_000 {
@@ -1368,6 +1414,7 @@ fn format_tokens(count: u64) -> String {
 
 /// Format duration for display (e.g., "45s", "1m 15s")
 fn format_streaming_duration(d: std::time::Duration) -> String {
+    debug!(?d, "format_streaming_duration: called");
     let secs = d.as_secs();
     if secs >= 60 {
         format!("{}m {}s", secs / 60, secs % 60)

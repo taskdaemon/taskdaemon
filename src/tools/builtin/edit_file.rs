@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::Path;
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -45,49 +46,89 @@ impl Tool for EditFileTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "EditFileTool::execute: called");
         let path = match input["path"].as_str() {
-            Some(p) => p,
-            None => return ToolResult::error("path is required"),
+            Some(p) => {
+                debug!(%p, "EditFileTool::execute: path parameter found");
+                p
+            }
+            None => {
+                debug!("EditFileTool::execute: missing path parameter");
+                return ToolResult::error("path is required");
+            }
         };
 
         let old_string = match input["old_string"].as_str() {
-            Some(s) => s,
-            None => return ToolResult::error("old_string is required"),
+            Some(s) => {
+                debug!("EditFileTool::execute: old_string parameter found");
+                s
+            }
+            None => {
+                debug!("EditFileTool::execute: missing old_string parameter");
+                return ToolResult::error("old_string is required");
+            }
         };
 
         let new_string = match input["new_string"].as_str() {
-            Some(s) => s,
-            None => return ToolResult::error("new_string is required"),
+            Some(s) => {
+                debug!("EditFileTool::execute: new_string parameter found");
+                s
+            }
+            None => {
+                debug!("EditFileTool::execute: missing new_string parameter");
+                return ToolResult::error("new_string is required");
+            }
         };
 
         let replace_all = input["replace_all"].as_bool().unwrap_or(false);
+        debug!(%replace_all, "EditFileTool::execute: replace_all value");
 
         let full_path = match ctx.validate_path(Path::new(path)) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e.to_string()),
+            Ok(p) => {
+                debug!(?p, "EditFileTool::execute: path validated");
+                p
+            }
+            Err(e) => {
+                debug!(%e, "EditFileTool::execute: path validation failed");
+                return ToolResult::error(e.to_string());
+            }
         };
 
         // Must read file first
         if !ctx.was_read(&full_path).await {
+            debug!("EditFileTool::execute: file not read before editing");
             return ToolResult::error("Must read before editing. Read the file first to see current content.");
         }
 
+        debug!("EditFileTool::execute: file was read, proceeding with edit");
+
         let content = match tokio::fs::read_to_string(&full_path).await {
-            Ok(c) => c,
-            Err(e) => return ToolResult::error(format!("Failed to read file: {}", e)),
+            Ok(c) => {
+                debug!(content_len = %c.len(), "EditFileTool::execute: file content read");
+                c
+            }
+            Err(e) => {
+                debug!(%e, "EditFileTool::execute: failed to read file");
+                return ToolResult::error(format!("Failed to read file: {}", e));
+            }
         };
 
         // Verify old_string exists
         if !content.contains(old_string) {
+            debug!("EditFileTool::execute: old_string not found in file");
             return ToolResult::error(
                 "old_string not found in file. Make sure it matches exactly including whitespace.",
             );
         }
 
+        debug!("EditFileTool::execute: old_string found in file");
+
         // Verify uniqueness (unless replace_all)
         if !replace_all {
             let count = content.matches(old_string).count();
+            debug!(%count, "EditFileTool::execute: old_string occurrence count");
             if count > 1 {
+                debug!("EditFileTool::execute: multiple occurrences found without replace_all");
                 return ToolResult::error(format!(
                     "old_string found {} times. Use replace_all=true or provide more context.",
                     count
@@ -98,14 +139,19 @@ impl Tool for EditFileTool {
         let replacement_count = content.matches(old_string).count();
 
         let new_content = if replace_all {
+            debug!("EditFileTool::execute: replacing all occurrences");
             content.replace(old_string, new_string)
         } else {
+            debug!("EditFileTool::execute: replacing first occurrence only");
             content.replacen(old_string, new_string, 1)
         };
 
         if let Err(e) = tokio::fs::write(&full_path, &new_content).await {
+            debug!(%e, "EditFileTool::execute: failed to write file");
             return ToolResult::error(format!("Failed to write file: {}", e));
         }
+
+        debug!("EditFileTool::execute: file written successfully");
 
         let replacements = if replace_all { replacement_count } else { 1 };
 

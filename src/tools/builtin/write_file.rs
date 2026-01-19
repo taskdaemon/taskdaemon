@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::Path;
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -37,32 +38,56 @@ impl Tool for WriteFileTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "WriteFileTool::execute: called");
         let path = match input["path"].as_str() {
-            Some(p) => p,
-            None => return ToolResult::error("path is required"),
+            Some(p) => {
+                debug!(%p, "WriteFileTool::execute: path parameter found");
+                p
+            }
+            None => {
+                debug!("WriteFileTool::execute: missing path parameter");
+                return ToolResult::error("path is required");
+            }
         };
 
         let content = match input["content"].as_str() {
-            Some(c) => c,
-            None => return ToolResult::error("content is required"),
+            Some(c) => {
+                debug!(content_len = %c.len(), "WriteFileTool::execute: content parameter found");
+                c
+            }
+            None => {
+                debug!("WriteFileTool::execute: missing content parameter");
+                return ToolResult::error("content is required");
+            }
         };
 
         let full_path = match ctx.validate_path(Path::new(path)) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e.to_string()),
+            Ok(p) => {
+                debug!(?p, "WriteFileTool::execute: path validated");
+                p
+            }
+            Err(e) => {
+                debug!(%e, "WriteFileTool::execute: path validation failed");
+                return ToolResult::error(e.to_string());
+            }
         };
 
         // Create parent directories
         if let Some(parent) = full_path.parent()
             && let Err(e) = tokio::fs::create_dir_all(parent).await
         {
+            debug!(%e, "WriteFileTool::execute: failed to create parent directories");
             return ToolResult::error(format!("Failed to create directories: {}", e));
         }
 
+        debug!("WriteFileTool::execute: parent directories ensured");
+
         if let Err(e) = tokio::fs::write(&full_path, content).await {
+            debug!(%e, "WriteFileTool::execute: failed to write file");
             return ToolResult::error(format!("Failed to write file: {}", e));
         }
 
+        debug!(bytes = %content.len(), "WriteFileTool::execute: file written successfully");
         ToolResult::success(format!("Wrote {} bytes to {}", content.len(), path))
     }
 }

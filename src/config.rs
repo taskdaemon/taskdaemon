@@ -4,6 +4,7 @@ use eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::debug;
 
 /// Main TaskDaemon configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -45,6 +46,7 @@ impl Config {
     /// log-level value if found. This is called before full config loading
     /// to enable proper logging during startup.
     pub fn load_log_level(config_path: Option<&PathBuf>) -> Option<String> {
+        // Note: Cannot use debug! here since logging isn't initialized yet
         // Helper to extract log-level from a file
         fn extract_log_level(path: &Path) -> Option<String> {
             let content = fs::read_to_string(path).ok()?;
@@ -91,56 +93,79 @@ impl Config {
     /// Checks that required environment variables and paths are set correctly.
     /// Call this early in startup to fail fast with clear error messages.
     pub fn validate(&self) -> Result<()> {
+        debug!("Config::validate: called");
         // Check LLM API key environment variable is set
         if std::env::var(&self.llm.api_key_env).is_err() {
+            debug!(api_key_env = %self.llm.api_key_env, "Config::validate: API key not found");
             return Err(eyre::eyre!(
                 "LLM API key not found. Set the {} environment variable.",
                 self.llm.api_key_env
             ));
         }
+        debug!("Config::validate: validation passed");
         Ok(())
     }
 
     /// Load configuration with fallback chain
     pub fn load(config_path: Option<&PathBuf>) -> Result<Self> {
+        debug!(?config_path, "Config::load: called");
         // If explicit config path provided, try to load it
         if let Some(path) = config_path {
+            debug!(?path, "Config::load: explicit config path provided");
             return Self::load_from_file(path).context(format!("Failed to load config from {}", path.display()));
         }
 
         // Try project-local config: .taskdaemon.yml
         let local_config = PathBuf::from(".taskdaemon.yml");
         if local_config.exists() {
+            debug!(?local_config, "Config::load: trying local config");
             match Self::load_from_file(&local_config) {
-                Ok(config) => return Ok(config),
+                Ok(config) => {
+                    debug!("Config::load: loaded from local config");
+                    return Ok(config);
+                }
                 Err(e) => {
+                    debug!(error = %e, "Config::load: failed to load local config");
                     tracing::warn!("Failed to load config from {}: {}", local_config.display(), e);
                 }
             }
+        } else {
+            debug!(?local_config, "Config::load: local config does not exist");
         }
 
         // Try user config: ~/.config/taskdaemon/taskdaemon.yml
         if let Some(config_dir) = dirs::config_dir() {
             let user_config = config_dir.join("taskdaemon").join("taskdaemon.yml");
             if user_config.exists() {
+                debug!(?user_config, "Config::load: trying user config");
                 match Self::load_from_file(&user_config) {
-                    Ok(config) => return Ok(config),
+                    Ok(config) => {
+                        debug!("Config::load: loaded from user config");
+                        return Ok(config);
+                    }
                     Err(e) => {
+                        debug!(error = %e, "Config::load: failed to load user config");
                         tracing::warn!("Failed to load config from {}: {}", user_config.display(), e);
                     }
                 }
+            } else {
+                debug!(?user_config, "Config::load: user config does not exist");
             }
         }
 
         // No config file found, use defaults
+        debug!("Config::load: no config file found, using defaults");
         tracing::info!("No config file found, using defaults");
         Ok(Self::default())
     }
 
     fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        debug!(path = %path.as_ref().display(), "Config::load_from_file: called");
         let content = fs::read_to_string(&path).context("Failed to read config file")?;
+        debug!("Config::load_from_file: file read successfully");
 
         let config: Self = serde_yaml::from_str(&content).context("Failed to parse config file")?;
+        debug!("Config::load_from_file: config parsed successfully");
 
         tracing::info!("Loaded config from: {}", path.as_ref().display());
         Ok(config)
@@ -345,23 +370,33 @@ impl Default for LoopsConfig {
 impl LoopsConfig {
     /// Expand paths (resolve ~/ and relative paths)
     pub fn expanded_paths(&self) -> Vec<PathBuf> {
-        self.paths
+        debug!(?self.paths, "LoopsConfig::expanded_paths: called");
+        let paths: Vec<PathBuf> = self
+            .paths
             .iter()
             .filter_map(|p| {
                 if p == "builtin" {
+                    debug!(%p, "LoopsConfig::expanded_paths: skipping builtin");
                     None // builtin is handled specially
                 } else if p.starts_with("~/") {
+                    debug!(%p, "LoopsConfig::expanded_paths: expanding home path");
                     dirs::home_dir().map(|home| home.join(&p[2..]))
                 } else {
+                    debug!(%p, "LoopsConfig::expanded_paths: using as-is");
                     Some(PathBuf::from(p))
                 }
             })
-            .collect()
+            .collect();
+        debug!(?paths, "LoopsConfig::expanded_paths: returning paths");
+        paths
     }
 
     /// Check if builtin types should be loaded
     pub fn use_builtin(&self) -> bool {
-        self.paths.iter().any(|p| p == "builtin")
+        debug!("LoopsConfig::use_builtin: called");
+        let result = self.paths.iter().any(|p| p == "builtin");
+        debug!(result, "LoopsConfig::use_builtin: returning");
+        result
     }
 }
 

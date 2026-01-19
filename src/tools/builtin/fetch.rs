@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tracing::debug;
 
 use crate::llm::{CompletionRequest, LlmClient, Message};
 use crate::tools::{Tool, ToolContext, ToolResult};
@@ -17,11 +18,13 @@ pub struct FetchTool {
 impl FetchTool {
     /// Create a FetchTool without LLM summarization
     pub fn new() -> Self {
+        debug!("FetchTool::new: called");
         Self { llm_client: None }
     }
 
     /// Create a FetchTool with LLM summarization capability
     pub fn with_llm(client: Arc<dyn LlmClient>) -> Self {
+        debug!("FetchTool::with_llm: called");
         Self {
             llm_client: Some(client),
         }
@@ -62,17 +65,28 @@ impl Tool for FetchTool {
     }
 
     async fn execute(&self, input: Value, _ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "FetchTool::execute: called");
         let url = match input["url"].as_str() {
-            Some(u) => u,
-            None => return ToolResult::error("url is required"),
+            Some(u) => {
+                debug!(%u, "FetchTool::execute: url parameter found");
+                u
+            }
+            None => {
+                debug!("FetchTool::execute: missing url parameter");
+                return ToolResult::error("url is required");
+            }
         };
 
         // Validate URL
         if !url.starts_with("http://") && !url.starts_with("https://") {
+            debug!("FetchTool::execute: invalid URL protocol");
             return ToolResult::error("URL must start with http:// or https://");
         }
 
+        debug!("FetchTool::execute: URL protocol validated");
+
         let prompt = input["prompt"].as_str();
+        debug!(has_prompt = %prompt.is_some(), "FetchTool::execute: prompt parameter");
 
         // Fetch the content with timeout
         let client = reqwest::Client::builder()
@@ -81,14 +95,24 @@ impl Tool for FetchTool {
             .build()
             .unwrap_or_default();
 
+        debug!("FetchTool::execute: sending HTTP request");
         let response = match client.get(url).send().await {
-            Ok(r) => r,
-            Err(e) => return ToolResult::error(format!("Failed to fetch URL: {}", e)),
+            Ok(r) => {
+                debug!(status = %r.status(), "FetchTool::execute: HTTP response received");
+                r
+            }
+            Err(e) => {
+                debug!(%e, "FetchTool::execute: HTTP request failed");
+                return ToolResult::error(format!("Failed to fetch URL: {}", e));
+            }
         };
 
         if !response.status().is_success() {
+            debug!(status = %response.status(), "FetchTool::execute: HTTP error status");
             return ToolResult::error(format!("HTTP error: {}", response.status()));
         }
+
+        debug!("FetchTool::execute: HTTP request successful");
 
         let content_type = response
             .headers()
@@ -97,45 +121,60 @@ impl Tool for FetchTool {
             .unwrap_or("")
             .to_string();
 
+        debug!(%content_type, "FetchTool::execute: content type");
+
         let body = match response.text().await {
-            Ok(b) => b,
-            Err(e) => return ToolResult::error(format!("Failed to read response: {}", e)),
+            Ok(b) => {
+                debug!(body_len = %b.len(), "FetchTool::execute: response body read");
+                b
+            }
+            Err(e) => {
+                debug!(%e, "FetchTool::execute: failed to read response body");
+                return ToolResult::error(format!("Failed to read response: {}", e));
+            }
         };
 
         // Size limit
         if body.len() > 1_000_000 {
+            debug!("FetchTool::execute: response too large");
             return ToolResult::error("Response too large (> 1MB)");
         }
 
         // Process based on content type
         let content = if content_type.contains("text/html") || content_type.contains("application/xhtml") {
+            debug!("FetchTool::execute: converting HTML to markdown");
             // Convert HTML to Markdown using fast_html2md
             html2md::rewrite_html(&body, false)
         } else if content_type.contains("application/json") {
+            debug!("FetchTool::execute: pretty-printing JSON");
             // Pretty-print JSON
             match serde_json::from_str::<Value>(&body) {
                 Ok(json) => serde_json::to_string_pretty(&json).unwrap_or(body),
                 Err(_) => body,
             }
         } else {
+            debug!("FetchTool::execute: returning plain text");
             // Plain text or other
             body
         };
 
         // If prompt provided and we have an LLM client, summarize
         if let (Some(prompt_text), Some(llm)) = (prompt, &self.llm_client) {
+            debug!("FetchTool::execute: summarizing with LLM");
             return self.summarize_with_llm(llm, &content, prompt_text, url).await;
         }
 
         // Truncate if too long (no LLM summarization)
         let max_chars = 50_000;
         let output = if content.len() > max_chars {
+            debug!("FetchTool::execute: truncating long content");
             format!(
                 "{}...\n\n[truncated, {} chars total]",
                 &content[..max_chars],
                 content.len()
             )
         } else {
+            debug!("FetchTool::execute: content within size limit");
             content
         };
 
@@ -146,15 +185,18 @@ impl Tool for FetchTool {
 impl FetchTool {
     /// Summarize content using LLM
     async fn summarize_with_llm(&self, llm: &Arc<dyn LlmClient>, content: &str, prompt: &str, url: &str) -> ToolResult {
+        debug!(%url, content_len = %content.len(), "FetchTool::summarize_with_llm: called");
         // Truncate content for LLM context (leave room for prompt and response)
         let max_content = 100_000; // ~25k tokens roughly
         let truncated_content = if content.len() > max_content {
+            debug!("FetchTool::summarize_with_llm: truncating content for LLM");
             format!(
                 "{}...\n\n[Content truncated from {} chars]",
                 &content[..max_content],
                 content.len()
             )
         } else {
+            debug!("FetchTool::summarize_with_llm: content within LLM limit");
             content.to_string()
         };
 
@@ -179,12 +221,17 @@ impl FetchTool {
             max_tokens: 4096,
         };
 
+        debug!("FetchTool::summarize_with_llm: sending LLM request");
         match llm.complete(request).await {
             Ok(response) => {
+                debug!("FetchTool::summarize_with_llm: LLM request successful");
                 let summary = response.content.unwrap_or_else(|| "(no response)".to_string());
                 ToolResult::success(summary)
             }
-            Err(e) => ToolResult::error(format!("LLM summarization failed: {}", e)),
+            Err(e) => {
+                debug!(%e, "FetchTool::summarize_with_llm: LLM request failed");
+                ToolResult::error(format!("LLM summarization failed: {}", e))
+            }
         }
     }
 }

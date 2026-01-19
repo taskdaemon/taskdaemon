@@ -55,6 +55,7 @@ pub struct ConversationLogger {
 impl ConversationLogger {
     /// Create a new conversation logger (disabled)
     pub fn disabled() -> Self {
+        debug!("ConversationLogger::disabled: called");
         Self {
             writer: None,
             log_path: None,
@@ -64,6 +65,7 @@ impl ConversationLogger {
 
     /// Create a new conversation logger (enabled)
     pub fn enabled() -> Self {
+        debug!("ConversationLogger::enabled: called");
         let mut logger = Self {
             writer: None,
             log_path: None,
@@ -71,7 +73,10 @@ impl ConversationLogger {
         };
 
         if let Err(e) = logger.start_session() {
+            debug!("ConversationLogger::enabled: start_session failed");
             error!("Failed to start conversation logging: {}", e);
+        } else {
+            debug!("ConversationLogger::enabled: start_session succeeded");
         }
 
         logger
@@ -79,19 +84,24 @@ impl ConversationLogger {
 
     /// Check if logging is enabled
     pub fn is_enabled(&self) -> bool {
-        self.writer.is_some()
+        let enabled = self.writer.is_some();
+        debug!(enabled, "ConversationLogger::is_enabled: called");
+        enabled
     }
 
     /// Start a new logging session
     fn start_session(&mut self) -> std::io::Result<()> {
+        debug!("ConversationLogger::start_session: called");
         // Create conversations directory
         let conv_dir = Self::conversations_dir();
+        debug!(?conv_dir, "ConversationLogger::start_session: creating directory");
         fs::create_dir_all(&conv_dir)?;
 
         // Generate timestamped filename
         let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%S");
         let filename = format!("conversation-{}.jsonl", timestamp);
         let log_path = conv_dir.join(&filename);
+        debug!(?log_path, "ConversationLogger::start_session: opening file");
 
         // Open file for writing
         let file = OpenOptions::new().create(true).append(true).open(&log_path)?;
@@ -103,6 +113,7 @@ impl ConversationLogger {
         debug!("Started conversation logging to: {}", log_path.display());
 
         // Log session start
+        debug!("ConversationLogger::start_session: logging SessionStart");
         self.log_entry(EntryType::SessionStart);
 
         Ok(())
@@ -110,19 +121,27 @@ impl ConversationLogger {
 
     /// Get the conversations directory
     fn conversations_dir() -> PathBuf {
-        dirs::home_dir()
+        debug!("ConversationLogger::conversations_dir: called");
+        let dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".taskdaemon")
-            .join("conversations")
+            .join("conversations");
+        debug!(?dir, "ConversationLogger::conversations_dir: returning");
+        dir
     }
 
     /// Set the current mode
     pub fn set_mode(&mut self, mode: &str) {
+        debug!(%mode, "ConversationLogger::set_mode: called");
         self.current_mode = mode.to_string();
     }
 
     /// Log a user message
     pub fn log_user_message(&mut self, content: &str) {
+        debug!(
+            content_len = content.len(),
+            "ConversationLogger::log_user_message: called"
+        );
         self.log_entry(EntryType::UserMessage {
             content: content.to_string(),
         });
@@ -130,6 +149,10 @@ impl ConversationLogger {
 
     /// Log an assistant message
     pub fn log_assistant_message(&mut self, content: &str) {
+        debug!(
+            content_len = content.len(),
+            "ConversationLogger::log_assistant_message: called"
+        );
         self.log_entry(EntryType::AssistantMessage {
             content: content.to_string(),
         });
@@ -137,6 +160,7 @@ impl ConversationLogger {
 
     /// Log a tool call
     pub fn log_tool_call(&mut self, name: &str, input: &str) {
+        debug!(%name, input_len = input.len(), "ConversationLogger::log_tool_call: called");
         self.log_entry(EntryType::ToolCall {
             name: name.to_string(),
             input: input.to_string(),
@@ -145,6 +169,7 @@ impl ConversationLogger {
 
     /// Log a tool result
     pub fn log_tool_result(&mut self, name: &str, output: &str) {
+        debug!(%name, output_len = output.len(), "ConversationLogger::log_tool_result: called");
         self.log_entry(EntryType::ToolResult {
             name: name.to_string(),
             output: output.to_string(),
@@ -153,6 +178,7 @@ impl ConversationLogger {
 
     /// Log an error
     pub fn log_error(&mut self, message: &str) {
+        debug!(%message, "ConversationLogger::log_error: called");
         self.log_entry(EntryType::Error {
             message: message.to_string(),
         });
@@ -160,7 +186,9 @@ impl ConversationLogger {
 
     /// Log an entry
     fn log_entry(&mut self, entry_type: EntryType) {
+        debug!(?entry_type, "ConversationLogger::log_entry: called");
         let Some(writer) = &mut self.writer else {
+            debug!("ConversationLogger::log_entry: no writer, returning");
             return;
         };
 
@@ -172,15 +200,19 @@ impl ConversationLogger {
 
         match serde_json::to_string(&entry) {
             Ok(json) => {
+                debug!("ConversationLogger::log_entry: serialization succeeded");
                 if let Err(e) = writeln!(writer, "{}", json) {
+                    debug!("ConversationLogger::log_entry: write failed");
                     warn!("Failed to write conversation entry: {}", e);
                 }
                 // Flush after each entry for real-time debugging
                 if let Err(e) = writer.flush() {
+                    debug!("ConversationLogger::log_entry: flush failed");
                     warn!("Failed to flush conversation log: {}", e);
                 }
             }
             Err(e) => {
+                debug!("ConversationLogger::log_entry: serialization failed");
                 warn!("Failed to serialize conversation entry: {}", e);
             }
         }
@@ -189,11 +221,15 @@ impl ConversationLogger {
 
 impl Drop for ConversationLogger {
     fn drop(&mut self) {
+        debug!("ConversationLogger::drop: called");
         if self.writer.is_some() {
+            debug!("ConversationLogger::drop: writer exists, logging SessionEnd");
             self.log_entry(EntryType::SessionEnd);
             if let Some(path) = &self.log_path {
                 debug!("Conversation log saved to: {}", path.display());
             }
+        } else {
+            debug!("ConversationLogger::drop: no writer, skipping");
         }
     }
 }

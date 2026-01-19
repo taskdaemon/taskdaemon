@@ -5,12 +5,14 @@ You will receive a conversation between a user and an assistant discussing a sof
 
 ## Output Requirements
 Generate a title that:
-- Is 2-5 words maximum
+- Is 2-5 words maximum (STRICTLY enforced - never more than 5 words)
 - Captures the core intent or topic (the "what", not the "how")
 - Uses title case (capitalize first letter of each word)
 - Contains NO punctuation (no apostrophes, quotes, colons, etc.)
 - Contains NO special characters
 - Is suitable for use in filenames and URLs
+- NEVER starts with "I'll", "I will", "Here's", "This is", or similar conversational phrases
+- Is NOT a sentence - it's a short noun phrase like a project name
 
 ## Examples
 
@@ -19,6 +21,7 @@ GOOD: "Howdy CLI"
 GOOD: "Greeting CLI Tool"
 BAD: "Here's the Complete Requirements Specification for Your Rust CLI"
 BAD: "Rust CLI with Clap, Eyre, and Colored Output"
+BAD: "I'll create a Rust CLI project with a greeting feature"
 
 Conversation about adding user authentication with OAuth:
 GOOD: "OAuth Authentication"

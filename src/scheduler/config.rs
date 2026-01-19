@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tracing::debug;
 
 use crate::domain::Priority;
 
@@ -26,19 +27,23 @@ pub struct SchedulerConfig {
 }
 
 fn default_max_concurrent() -> usize {
+    debug!("default_max_concurrent: called");
     10
 }
 
 fn default_max_requests_per_window() -> u32 {
+    debug!("default_max_requests_per_window: called");
     50
 }
 
 fn default_rate_window_secs() -> u64 {
+    debug!("default_rate_window_secs: called");
     60
 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
+        debug!("SchedulerConfig::default: called");
         Self {
             max_concurrent: 10,
             max_requests_per_window: 50,
@@ -51,6 +56,7 @@ impl Default for SchedulerConfig {
 impl SchedulerConfig {
     /// Get the rate window as a Duration
     pub fn rate_window(&self) -> Duration {
+        debug!(%self.rate_window_secs, "SchedulerConfig::rate_window: called");
         Duration::from_secs(self.rate_window_secs)
     }
 }

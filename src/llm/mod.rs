@@ -3,6 +3,9 @@
 //! Provides stateless completion requests for Ralph loops. Each iteration gets
 //! fresh context - no conversation state carried between calls.
 
+#[allow(unused_imports)]
+use tracing::debug;
+
 mod anthropic;
 pub mod client;
 mod error;

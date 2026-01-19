@@ -35,7 +35,7 @@ prompt-template: |
 
   When the Plan is complete and passes all 5 review passes, ensure validation succeeds.
 
-validation-command: "otto ci"
+validation-command: "true"  # Plan loops complete via complete_task tool, not validation
 success-exit-code: 0
 max-iterations: 25
 iteration-timeout-ms: 300000

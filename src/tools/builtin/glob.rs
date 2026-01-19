@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::Path;
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -37,44 +38,75 @@ impl Tool for GlobTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "GlobTool::execute: called");
         let pattern = match input["pattern"].as_str() {
-            Some(p) => p,
-            None => return ToolResult::error("pattern is required"),
+            Some(p) => {
+                debug!(%p, "GlobTool::execute: pattern parameter found");
+                p
+            }
+            None => {
+                debug!("GlobTool::execute: missing pattern parameter");
+                return ToolResult::error("pattern is required");
+            }
         };
 
         let base = input["path"].as_str().unwrap_or(".");
+        debug!(%base, "GlobTool::execute: base path");
 
         let base_path = match ctx.validate_path(Path::new(base)) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e.to_string()),
+            Ok(p) => {
+                debug!(?p, "GlobTool::execute: base path validated");
+                p
+            }
+            Err(e) => {
+                debug!(%e, "GlobTool::execute: base path validation failed");
+                return ToolResult::error(e.to_string());
+            }
         };
 
         let full_pattern = base_path.join(pattern);
         let pattern_str = match full_pattern.to_str() {
-            Some(s) => s,
-            None => return ToolResult::error("Invalid pattern path"),
+            Some(s) => {
+                debug!(%s, "GlobTool::execute: full pattern string");
+                s
+            }
+            None => {
+                debug!("GlobTool::execute: invalid pattern path");
+                return ToolResult::error("Invalid pattern path");
+            }
         };
 
+        debug!("GlobTool::execute: executing glob");
         let matches: Vec<String> = match glob::glob(pattern_str) {
-            Ok(paths) => paths
-                .filter_map(|r| r.ok())
-                .filter(|p| {
-                    // Sandbox check - ensure path is within worktree
-                    p.starts_with(&ctx.worktree)
-                })
-                .filter_map(|p| {
-                    p.strip_prefix(&ctx.worktree)
-                        .ok()
-                        .map(|rel| rel.to_string_lossy().to_string())
-                })
-                .take(1000) // Limit results to prevent huge outputs
-                .collect(),
-            Err(e) => return ToolResult::error(format!("Invalid glob pattern: {}", e)),
+            Ok(paths) => {
+                debug!("GlobTool::execute: glob successful");
+                paths
+                    .filter_map(|r| r.ok())
+                    .filter(|p| {
+                        // Sandbox check - ensure path is within worktree
+                        p.starts_with(&ctx.worktree)
+                    })
+                    .filter_map(|p| {
+                        p.strip_prefix(&ctx.worktree)
+                            .ok()
+                            .map(|rel| rel.to_string_lossy().to_string())
+                    })
+                    .take(1000) // Limit results to prevent huge outputs
+                    .collect()
+            }
+            Err(e) => {
+                debug!(%e, "GlobTool::execute: invalid glob pattern");
+                return ToolResult::error(format!("Invalid glob pattern: {}", e));
+            }
         };
+
+        debug!(matches_count = %matches.len(), "GlobTool::execute: matches found");
 
         if matches.is_empty() {
+            debug!("GlobTool::execute: no matches found");
             ToolResult::success("No matches found")
         } else {
+            debug!("GlobTool::execute: returning matches");
             ToolResult::success(matches.join("\n"))
         }
     }

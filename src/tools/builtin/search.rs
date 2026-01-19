@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -21,8 +22,10 @@ pub struct SearchConfig {
 impl SearchConfig {
     /// Load from environment variables
     pub fn from_env() -> Option<Self> {
+        debug!("SearchConfig::from_env: called");
         // Try Tavily first (recommended for AI agents)
         if let Ok(api_key) = std::env::var("TAVILY_API_KEY") {
+            debug!("SearchConfig::from_env: found TAVILY_API_KEY");
             return Some(Self {
                 provider: "tavily".to_string(),
                 api_key,
@@ -31,6 +34,7 @@ impl SearchConfig {
 
         // Try Brave Search
         if let Ok(api_key) = std::env::var("BRAVE_API_KEY") {
+            debug!("SearchConfig::from_env: found BRAVE_API_KEY");
             return Some(Self {
                 provider: "brave".to_string(),
                 api_key,
@@ -39,12 +43,14 @@ impl SearchConfig {
 
         // Try SerpAPI
         if let Ok(api_key) = std::env::var("SERPAPI_KEY") {
+            debug!("SearchConfig::from_env: found SERPAPI_KEY");
             return Some(Self {
                 provider: "serpapi".to_string(),
                 api_key,
             });
         }
 
+        debug!("SearchConfig::from_env: no API key found");
         None
     }
 }
@@ -77,17 +83,29 @@ impl Tool for SearchTool {
     }
 
     async fn execute(&self, input: Value, _ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "SearchTool::execute: called");
         let query = match input["query"].as_str() {
-            Some(q) => q,
-            None => return ToolResult::error("query is required"),
+            Some(q) => {
+                debug!(%q, "SearchTool::execute: query parameter found");
+                q
+            }
+            None => {
+                debug!("SearchTool::execute: missing query parameter");
+                return ToolResult::error("query is required");
+            }
         };
 
         let max_results = input["max_results"].as_u64().unwrap_or(5) as usize;
+        debug!(%max_results, "SearchTool::execute: max_results value");
 
         // Get configuration
         let config = match SearchConfig::from_env() {
-            Some(c) => c,
+            Some(c) => {
+                debug!(provider = %c.provider, "SearchTool::execute: config loaded");
+                c
+            }
             None => {
+                debug!("SearchTool::execute: no API key configured");
                 return ToolResult::error(
                     "No search API configured. Set TAVILY_API_KEY, BRAVE_API_KEY, or SERPAPI_KEY environment variable.",
                 );
@@ -95,17 +113,31 @@ impl Tool for SearchTool {
         };
 
         // Execute search based on provider
+        debug!(provider = %config.provider, "SearchTool::execute: executing search");
         match config.provider.as_str() {
-            "tavily" => search_tavily(query, max_results, &config.api_key).await,
-            "brave" => search_brave(query, max_results, &config.api_key).await,
-            "serpapi" => search_serpapi(query, max_results, &config.api_key).await,
-            _ => ToolResult::error(format!("Unknown search provider: {}", config.provider)),
+            "tavily" => {
+                debug!("SearchTool::execute: using tavily provider");
+                search_tavily(query, max_results, &config.api_key).await
+            }
+            "brave" => {
+                debug!("SearchTool::execute: using brave provider");
+                search_brave(query, max_results, &config.api_key).await
+            }
+            "serpapi" => {
+                debug!("SearchTool::execute: using serpapi provider");
+                search_serpapi(query, max_results, &config.api_key).await
+            }
+            _ => {
+                debug!(provider = %config.provider, "SearchTool::execute: unknown provider");
+                ToolResult::error(format!("Unknown search provider: {}", config.provider))
+            }
         }
     }
 }
 
 /// Search using Tavily API
 async fn search_tavily(query: &str, max_results: usize, api_key: &str) -> ToolResult {
+    debug!(%query, %max_results, "search_tavily: called");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -118,28 +150,42 @@ async fn search_tavily(query: &str, max_results: usize, api_key: &str) -> ToolRe
         "search_depth": "basic"
     });
 
+    debug!("search_tavily: sending request");
     let response = match client.post("https://api.tavily.com/search").json(&body).send().await {
-        Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("Search request failed: {}", e)),
+        Ok(r) => {
+            debug!(status = %r.status(), "search_tavily: received response");
+            r
+        }
+        Err(e) => {
+            debug!(%e, "search_tavily: request failed");
+            return ToolResult::error(format!("Search request failed: {}", e));
+        }
     };
 
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
+        debug!(%status, "search_tavily: API error");
         return ToolResult::error(format!("Tavily API error {}: {}", status, error_text));
     }
 
+    debug!("search_tavily: parsing response");
     let result: Value = match response.json().await {
         Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("Failed to parse response: {}", e)),
+        Err(e) => {
+            debug!(%e, "search_tavily: failed to parse response");
+            return ToolResult::error(format!("Failed to parse response: {}", e));
+        }
     };
 
     // Format results
     let results = result["results"].as_array();
     if results.is_none() || results.unwrap().is_empty() {
+        debug!("search_tavily: no results found");
         return ToolResult::success("No results found");
     }
 
+    debug!(results_count = %results.unwrap().len(), "search_tavily: formatting results");
     let output: Vec<String> = results
         .unwrap()
         .iter()
@@ -157,11 +203,13 @@ async fn search_tavily(query: &str, max_results: usize, api_key: &str) -> ToolRe
 
 /// Search using Brave Search API
 async fn search_brave(query: &str, max_results: usize, api_key: &str) -> ToolResult {
+    debug!(%query, %max_results, "search_brave: called");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap_or_default();
 
+    debug!("search_brave: sending request");
     let response = match client
         .get("https://api.search.brave.com/res/v1/web/search")
         .header("X-Subscription-Token", api_key)
@@ -169,27 +217,40 @@ async fn search_brave(query: &str, max_results: usize, api_key: &str) -> ToolRes
         .send()
         .await
     {
-        Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("Search request failed: {}", e)),
+        Ok(r) => {
+            debug!(status = %r.status(), "search_brave: received response");
+            r
+        }
+        Err(e) => {
+            debug!(%e, "search_brave: request failed");
+            return ToolResult::error(format!("Search request failed: {}", e));
+        }
     };
 
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
+        debug!(%status, "search_brave: API error");
         return ToolResult::error(format!("Brave API error {}: {}", status, error_text));
     }
 
+    debug!("search_brave: parsing response");
     let result: Value = match response.json().await {
         Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("Failed to parse response: {}", e)),
+        Err(e) => {
+            debug!(%e, "search_brave: failed to parse response");
+            return ToolResult::error(format!("Failed to parse response: {}", e));
+        }
     };
 
     // Format results
     let results = result["web"]["results"].as_array();
     if results.is_none() || results.unwrap().is_empty() {
+        debug!("search_brave: no results found");
         return ToolResult::success("No results found");
     }
 
+    debug!(results_count = %results.unwrap().len(), "search_brave: formatting results");
     let output: Vec<String> = results
         .unwrap()
         .iter()
@@ -207,11 +268,13 @@ async fn search_brave(query: &str, max_results: usize, api_key: &str) -> ToolRes
 
 /// Search using SerpAPI
 async fn search_serpapi(query: &str, max_results: usize, api_key: &str) -> ToolResult {
+    debug!(%query, %max_results, "search_serpapi: called");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap_or_default();
 
+    debug!("search_serpapi: sending request");
     let response = match client
         .get("https://serpapi.com/search")
         .query(&[
@@ -223,27 +286,40 @@ async fn search_serpapi(query: &str, max_results: usize, api_key: &str) -> ToolR
         .send()
         .await
     {
-        Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("Search request failed: {}", e)),
+        Ok(r) => {
+            debug!(status = %r.status(), "search_serpapi: received response");
+            r
+        }
+        Err(e) => {
+            debug!(%e, "search_serpapi: request failed");
+            return ToolResult::error(format!("Search request failed: {}", e));
+        }
     };
 
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
+        debug!(%status, "search_serpapi: API error");
         return ToolResult::error(format!("SerpAPI error {}: {}", status, error_text));
     }
 
+    debug!("search_serpapi: parsing response");
     let result: Value = match response.json().await {
         Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("Failed to parse response: {}", e)),
+        Err(e) => {
+            debug!(%e, "search_serpapi: failed to parse response");
+            return ToolResult::error(format!("Failed to parse response: {}", e));
+        }
     };
 
     // Format results
     let results = result["organic_results"].as_array();
     if results.is_none() || results.unwrap().is_empty() {
+        debug!("search_serpapi: no results found");
         return ToolResult::success("No results found");
     }
 
+    debug!(results_count = %results.unwrap().len(), "search_serpapi: formatting results");
     let output: Vec<String> = results
         .unwrap()
         .iter()
@@ -261,7 +337,14 @@ async fn search_serpapi(query: &str, max_results: usize, api_key: &str) -> ToolR
 
 /// Truncate string to max length
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len { s.to_string() } else { format!("{}...", &s[..max_len]) }
+    debug!(s_len = %s.len(), %max_len, "truncate: called");
+    if s.len() <= max_len {
+        debug!("truncate: no truncation needed");
+        s.to_string()
+    } else {
+        debug!("truncate: truncating string");
+        format!("{}...", &s[..max_len])
+    }
 }
 
 #[cfg(test)]

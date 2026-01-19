@@ -37,7 +37,7 @@ prompt-template: |
 
   When all Plan functionality is covered by Specs, validation will succeed.
 
-validation-command: "otto ci"
+validation-command: "true"  # Spec loops complete via complete_task tool, not validation
 success-exit-code: 0
 max-iterations: 50
 iteration-timeout-ms: 300000

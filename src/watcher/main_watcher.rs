@@ -23,6 +23,7 @@ pub struct MainWatcher {
 impl MainWatcher {
     /// Create a new MainWatcher
     pub fn new(config: WatcherConfig, repo_path: PathBuf, coordinator_tx: mpsc::Sender<CoordRequest>) -> Self {
+        debug!(?config, ?repo_path, "MainWatcher::new: called");
         Self {
             config,
             repo_path,
@@ -33,6 +34,7 @@ impl MainWatcher {
 
     /// Get the current SHA of the main branch
     async fn get_main_sha(&self) -> Result<String> {
+        debug!("MainWatcher::get_main_sha: called");
         let output = Command::new("git")
             .arg("rev-parse")
             .arg(&self.config.main_branch)
@@ -43,17 +45,21 @@ impl MainWatcher {
             .await?;
 
         if !output.status.success() {
+            debug!("MainWatcher::get_main_sha: git rev-parse failed");
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(eyre!("git rev-parse failed: {}", stderr));
         }
 
+        debug!("MainWatcher::get_main_sha: git rev-parse succeeded");
         let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(sha)
     }
 
     /// Fetch the latest from remote
     async fn fetch_remote(&self) -> Result<()> {
+        debug!("MainWatcher::fetch_remote: called");
         if !self.config.fetch_enabled {
+            debug!("MainWatcher::fetch_remote: fetch disabled, returning early");
             return Ok(());
         }
 
@@ -74,9 +80,12 @@ impl MainWatcher {
             .await?;
 
         if !output.status.success() {
+            debug!("MainWatcher::fetch_remote: git fetch failed");
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!("git fetch failed: {}", stderr);
             // Don't fail - we can still check local ref
+        } else {
+            debug!("MainWatcher::fetch_remote: git fetch succeeded");
         }
 
         Ok(())
@@ -84,6 +93,7 @@ impl MainWatcher {
 
     /// Check for updates and alert if main has changed
     async fn check_for_updates(&mut self) -> Result<bool> {
+        debug!("MainWatcher::check_for_updates: called");
         // Fetch from remote first
         self.fetch_remote().await?;
 
@@ -92,6 +102,7 @@ impl MainWatcher {
 
         // Check if this is our first run
         let Some(last_sha) = &self.last_known_sha else {
+            debug!("MainWatcher::check_for_updates: first run, setting initial SHA");
             debug!(sha = %current_sha, "Initial main branch SHA");
             self.last_known_sha = Some(current_sha);
             return Ok(false);
@@ -99,6 +110,7 @@ impl MainWatcher {
 
         // Check if SHA has changed
         if &current_sha != last_sha {
+            debug!("MainWatcher::check_for_updates: SHA changed, sending alert");
             info!(
                 old_sha = %last_sha,
                 new_sha = %current_sha,
@@ -123,6 +135,7 @@ impl MainWatcher {
             return Ok(true);
         }
 
+        debug!("MainWatcher::check_for_updates: SHA unchanged");
         debug!(sha = %current_sha, "Main branch unchanged");
         Ok(false)
     }
@@ -131,6 +144,7 @@ impl MainWatcher {
     ///
     /// This runs until the coordinator channel is closed.
     pub async fn run(mut self) -> Result<()> {
+        debug!("MainWatcher::run: called");
         info!(
             interval_secs = self.config.poll_interval_secs,
             branch = %self.config.main_branch,
@@ -141,10 +155,14 @@ impl MainWatcher {
             match self.check_for_updates().await {
                 Ok(updated) => {
                     if updated {
+                        debug!("MainWatcher::run: update detected and alert sent");
                         debug!("Alert sent for main branch update");
+                    } else {
+                        debug!("MainWatcher::run: no update detected");
                     }
                 }
                 Err(e) => {
+                    debug!("MainWatcher::run: error during check");
                     error!(error = %e, "Error checking for main branch updates");
                 }
             }
@@ -156,16 +174,19 @@ impl MainWatcher {
 
     /// Run a single check (useful for testing)
     pub async fn check_once(&mut self) -> Result<bool> {
+        debug!("MainWatcher::check_once: called");
         self.check_for_updates().await
     }
 
     /// Get the last known SHA
     pub fn last_known_sha(&self) -> Option<&str> {
+        debug!("MainWatcher::last_known_sha: called");
         self.last_known_sha.as_deref()
     }
 
     /// Set the last known SHA (for testing or recovery)
     pub fn set_last_known_sha(&mut self, sha: Option<String>) {
+        debug!(?sha, "MainWatcher::set_last_known_sha: called");
         self.last_known_sha = sha;
     }
 }

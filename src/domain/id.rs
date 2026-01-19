@@ -4,13 +4,17 @@
 //! Example: `019430-plan-add-oauth`
 
 use std::collections::HashMap;
+use tracing::debug;
 
 /// Generate a domain ID from type and title
 pub fn generate_id(domain_type: &str, title: &str) -> String {
+    debug!(%domain_type, %title, "generate_id: called");
     let uuid = uuid::Uuid::now_v7();
     let hex_prefix = &uuid.to_string()[..6];
     let slug = slugify(title);
-    format!("{}-{}-{}", hex_prefix, domain_type, slug)
+    let id = format!("{}-{}-{}", hex_prefix, domain_type, slug);
+    debug!(%id, "generate_id: generated");
+    id
 }
 
 /// Maximum slug length (keeps IDs reasonable)
@@ -18,6 +22,7 @@ const MAX_SLUG_LENGTH: usize = 40;
 
 /// Slugify a title for use in IDs
 fn slugify(title: &str) -> String {
+    debug!(%title, "slugify: called");
     let slug: String = title
         .to_lowercase()
         .chars()
@@ -39,13 +44,20 @@ fn slugify(title: &str) -> String {
 
     // Truncate to max length, but don't cut mid-word
     if slug.len() <= MAX_SLUG_LENGTH {
+        debug!(%slug, "slugify: within max length");
         slug
     } else {
+        debug!(
+            slug_len = slug.len(),
+            MAX_SLUG_LENGTH, "slugify: exceeds max length, truncating"
+        );
         // Find last hyphen before the limit
         let truncated = &slug[..MAX_SLUG_LENGTH];
         if let Some(last_hyphen) = truncated.rfind('-') {
+            debug!(last_hyphen, "slugify: truncating at last hyphen");
             truncated[..last_hyphen].to_string()
         } else {
+            debug!("slugify: no hyphen found, truncating at max length");
             truncated.to_string()
         }
     }
@@ -58,58 +70,80 @@ pub struct DomainId(String);
 impl DomainId {
     /// Create a new domain ID from type and title
     pub fn new(domain_type: &str, title: &str) -> Self {
+        debug!(%domain_type, %title, "DomainId::new: called");
         Self(generate_id(domain_type, title))
     }
 
     /// Create from an existing ID string
     pub fn from_string(id: String) -> Self {
+        debug!(%id, "DomainId::from_string: called");
         Self(id)
     }
 
     /// Get the hex prefix (first 6 chars)
     pub fn hex_prefix(&self) -> &str {
+        debug!(id = %self.0, "DomainId::hex_prefix: called");
         &self.0[..6]
     }
 
     /// Get the full ID string
     pub fn as_str(&self) -> &str {
+        debug!(id = %self.0, "DomainId::as_str: called");
         &self.0
     }
 
     /// Get the slug portion (after type)
     pub fn slug(&self) -> Option<&str> {
+        debug!(id = %self.0, "DomainId::slug: called");
         // Format: {hex}-{type}-{slug}
         let parts: Vec<&str> = self.0.splitn(3, '-').collect();
-        parts.get(2).copied()
+        let result = parts.get(2).copied();
+        if result.is_some() {
+            debug!(?result, "DomainId::slug: found slug");
+        } else {
+            debug!("DomainId::slug: no slug found");
+        }
+        result
     }
 
     /// Get the type portion
     pub fn domain_type(&self) -> Option<&str> {
+        debug!(id = %self.0, "DomainId::domain_type: called");
         let parts: Vec<&str> = self.0.splitn(3, '-').collect();
-        parts.get(1).copied()
+        let result = parts.get(1).copied();
+        if result.is_some() {
+            debug!(?result, "DomainId::domain_type: found type");
+        } else {
+            debug!("DomainId::domain_type: no type found");
+        }
+        result
     }
 }
 
 impl std::fmt::Display for DomainId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug!(id = %self.0, "DomainId::fmt: called");
         write!(f, "{}", self.0)
     }
 }
 
 impl From<String> for DomainId {
     fn from(s: String) -> Self {
+        debug!(%s, "DomainId::from<String>: called");
         Self(s)
     }
 }
 
 impl From<&str> for DomainId {
     fn from(s: &str) -> Self {
+        debug!(%s, "DomainId::from<&str>: called");
         Self(s.to_string())
     }
 }
 
 impl AsRef<str> for DomainId {
     fn as_ref(&self) -> &str {
+        debug!(id = %self.0, "DomainId::as_ref: called");
         &self.0
     }
 }
@@ -119,6 +153,7 @@ impl serde::Serialize for DomainId {
     where
         S: serde::Serializer,
     {
+        debug!(id = %self.0, "DomainId::serialize: called");
         serializer.serialize_str(&self.0)
     }
 }
@@ -128,7 +163,9 @@ impl<'de> serde::Deserialize<'de> for DomainId {
     where
         D: serde::Deserializer<'de>,
     {
+        debug!("DomainId::deserialize: called");
         let s = String::deserialize(deserializer)?;
+        debug!(%s, "DomainId::deserialize: deserialized string");
         Ok(Self(s))
     }
 }
@@ -140,6 +177,7 @@ pub struct IdResolver<'a> {
 
 impl<'a> IdResolver<'a> {
     pub fn new(ids: &'a HashMap<String, String>) -> Self {
+        debug!(num_ids = ids.len(), "IdResolver::new: called");
         Self { ids }
     }
 
@@ -150,6 +188,7 @@ impl<'a> IdResolver<'a> {
     /// - Ok(None) if no matches
     /// - Err with candidates if ambiguous
     pub fn resolve(&self, reference: &str) -> Result<Option<String>, Vec<String>> {
+        debug!(%reference, "IdResolver::resolve: called");
         let matches: Vec<String> = self
             .ids
             .keys()
@@ -158,21 +197,33 @@ impl<'a> IdResolver<'a> {
             .collect();
 
         match matches.len() {
-            0 => Ok(None),
-            1 => Ok(Some(matches.into_iter().next().unwrap())),
-            _ => Err(matches),
+            0 => {
+                debug!("IdResolver::resolve: no matches found");
+                Ok(None)
+            }
+            1 => {
+                debug!(?matches, "IdResolver::resolve: exactly one match");
+                Ok(Some(matches.into_iter().next().unwrap()))
+            }
+            _ => {
+                debug!(?matches, "IdResolver::resolve: ambiguous, multiple matches");
+                Err(matches)
+            }
         }
     }
 
     /// Check if an ID matches a reference
     fn matches(id: &str, reference: &str) -> bool {
+        debug!(%id, %reference, "IdResolver::matches: called");
         // Exact match
         if id == reference {
+            debug!("IdResolver::matches: exact match");
             return true;
         }
 
         // Hex prefix match (first 6 chars)
         if id.starts_with(reference) {
+            debug!("IdResolver::matches: hex prefix match");
             return true;
         }
 
@@ -180,10 +231,12 @@ impl<'a> IdResolver<'a> {
         if let Some(slug_start) = id.find('-') {
             let slug_part = &id[slug_start + 1..];
             if slug_part.contains(reference) {
+                debug!("IdResolver::matches: slug contains match");
                 return true;
             }
         }
 
+        debug!("IdResolver::matches: no match");
         false
     }
 }

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tracing::debug;
 
 /// Coordinator configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,27 +29,33 @@ pub struct CoordinatorConfig {
 }
 
 fn default_query_timeout_secs() -> u64 {
+    debug!("default_query_timeout_secs: called");
     30
 }
 
 fn default_rate_limit() -> usize {
+    debug!("default_rate_limit: called");
     100
 }
 
 fn default_max_payload_size() -> usize {
+    debug!("default_max_payload_size: called");
     1024 * 1024 // 1MB
 }
 
 fn default_channel_buffer() -> usize {
+    debug!("default_channel_buffer: called");
     1000
 }
 
 fn default_loop_channel_buffer() -> usize {
+    debug!("default_loop_channel_buffer: called");
     100
 }
 
 impl Default for CoordinatorConfig {
     fn default() -> Self {
+        debug!("CoordinatorConfig::default: called");
         Self {
             query_timeout_secs: 30,
             rate_limit_per_sec: 100,
@@ -62,6 +69,7 @@ impl Default for CoordinatorConfig {
 impl CoordinatorConfig {
     /// Get the default query timeout as a Duration
     pub fn query_timeout(&self) -> Duration {
+        debug!(query_timeout_secs = %self.query_timeout_secs, "CoordinatorConfig::query_timeout: called");
         Duration::from_secs(self.query_timeout_secs)
     }
 }

@@ -5,6 +5,7 @@
 //! iterations (older history is less relevant for debugging).
 
 use std::collections::VecDeque;
+use tracing::debug;
 
 use super::{IterationContext, ProgressStrategy};
 
@@ -44,11 +45,17 @@ pub struct SystemCapturedProgress {
 impl SystemCapturedProgress {
     /// Create with default settings (5 entries, 500 chars each)
     pub fn new() -> Self {
+        debug!("SystemCapturedProgress::new: called");
         Self::default()
     }
 
     /// Create with custom limits
     pub fn with_limits(max_entries: usize, max_output_chars: usize) -> Self {
+        debug!(
+            %max_entries,
+            %max_output_chars,
+            "SystemCapturedProgress::with_limits: called"
+        );
         Self {
             entries: VecDeque::with_capacity(max_entries),
             max_entries,
@@ -59,6 +66,7 @@ impl SystemCapturedProgress {
 
 impl Default for SystemCapturedProgress {
     fn default() -> Self {
+        debug!("SystemCapturedProgress::default: called");
         Self {
             entries: VecDeque::with_capacity(5),
             max_entries: 5,
@@ -69,14 +77,33 @@ impl Default for SystemCapturedProgress {
 
 impl ProgressStrategy for SystemCapturedProgress {
     fn record(&mut self, ctx: &IterationContext) -> String {
+        debug!(
+            iteration = %ctx.iteration,
+            exit_code = %ctx.exit_code,
+            duration_ms = %ctx.duration_ms,
+            "SystemCapturedProgress::record: called"
+        );
+
         // Combine stdout and stderr, prefer stdout if available
-        let output = if !ctx.stdout.is_empty() { &ctx.stdout } else { &ctx.stderr };
+        let output = if !ctx.stdout.is_empty() {
+            debug!("SystemCapturedProgress::record: using stdout (not empty)");
+            &ctx.stdout
+        } else {
+            debug!("SystemCapturedProgress::record: using stderr (stdout empty)");
+            &ctx.stderr
+        };
 
         // Truncate output, keeping the END (most relevant for errors)
         let truncated = if output.len() > self.max_output_chars {
+            debug!(
+                output_len = %output.len(),
+                max_chars = %self.max_output_chars,
+                "SystemCapturedProgress::record: truncating output"
+            );
             let start = output.len() - self.max_output_chars;
             format!("...[truncated]...\n{}", &output[start..])
         } else {
+            debug!("SystemCapturedProgress::record: output within limits, no truncation");
             output.clone()
         };
 
@@ -93,8 +120,13 @@ impl ProgressStrategy for SystemCapturedProgress {
             ctx.exit_code,
             ctx.duration_ms,
             if ctx.files_changed.is_empty() {
+                debug!("SystemCapturedProgress::record: no files changed");
                 "none".to_string()
             } else {
+                debug!(
+                    files_count = %ctx.files_changed.len(),
+                    "SystemCapturedProgress::record: files changed"
+                );
                 ctx.files_changed.join(", ")
             },
             truncated.trim(),
@@ -102,7 +134,14 @@ impl ProgressStrategy for SystemCapturedProgress {
 
         // Add to queue, evict oldest if at capacity
         if self.entries.len() >= self.max_entries {
+            debug!(
+                entries_len = %self.entries.len(),
+                max_entries = %self.max_entries,
+                "SystemCapturedProgress::record: evicting oldest entry"
+            );
             self.entries.pop_front();
+        } else {
+            debug!("SystemCapturedProgress::record: capacity available, no eviction");
         }
         self.entries.push_back(entry.clone());
 
@@ -110,14 +149,23 @@ impl ProgressStrategy for SystemCapturedProgress {
     }
 
     fn get_progress(&self) -> String {
+        debug!(
+            entries_count = %self.entries.len(),
+            "SystemCapturedProgress::get_progress: called"
+        );
         self.entries.iter().cloned().collect::<Vec<_>>().join("")
     }
 
     fn clear(&mut self) {
+        debug!(
+            entries_count = %self.entries.len(),
+            "SystemCapturedProgress::clear: called"
+        );
         self.entries.clear();
     }
 
     fn len(&self) -> usize {
+        debug!("SystemCapturedProgress::len: called");
         self.entries.len()
     }
 }

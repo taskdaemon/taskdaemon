@@ -1,6 +1,7 @@
 //! Validation execution
 
 use std::time::Duration;
+use tracing::debug;
 
 /// Result of running validation command
 #[derive(Debug, Clone)]
@@ -21,7 +22,12 @@ pub struct ValidationResult {
 impl ValidationResult {
     /// Check if validation passed
     pub fn passed(&self, success_exit_code: i32) -> bool {
-        self.exit_code == success_exit_code
+        let passed = self.exit_code == success_exit_code;
+        debug!(
+            exit_code = self.exit_code,
+            success_exit_code, passed, "ValidationResult::passed: called"
+        );
+        passed
     }
 }
 
@@ -31,8 +37,10 @@ pub async fn run_validation(
     worktree: &std::path::Path,
     timeout: Duration,
 ) -> eyre::Result<ValidationResult> {
+    debug!(%command, ?worktree, timeout_ms = timeout.as_millis() as u64, "run_validation: called");
     let start = std::time::Instant::now();
 
+    debug!(%command, "run_validation: executing command");
     let output = tokio::time::timeout(
         timeout,
         tokio::process::Command::new("sh")
@@ -41,16 +49,29 @@ pub async fn run_validation(
             .current_dir(worktree)
             .output(),
     )
-    .await??;
+    .await;
 
-    let duration_ms = start.elapsed().as_millis() as u64;
-
-    Ok(ValidationResult {
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        duration_ms,
-    })
+    match output {
+        Ok(Ok(output)) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            let exit_code = output.status.code().unwrap_or(-1);
+            debug!(exit_code, duration_ms, "run_validation: command completed");
+            Ok(ValidationResult {
+                exit_code,
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                duration_ms,
+            })
+        }
+        Ok(Err(e)) => {
+            debug!(error = %e, "run_validation: command execution failed");
+            Err(e.into())
+        }
+        Err(_) => {
+            debug!("run_validation: command timed out");
+            Err(eyre::eyre!("Validation command timed out"))
+        }
+    }
 }
 
 #[cfg(test)]

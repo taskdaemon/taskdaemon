@@ -1,5 +1,7 @@
 //! ProgressStrategy trait definition
 
+use tracing::debug;
+
 /// Context passed to progress strategy after each iteration
 #[derive(Debug, Clone)]
 pub struct IterationContext {
@@ -30,6 +32,13 @@ impl IterationContext {
         duration_ms: u64,
         files_changed: Vec<String>,
     ) -> Self {
+        debug!(
+            %iteration,
+            %exit_code,
+            %duration_ms,
+            ?files_changed,
+            "IterationContext::new: called"
+        );
         Self {
             iteration,
             validation_command: validation_command.into(),
@@ -43,7 +52,14 @@ impl IterationContext {
 
     /// Check if this iteration's validation passed
     pub fn passed(&self) -> bool {
-        self.exit_code == 0
+        debug!(exit_code = %self.exit_code, "IterationContext::passed: called");
+        let result = self.exit_code == 0;
+        if result {
+            debug!("IterationContext::passed: validation passed (exit_code == 0)");
+        } else {
+            debug!("IterationContext::passed: validation failed (exit_code != 0)");
+        }
+        result
     }
 }
 
@@ -74,7 +90,14 @@ pub trait ProgressStrategy: Send + Sync {
 
     /// Whether any progress has been recorded
     fn is_empty(&self) -> bool {
-        self.len() == 0
+        debug!("ProgressStrategy::is_empty: called");
+        let result = self.len() == 0;
+        if result {
+            debug!("ProgressStrategy::is_empty: no progress recorded");
+        } else {
+            debug!("ProgressStrategy::is_empty: progress exists");
+        }
+        result
     }
 }
 

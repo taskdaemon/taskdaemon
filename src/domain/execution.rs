@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use taskstore::{IndexValue, Record, now_ms};
+use tracing::debug;
 
 use super::id::generate_id;
 
@@ -36,16 +37,44 @@ pub enum LoopExecutionStatus {
 
 impl std::fmt::Display for LoopExecutionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug!(?self, "LoopExecutionStatus::fmt: called");
         match self {
-            Self::Draft => write!(f, "draft"),
-            Self::Pending => write!(f, "pending"),
-            Self::Running => write!(f, "running"),
-            Self::Paused => write!(f, "paused"),
-            Self::Rebasing => write!(f, "rebasing"),
-            Self::Blocked => write!(f, "blocked"),
-            Self::Complete => write!(f, "complete"),
-            Self::Failed => write!(f, "failed"),
-            Self::Stopped => write!(f, "stopped"),
+            Self::Draft => {
+                debug!("LoopExecutionStatus::fmt: Draft branch");
+                write!(f, "draft")
+            }
+            Self::Pending => {
+                debug!("LoopExecutionStatus::fmt: Pending branch");
+                write!(f, "pending")
+            }
+            Self::Running => {
+                debug!("LoopExecutionStatus::fmt: Running branch");
+                write!(f, "running")
+            }
+            Self::Paused => {
+                debug!("LoopExecutionStatus::fmt: Paused branch");
+                write!(f, "paused")
+            }
+            Self::Rebasing => {
+                debug!("LoopExecutionStatus::fmt: Rebasing branch");
+                write!(f, "rebasing")
+            }
+            Self::Blocked => {
+                debug!("LoopExecutionStatus::fmt: Blocked branch");
+                write!(f, "blocked")
+            }
+            Self::Complete => {
+                debug!("LoopExecutionStatus::fmt: Complete branch");
+                write!(f, "complete")
+            }
+            Self::Failed => {
+                debug!("LoopExecutionStatus::fmt: Failed branch");
+                write!(f, "failed")
+            }
+            Self::Stopped => {
+                debug!("LoopExecutionStatus::fmt: Stopped branch");
+                write!(f, "stopped")
+            }
         }
     }
 }
@@ -99,6 +128,7 @@ impl LoopExecution {
     pub fn new(loop_type: impl Into<String>, description: impl Into<String>) -> Self {
         let loop_type = loop_type.into();
         let description = description.into();
+        debug!(%loop_type, %description, "LoopExecution::new: called");
         let now = now_ms();
 
         Self {
@@ -120,10 +150,13 @@ impl LoopExecution {
 
     /// Create with a specific ID (for testing or recovery)
     pub fn with_id(id: impl Into<String>, loop_type: impl Into<String>) -> Self {
+        let id = id.into();
+        let loop_type = loop_type.into();
+        debug!(%id, %loop_type, "LoopExecution::with_id: called");
         let now = now_ms();
         Self {
-            id: id.into(),
-            loop_type: loop_type.into(),
+            id,
+            loop_type,
             title: None,
             parent: None,
             deps: Vec::new(),
@@ -140,62 +173,80 @@ impl LoopExecution {
 
     /// Set the title
     pub fn set_title(&mut self, title: impl Into<String>) {
-        self.title = Some(title.into());
+        let title = title.into();
+        debug!(%self.id, %title, "LoopExecution::set_title: called");
+        self.title = Some(title);
         self.updated_at = now_ms();
     }
 
     /// Builder method to set title
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.title = Some(title.into());
+        let title = title.into();
+        debug!(%self.id, %title, "LoopExecution::with_title: called");
+        self.title = Some(title);
         self
     }
 
     /// Set the parent record
     pub fn set_parent(&mut self, parent: impl Into<String>) {
-        self.parent = Some(parent.into());
+        let parent = parent.into();
+        debug!(%self.id, %parent, "LoopExecution::set_parent: called");
+        self.parent = Some(parent);
         self.updated_at = now_ms();
     }
 
     /// Set the worktree path
     pub fn set_worktree(&mut self, path: impl Into<String>) {
-        self.worktree = Some(path.into());
+        let path = path.into();
+        debug!(%self.id, %path, "LoopExecution::set_worktree: called");
+        self.worktree = Some(path);
         self.updated_at = now_ms();
     }
 
     /// Set the context
     pub fn set_context(&mut self, context: Value) {
+        debug!(%self.id, ?context, "LoopExecution::set_context: called");
         self.context = context;
         self.updated_at = now_ms();
     }
 
     /// Update the status
     pub fn set_status(&mut self, status: LoopExecutionStatus) {
+        debug!(%self.id, ?status, "LoopExecution::set_status: called");
         self.status = status;
         self.updated_at = now_ms();
     }
 
     /// Set an error
     pub fn set_error(&mut self, error: impl Into<String>) {
-        self.last_error = Some(error.into());
+        let error = error.into();
+        debug!(%self.id, %error, "LoopExecution::set_error: called");
+        self.last_error = Some(error);
         self.updated_at = now_ms();
     }
 
     /// Clear the error
     pub fn clear_error(&mut self) {
+        debug!(%self.id, "LoopExecution::clear_error: called");
         self.last_error = None;
         self.updated_at = now_ms();
     }
 
     /// Increment the iteration counter
     pub fn increment_iteration(&mut self) {
+        debug!(%self.id, self.iteration, "LoopExecution::increment_iteration: called");
         self.iteration += 1;
         self.updated_at = now_ms();
     }
 
     /// Append to progress
     pub fn append_progress(&mut self, text: &str) {
+        debug!(%self.id, %text, "LoopExecution::append_progress: called");
         if !self.progress.is_empty() {
+            debug!("LoopExecution::append_progress: progress not empty, adding newline");
             self.progress.push('\n');
+        } else {
+            debug!("LoopExecution::append_progress: progress empty, no newline needed");
         }
         self.progress.push_str(text);
         self.updated_at = now_ms();
@@ -203,38 +254,70 @@ impl LoopExecution {
 
     /// Check if the loop is in a terminal state
     pub fn is_terminal(&self) -> bool {
-        matches!(
+        debug!(%self.id, ?self.status, "LoopExecution::is_terminal: called");
+        let result = matches!(
             self.status,
             LoopExecutionStatus::Complete | LoopExecutionStatus::Failed | LoopExecutionStatus::Stopped
-        )
+        );
+        if result {
+            debug!("LoopExecution::is_terminal: is terminal state");
+        } else {
+            debug!("LoopExecution::is_terminal: not terminal state");
+        }
+        result
     }
 
     /// Check if the loop is active (running or rebasing)
     pub fn is_active(&self) -> bool {
-        matches!(
+        debug!(%self.id, ?self.status, "LoopExecution::is_active: called");
+        let result = matches!(
             self.status,
             LoopExecutionStatus::Running | LoopExecutionStatus::Rebasing
-        )
+        );
+        if result {
+            debug!("LoopExecution::is_active: is active");
+        } else {
+            debug!("LoopExecution::is_active: not active");
+        }
+        result
     }
 
     /// Check if the loop can be resumed
     pub fn is_resumable(&self) -> bool {
-        matches!(self.status, LoopExecutionStatus::Paused | LoopExecutionStatus::Blocked)
+        debug!(%self.id, ?self.status, "LoopExecution::is_resumable: called");
+        let result = matches!(self.status, LoopExecutionStatus::Paused | LoopExecutionStatus::Blocked);
+        if result {
+            debug!("LoopExecution::is_resumable: is resumable");
+        } else {
+            debug!("LoopExecution::is_resumable: not resumable");
+        }
+        result
     }
 
     /// Check if the loop is in draft status (awaiting user approval)
     pub fn is_draft(&self) -> bool {
-        matches!(self.status, LoopExecutionStatus::Draft)
+        debug!(%self.id, ?self.status, "LoopExecution::is_draft: called");
+        let result = matches!(self.status, LoopExecutionStatus::Draft);
+        if result {
+            debug!("LoopExecution::is_draft: is draft");
+        } else {
+            debug!("LoopExecution::is_draft: not draft");
+        }
+        result
     }
 
     /// Transition from Draft to Pending (marks the draft as ready to run)
+    /// The daemon will pick up pending executions and set them to Running.
     /// Returns true if the transition was made, false if not in Draft status
     pub fn mark_ready(&mut self) -> bool {
+        debug!(%self.id, ?self.status, "LoopExecution::mark_ready: called");
         if self.status == LoopExecutionStatus::Draft {
+            debug!("LoopExecution::mark_ready: was draft, transitioning to pending");
             self.status = LoopExecutionStatus::Pending;
             self.updated_at = now_ms();
             true
         } else {
+            debug!("LoopExecution::mark_ready: not draft, no transition");
             false
         }
     }
@@ -243,18 +326,27 @@ impl LoopExecution {
 
     /// Set the parent and return self (builder pattern)
     pub fn with_parent(mut self, parent: impl Into<String>) -> Self {
-        self.parent = Some(parent.into());
+        let parent = parent.into();
+        debug!(%self.id, %parent, "LoopExecution::with_parent: called");
+        self.parent = Some(parent);
         self.updated_at = now_ms();
         self
     }
 
     /// Add a context value (builder pattern)
     pub fn with_context_value(mut self, key: &str, value: &str) -> Self {
+        debug!(%self.id, %key, %value, "LoopExecution::with_context_value: called");
         if self.context.is_null() {
+            debug!("LoopExecution::with_context_value: context is null, creating empty object");
             self.context = serde_json::json!({});
+        } else {
+            debug!("LoopExecution::with_context_value: context already exists");
         }
         if let Some(obj) = self.context.as_object_mut() {
+            debug!("LoopExecution::with_context_value: inserting key-value pair");
             obj.insert(key.to_string(), Value::String(value.to_string()));
+        } else {
+            debug!("LoopExecution::with_context_value: context not an object, skipping insert");
         }
         self.updated_at = now_ms();
         self
@@ -263,23 +355,30 @@ impl LoopExecution {
 
 impl Record for LoopExecution {
     fn id(&self) -> &str {
+        debug!(%self.id, "LoopExecution::id: called");
         &self.id
     }
 
     fn updated_at(&self) -> i64 {
+        debug!(%self.id, self.updated_at, "LoopExecution::updated_at: called");
         self.updated_at
     }
 
     fn collection_name() -> &'static str {
+        debug!("LoopExecution::collection_name: called");
         "loop_executions"
     }
 
     fn indexed_fields(&self) -> HashMap<String, IndexValue> {
+        debug!(%self.id, "LoopExecution::indexed_fields: called");
         let mut fields = HashMap::new();
         fields.insert("status".to_string(), IndexValue::String(self.status.to_string()));
         fields.insert("loop_type".to_string(), IndexValue::String(self.loop_type.clone()));
         if let Some(ref parent) = self.parent {
+            debug!(%parent, "LoopExecution::indexed_fields: has parent");
             fields.insert("parent".to_string(), IndexValue::String(parent.clone()));
+        } else {
+            debug!("LoopExecution::indexed_fields: no parent");
         }
         fields
     }
@@ -432,7 +531,7 @@ mod tests {
         exec.set_status(LoopExecutionStatus::Draft);
         assert!(exec.is_draft());
 
-        // mark_ready should transition Draft -> Pending
+        // mark_ready should transition Draft -> Pending (ready for daemon)
         let result = exec.mark_ready();
         assert!(result);
         assert_eq!(exec.status, LoopExecutionStatus::Pending);

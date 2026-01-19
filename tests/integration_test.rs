@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
-use taskdaemon::domain::{Loop, LoopStatus, Phase, Priority};
+use taskdaemon::domain::{Loop, LoopExecution, LoopExecutionStatus, LoopStatus, Phase, Priority};
 use taskdaemon::r#loop::{CascadeHandler, LoopLoader};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;
@@ -1158,4 +1158,206 @@ async fn test_hierarchy_counts_at_each_level() {
         let ralphs_under_phase = state.list_loops_for_parent(phase_id).await.expect("list");
         assert_eq!(ralphs_under_phase.len(), 2, "Each phase should have 2 ralph children");
     }
+}
+
+// =============================================================================
+// Draft -> Pending -> Running Flow Tests
+// =============================================================================
+
+/// Test that starting a draft execution transitions it to pending
+/// and makes it visible to the loop manager's poll_and_spawn
+#[tokio::test]
+async fn test_draft_to_pending_flow() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp.path()).expect("state manager");
+
+    // Create a draft execution
+    let mut exec = LoopExecution::with_id("test-draft-flow", "plan");
+    exec.set_status(LoopExecutionStatus::Draft);
+    state.create_execution(exec).await.expect("create");
+
+    // Verify it's in draft status
+    let retrieved = state.get_execution("test-draft-flow").await.expect("get").unwrap();
+    assert_eq!(retrieved.status, LoopExecutionStatus::Draft);
+
+    // Start the draft (transitions to Pending)
+    state.start_draft("test-draft-flow").await.expect("start_draft");
+
+    // Verify it's now pending
+    let updated = state.get_execution("test-draft-flow").await.expect("get").unwrap();
+    assert_eq!(updated.status, LoopExecutionStatus::Pending);
+
+    // Verify it would be found by poll_and_spawn (list pending executions)
+    let pending = state
+        .list_executions(Some("pending".to_string()), None)
+        .await
+        .expect("list");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, "test-draft-flow");
+
+    state.shutdown().await.expect("shutdown");
+}
+
+/// Test that a draft with dependencies remains in pending until deps complete
+#[tokio::test]
+async fn test_draft_with_dependencies() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp.path()).expect("state manager");
+
+    // Create parent execution (running)
+    let mut parent = LoopExecution::with_id("parent-exec", "plan");
+    parent.set_status(LoopExecutionStatus::Running);
+    state.create_execution(parent).await.expect("create parent");
+
+    // Create child draft with dependency on parent
+    let mut child = LoopExecution::with_id("child-draft", "spec");
+    child.set_status(LoopExecutionStatus::Draft);
+    child.deps = vec!["parent-exec".to_string()];
+    child.parent = Some("parent-exec".to_string());
+    state.create_execution(child).await.expect("create child");
+
+    // Start the child draft
+    state.start_draft("child-draft").await.expect("start_draft");
+
+    // Child is now pending
+    let child_updated = state.get_execution("child-draft").await.expect("get").unwrap();
+    assert_eq!(child_updated.status, LoopExecutionStatus::Pending);
+
+    // But parent is still running, so deps are not satisfied
+    // poll_and_spawn would find the pending execution but wouldn't spawn it
+
+    // Complete the parent
+    let mut parent_exec = state.get_execution("parent-exec").await.expect("get").unwrap();
+    parent_exec.set_status(LoopExecutionStatus::Complete);
+    state.update_execution(parent_exec).await.expect("update parent");
+
+    // Now the child's deps are satisfied
+    let parent_check = state.get_execution("parent-exec").await.expect("get").unwrap();
+    assert_eq!(parent_check.status, LoopExecutionStatus::Complete);
+
+    state.shutdown().await.expect("shutdown");
+}
+
+/// Test that starting a non-draft execution fails
+#[tokio::test]
+async fn test_cannot_start_non_draft() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp.path()).expect("state manager");
+
+    // Create a running execution
+    let mut exec = LoopExecution::with_id("running-exec", "plan");
+    exec.set_status(LoopExecutionStatus::Running);
+    state.create_execution(exec).await.expect("create");
+
+    // Try to start it as draft - should fail
+    let result = state.start_draft("running-exec").await;
+    assert!(result.is_err());
+
+    // Status should be unchanged
+    let check = state.get_execution("running-exec").await.expect("get").unwrap();
+    assert_eq!(check.status, LoopExecutionStatus::Running);
+
+    state.shutdown().await.expect("shutdown");
+}
+
+/// Test the full lifecycle: Draft -> Pending -> Running -> Complete
+#[tokio::test]
+async fn test_full_execution_lifecycle() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp.path()).expect("state manager");
+
+    // 1. Create as Draft
+    let mut exec = LoopExecution::with_id("lifecycle-test", "plan");
+    exec.set_status(LoopExecutionStatus::Draft);
+    state.create_execution(exec).await.expect("create");
+
+    let e = state.get_execution("lifecycle-test").await.expect("get").unwrap();
+    assert_eq!(e.status, LoopExecutionStatus::Draft, "Should start as Draft");
+
+    // 2. Start draft -> Pending
+    state.start_draft("lifecycle-test").await.expect("start_draft");
+    let e = state.get_execution("lifecycle-test").await.expect("get").unwrap();
+    assert_eq!(
+        e.status,
+        LoopExecutionStatus::Pending,
+        "Should be Pending after start_draft"
+    );
+
+    // 3. Simulate loop manager picking it up -> Running
+    let mut exec = state.get_execution("lifecycle-test").await.expect("get").unwrap();
+    exec.set_status(LoopExecutionStatus::Running);
+    state.update_execution(exec).await.expect("update");
+
+    let e = state.get_execution("lifecycle-test").await.expect("get").unwrap();
+    assert_eq!(e.status, LoopExecutionStatus::Running, "Should be Running after spawn");
+
+    // 4. Simulate completion -> Complete
+    let mut exec = state.get_execution("lifecycle-test").await.expect("get").unwrap();
+    exec.set_status(LoopExecutionStatus::Complete);
+    state.update_execution(exec).await.expect("update");
+
+    let e = state.get_execution("lifecycle-test").await.expect("get").unwrap();
+    assert_eq!(e.status, LoopExecutionStatus::Complete, "Should be Complete");
+
+    // Verify execution counts
+    let drafts = state
+        .list_executions(Some("draft".to_string()), None)
+        .await
+        .expect("list");
+    assert_eq!(drafts.len(), 0, "No drafts remaining");
+
+    let pending = state
+        .list_executions(Some("pending".to_string()), None)
+        .await
+        .expect("list");
+    assert_eq!(pending.len(), 0, "No pending remaining");
+
+    let running = state
+        .list_executions(Some("running".to_string()), None)
+        .await
+        .expect("list");
+    assert_eq!(running.len(), 0, "No running remaining");
+
+    let complete = state
+        .list_executions(Some("complete".to_string()), None)
+        .await
+        .expect("list");
+    assert_eq!(complete.len(), 1, "One complete execution");
+
+    state.shutdown().await.expect("shutdown");
+}
+
+/// Test that multiple drafts can be started independently
+#[tokio::test]
+async fn test_multiple_independent_drafts() {
+    let temp = TempDir::new().expect("temp dir");
+    let state = StateManager::spawn(temp.path()).expect("state manager");
+
+    // Create 3 independent drafts
+    for i in 1..=3 {
+        let mut exec = LoopExecution::with_id(format!("draft-{}", i), "plan");
+        exec.set_status(LoopExecutionStatus::Draft);
+        state.create_execution(exec).await.expect("create");
+    }
+
+    // Verify all are drafts
+    let drafts = state
+        .list_executions(Some("draft".to_string()), None)
+        .await
+        .expect("list");
+    assert_eq!(drafts.len(), 3);
+
+    // Start only the second one
+    state.start_draft("draft-2").await.expect("start_draft");
+
+    // Check states
+    let e1 = state.get_execution("draft-1").await.expect("get").unwrap();
+    let e2 = state.get_execution("draft-2").await.expect("get").unwrap();
+    let e3 = state.get_execution("draft-3").await.expect("get").unwrap();
+
+    assert_eq!(e1.status, LoopExecutionStatus::Draft, "draft-1 should still be Draft");
+    assert_eq!(e2.status, LoopExecutionStatus::Pending, "draft-2 should be Pending");
+    assert_eq!(e3.status, LoopExecutionStatus::Draft, "draft-3 should still be Draft");
+
+    state.shutdown().await.expect("shutdown");
 }

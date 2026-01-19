@@ -30,6 +30,7 @@ struct RateLimiter {
 
 impl RateLimiter {
     fn new(limit: usize, window: Duration) -> Self {
+        debug!(%limit, ?window, "RateLimiter::new: called");
         Self {
             counters: HashMap::new(),
             limit,
@@ -38,28 +39,34 @@ impl RateLimiter {
     }
 
     fn check_and_record(&mut self, exec_id: &str) -> bool {
+        debug!(%exec_id, "RateLimiter::check_and_record: called");
         let now = Instant::now();
         let counter = self.counters.entry(exec_id.to_string()).or_default();
 
         // Remove timestamps outside window
         while let Some(&timestamp) = counter.front() {
             if now.duration_since(timestamp) > self.window {
+                debug!("RateLimiter::check_and_record: removing old timestamp");
                 counter.pop_front();
             } else {
+                debug!("RateLimiter::check_and_record: timestamp within window");
                 break;
             }
         }
 
         // Check if under limit
         if counter.len() < self.limit {
+            debug!("RateLimiter::check_and_record: under limit, recording");
             counter.push_back(now);
             true
         } else {
+            debug!("RateLimiter::check_and_record: at limit, rejecting");
             false
         }
     }
 
     fn clear(&mut self, exec_id: &str) {
+        debug!(%exec_id, "RateLimiter::clear: called");
         self.counters.remove(exec_id);
     }
 }
@@ -76,6 +83,7 @@ pub struct Coordinator {
 impl Coordinator {
     /// Create a new Coordinator with the given configuration
     pub fn new(config: CoordinatorConfig) -> Self {
+        debug!(?config, "Coordinator::new: called");
         let (tx, rx) = mpsc::channel(config.channel_buffer);
         Self {
             config,
@@ -87,6 +95,7 @@ impl Coordinator {
 
     /// Create a new Coordinator with event persistence
     pub fn with_persistence(config: CoordinatorConfig, store_path: impl Into<std::path::PathBuf>) -> Self {
+        debug!(?config, "Coordinator::with_persistence: called");
         let (tx, rx) = mpsc::channel(config.channel_buffer);
         Self {
             config,
@@ -98,6 +107,7 @@ impl Coordinator {
 
     /// Get a sender for creating handles
     pub fn sender(&self) -> mpsc::Sender<CoordRequest> {
+        debug!("Coordinator::sender: called");
         self.tx.clone()
     }
 
@@ -106,6 +116,7 @@ impl Coordinator {
     /// This registers the execution with the Coordinator and returns a handle
     /// that can be used for coordination.
     pub async fn register(&self, exec_id: &str) -> Result<CoordinatorHandle> {
+        debug!(%exec_id, "Coordinator::register: called");
         let (msg_tx, msg_rx) = mpsc::channel(self.config.loop_channel_buffer);
 
         self.tx
@@ -116,11 +127,13 @@ impl Coordinator {
             .await
             .map_err(|_| eyre::eyre!("Coordinator channel closed"))?;
 
+        debug!(%exec_id, "Coordinator::register: registration sent");
         Ok(CoordinatorHandle::new(self.tx.clone(), msg_rx, exec_id.to_string()))
     }
 
     /// Unregister an execution
     pub async fn unregister(&self, exec_id: &str) -> Result<()> {
+        debug!(%exec_id, "Coordinator::unregister: called");
         self.tx
             .send(CoordRequest::Unregister {
                 exec_id: exec_id.to_string(),
@@ -128,16 +141,19 @@ impl Coordinator {
             .await
             .map_err(|_| eyre::eyre!("Coordinator channel closed"))?;
 
+        debug!(%exec_id, "Coordinator::unregister: unregistration sent");
         Ok(())
     }
 
     /// Request shutdown of the Coordinator
     pub async fn shutdown(&self) -> Result<()> {
+        debug!("Coordinator::shutdown: called");
         self.tx
             .send(CoordRequest::Shutdown)
             .await
             .map_err(|_| eyre::eyre!("Coordinator channel closed"))?;
 
+        debug!("Coordinator::shutdown: shutdown request sent");
         Ok(())
     }
 
@@ -145,6 +161,7 @@ impl Coordinator {
     ///
     /// This consumes the Coordinator and runs until shutdown is requested.
     pub async fn run(mut self) {
+        debug!("Coordinator::run: called");
         let coord_tx = self.tx.clone();
         let event_store = self.event_store.take();
 
@@ -165,13 +182,13 @@ impl Coordinator {
 
             match req {
                 CoordRequest::Register { exec_id, tx } => {
-                    debug!(exec_id = %exec_id, "Registering execution");
+                    debug!(%exec_id, "Coordinator::run: Register branch");
                     registry.insert(exec_id, tx);
                     metrics.registered_executions = registry.len();
                 }
 
                 CoordRequest::Unregister { exec_id } => {
-                    debug!(exec_id = %exec_id, "Unregistering execution");
+                    debug!(%exec_id, "Coordinator::run: Unregister branch");
                     registry.remove(&exec_id);
                     rate_limiter.clear(&exec_id);
 
@@ -188,29 +205,34 @@ impl Coordinator {
                     event_type,
                     data,
                 } => {
+                    debug!(%from_exec_id, %event_type, "Coordinator::run: Alert branch");
                     // Rate limit check
                     if !rate_limiter.check_and_record(&from_exec_id) {
+                        debug!("Coordinator::run: Alert rate limit exceeded");
                         warn!(from_exec_id = %from_exec_id, "Rate limit exceeded for alert");
                         metrics.rate_limit_violations += 1;
                         continue;
                     }
 
-                    debug!(
-                        from_exec_id = %from_exec_id,
-                        event_type = %event_type,
-                        "Broadcasting alert"
-                    );
+                    debug!("Coordinator::run: Alert rate limit passed");
 
                     // Persist the alert event for crash recovery
                     if let Some(ref store) = event_store {
+                        debug!("Coordinator::run: Alert persisting event");
                         let event = PersistedEvent::alert(&from_exec_id, &event_type, data.to_string());
                         if let Err(e) = store.persist(&event).await {
+                            debug!("Coordinator::run: Alert persist failed");
                             warn!("Failed to persist alert event: {}", e);
+                        } else {
+                            debug!("Coordinator::run: Alert persist succeeded");
                         }
+                    } else {
+                        debug!("Coordinator::run: Alert no event store");
                     }
 
                     // Broadcast to subscribers
                     if let Some(subscribers) = subscriptions.get(&event_type) {
+                        debug!("Coordinator::run: Alert has subscribers");
                         let msg = CoordMessage::Notification {
                             from_exec_id: from_exec_id.clone(),
                             event_type: event_type.clone(),
@@ -221,9 +243,12 @@ impl Coordinator {
                             if let Some(tx) = registry.get(exec_id)
                                 && tx.send(msg.clone()).await.is_ok()
                             {
+                                debug!(%exec_id, "Coordinator::run: Alert sent to subscriber");
                                 metrics.messages_sent += 1;
                             }
                         }
+                    } else {
+                        debug!("Coordinator::run: Alert no subscribers");
                     }
                 }
 
@@ -235,35 +260,38 @@ impl Coordinator {
                     reply_tx,
                     timeout,
                 } => {
+                    debug!(%query_id, %from_exec_id, %target_exec_id, "Coordinator::run: Query branch");
                     // Rate limit check
                     if !rate_limiter.check_and_record(&from_exec_id) {
+                        debug!("Coordinator::run: Query rate limit exceeded");
                         warn!(from_exec_id = %from_exec_id, "Rate limit exceeded for query");
                         metrics.rate_limit_violations += 1;
                         let _ = reply_tx.send(Err(eyre::eyre!("Rate limit exceeded")));
                         continue;
                     }
 
-                    debug!(
-                        query_id = %query_id,
-                        from_exec_id = %from_exec_id,
-                        target_exec_id = %target_exec_id,
-                        "Sending query"
-                    );
+                    debug!("Coordinator::run: Query rate limit passed");
 
                     // Persist the query event for crash recovery
                     if let Some(ref store) = event_store {
+                        debug!("Coordinator::run: Query persisting event");
                         let event = PersistedEvent::query(&from_exec_id, &target_exec_id, &question);
                         let event_id = event.id.clone();
                         if let Err(e) = store.persist(&event).await {
+                            debug!("Coordinator::run: Query persist failed");
                             warn!("Failed to persist query event: {}", e);
                         } else {
+                            debug!("Coordinator::run: Query persist succeeded");
                             // Track event_id to resolve later
                             pending_event_ids.insert(query_id.clone(), event_id);
                         }
+                    } else {
+                        debug!("Coordinator::run: Query no event store");
                     }
 
                     // Send query to target
                     if let Some(tx) = registry.get(&target_exec_id) {
+                        debug!("Coordinator::run: Query target found in registry");
                         let msg = CoordMessage::Query {
                             query_id: query_id.clone(),
                             from_exec_id: from_exec_id.clone(),
@@ -271,6 +299,7 @@ impl Coordinator {
                         };
 
                         if tx.send(msg).await.is_ok() {
+                            debug!("Coordinator::run: Query sent to target");
                             metrics.messages_sent += 1;
 
                             // Track pending query
@@ -296,17 +325,20 @@ impl Coordinator {
                                     .await;
                             });
                         } else {
+                            debug!("Coordinator::run: Query target channel closed");
                             let _ = reply_tx.send(Err(eyre::eyre!("Target execution channel closed")));
                         }
                     } else {
+                        debug!("Coordinator::run: Query target not found");
                         let _ = reply_tx.send(Err(eyre::eyre!("Target execution not found")));
                     }
                 }
 
                 CoordRequest::QueryReply { query_id, answer } => {
-                    debug!(query_id = %query_id, "Received query reply");
+                    debug!(%query_id, "Coordinator::run: QueryReply branch");
 
                     if let Some(pending) = pending_queries.remove(&query_id) {
+                        debug!("Coordinator::run: QueryReply found pending query");
                         let _ = pending.reply_tx.send(Ok(answer));
                         metrics.pending_queries = pending_queries.len();
 
@@ -315,15 +347,21 @@ impl Coordinator {
                             && let Some(ref store) = event_store
                             && let Err(e) = store.resolve(&event_id).await
                         {
+                            debug!("Coordinator::run: QueryReply resolve failed");
                             warn!("Failed to resolve query event: {}", e);
+                        } else {
+                            debug!("Coordinator::run: QueryReply resolved persisted event");
                         }
+                    } else {
+                        debug!("Coordinator::run: QueryReply no pending query found");
                     }
                 }
 
                 CoordRequest::QueryCancel { query_id } => {
-                    debug!(query_id = %query_id, "Cancelling query");
+                    debug!(%query_id, "Coordinator::run: QueryCancel branch");
 
                     if let Some(pending) = pending_queries.remove(&query_id) {
+                        debug!("Coordinator::run: QueryCancel found pending query");
                         let _ = pending.reply_tx.send(Err(eyre::eyre!("Query cancelled")));
                         metrics.pending_queries = pending_queries.len();
 
@@ -332,13 +370,20 @@ impl Coordinator {
                             && let Some(ref store) = event_store
                             && let Err(e) = store.resolve(&event_id).await
                         {
+                            debug!("Coordinator::run: QueryCancel resolve failed");
                             warn!("Failed to resolve cancelled query event: {}", e);
+                        } else {
+                            debug!("Coordinator::run: QueryCancel resolved persisted event");
                         }
+                    } else {
+                        debug!("Coordinator::run: QueryCancel no pending query found");
                     }
                 }
 
                 CoordRequest::QueryTimeout { query_id } => {
+                    debug!(%query_id, "Coordinator::run: QueryTimeout branch");
                     if let Some(pending) = pending_queries.remove(&query_id) {
+                        debug!("Coordinator::run: QueryTimeout found pending query");
                         warn!(query_id = %query_id, "Query timed out");
                         let _ = pending.reply_tx.send(Err(eyre::eyre!("Query timeout")));
                         metrics.pending_queries = pending_queries.len();
@@ -349,8 +394,13 @@ impl Coordinator {
                             && let Some(ref store) = event_store
                             && let Err(e) = store.resolve(&event_id).await
                         {
+                            debug!("Coordinator::run: QueryTimeout resolve failed");
                             warn!("Failed to resolve timed out query event: {}", e);
+                        } else {
+                            debug!("Coordinator::run: QueryTimeout resolved persisted event");
                         }
+                    } else {
+                        debug!("Coordinator::run: QueryTimeout no pending query found (already resolved)");
                     }
                 }
 
@@ -360,43 +410,52 @@ impl Coordinator {
                     share_type,
                     data,
                 } => {
+                    debug!(%from_exec_id, %target_exec_id, %share_type, "Coordinator::run: Share branch");
                     // Rate limit check
                     if !rate_limiter.check_and_record(&from_exec_id) {
+                        debug!("Coordinator::run: Share rate limit exceeded");
                         warn!(from_exec_id = %from_exec_id, "Rate limit exceeded for share");
                         metrics.rate_limit_violations += 1;
                         continue;
                     }
 
-                    debug!(
-                        from_exec_id = %from_exec_id,
-                        target_exec_id = %target_exec_id,
-                        share_type = %share_type,
-                        "Sharing data"
-                    );
+                    debug!("Coordinator::run: Share rate limit passed");
 
                     // Persist the share event for crash recovery
                     if let Some(ref store) = event_store {
+                        debug!("Coordinator::run: Share persisting event");
                         let event =
                             PersistedEvent::share(&from_exec_id, &target_exec_id, &share_type, data.to_string());
                         if let Err(e) = store.persist(&event).await {
+                            debug!("Coordinator::run: Share persist failed");
                             warn!("Failed to persist share event: {}", e);
+                        } else {
+                            debug!("Coordinator::run: Share persist succeeded");
                         }
+                    } else {
+                        debug!("Coordinator::run: Share no event store");
                     }
 
                     if let Some(tx) = registry.get(&target_exec_id) {
+                        debug!("Coordinator::run: Share target found");
                         let msg = CoordMessage::Share {
                             from_exec_id,
                             share_type,
                             data,
                         };
                         if tx.send(msg).await.is_ok() {
+                            debug!("Coordinator::run: Share sent to target");
                             metrics.messages_sent += 1;
+                        } else {
+                            debug!("Coordinator::run: Share send failed");
                         }
+                    } else {
+                        debug!("Coordinator::run: Share target not found");
                     }
                 }
 
                 CoordRequest::Subscribe { exec_id, event_type } => {
-                    debug!(exec_id = %exec_id, event_type = %event_type, "Subscribing");
+                    debug!(%exec_id, %event_type, "Coordinator::run: Subscribe branch");
 
                     subscriptions.entry(event_type).or_default().insert(exec_id);
 
@@ -404,10 +463,13 @@ impl Coordinator {
                 }
 
                 CoordRequest::Unsubscribe { exec_id, event_type } => {
-                    debug!(exec_id = %exec_id, event_type = %event_type, "Unsubscribing");
+                    debug!(%exec_id, %event_type, "Coordinator::run: Unsubscribe branch");
 
                     if let Some(subscribers) = subscriptions.get_mut(&event_type) {
+                        debug!("Coordinator::run: Unsubscribe found subscription");
                         subscribers.remove(&exec_id);
+                    } else {
+                        debug!("Coordinator::run: Unsubscribe no subscription found");
                     }
 
                     metrics.total_subscriptions = subscriptions.values().map(|s| s.len()).sum();
@@ -418,26 +480,29 @@ impl Coordinator {
                     target_exec_id,
                     reason,
                 } => {
-                    debug!(
-                        from_exec_id = %from_exec_id,
-                        target_exec_id = %target_exec_id,
-                        reason = %reason,
-                        "Sending stop request"
-                    );
+                    debug!(%from_exec_id, %target_exec_id, %reason, "Coordinator::run: Stop branch");
 
                     if let Some(tx) = registry.get(&target_exec_id) {
+                        debug!("Coordinator::run: Stop target found");
                         let msg = CoordMessage::Stop { from_exec_id, reason };
                         if tx.send(msg).await.is_ok() {
+                            debug!("Coordinator::run: Stop sent to target");
                             metrics.messages_sent += 1;
+                        } else {
+                            debug!("Coordinator::run: Stop send failed");
                         }
+                    } else {
+                        debug!("Coordinator::run: Stop target not found");
                     }
                 }
 
                 CoordRequest::GetMetrics { reply_tx } => {
+                    debug!("Coordinator::run: GetMetrics branch");
                     let _ = reply_tx.send(metrics.clone());
                 }
 
                 CoordRequest::Shutdown => {
+                    debug!("Coordinator::run: Shutdown branch");
                     info!("Coordinator shutting down");
                     break;
                 }

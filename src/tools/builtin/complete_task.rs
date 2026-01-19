@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -37,9 +38,16 @@ impl Tool for CompleteTaskTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "CompleteTaskTool::execute: called");
         let summary = match input.get("summary").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return ToolResult::error("Missing required parameter: summary"),
+            Some(s) => {
+                debug!("CompleteTaskTool::execute: summary parameter found");
+                s
+            }
+            None => {
+                debug!("CompleteTaskTool::execute: missing summary parameter");
+                return ToolResult::error("Missing required parameter: summary");
+            }
         };
 
         let artifacts: Vec<String> = input
@@ -47,6 +55,8 @@ impl Tool for CompleteTaskTool {
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
+
+        debug!(artifacts_count = %artifacts.len(), "CompleteTaskTool::execute: artifacts parsed");
 
         // Log the completion (for debugging/tracing)
         tracing::info!(
@@ -60,10 +70,13 @@ impl Tool for CompleteTaskTool {
         let mut message = format!("Task completed: {}", summary);
 
         if !artifacts.is_empty() {
+            debug!("CompleteTaskTool::execute: appending artifacts to message");
             message.push_str("\n\nArtifacts:\n");
             for artifact in &artifacts {
                 message.push_str(&format!("  - {}\n", artifact));
             }
+        } else {
+            debug!("CompleteTaskTool::execute: no artifacts to append");
         }
 
         // The loop engine will detect this tool call and mark the task as complete

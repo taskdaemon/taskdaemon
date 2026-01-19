@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -41,6 +42,7 @@ pub type TodoList = Arc<Mutex<Vec<TodoItem>>>;
 
 /// Create a new shared todo list
 pub fn new_todo_list() -> TodoList {
+    debug!("new_todo_list: called");
     Arc::new(Mutex::new(Vec::new()))
 }
 
@@ -52,11 +54,13 @@ pub struct TodoTool {
 impl TodoTool {
     /// Create a new TodoTool with its own todo list
     pub fn new() -> Self {
+        debug!("TodoTool::new: called");
         Self { todos: new_todo_list() }
     }
 
     /// Create a TodoTool with a shared todo list
     pub fn with_list(todos: TodoList) -> Self {
+        debug!("TodoTool::with_list: called");
         Self { todos }
     }
 }
@@ -101,16 +105,30 @@ impl Tool for TodoTool {
     }
 
     async fn execute(&self, input: Value, _ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "TodoTool::execute: called");
         let action = match input["action"].as_str() {
-            Some(a) => a,
-            None => return ToolResult::error("action is required"),
+            Some(a) => {
+                debug!(%a, "TodoTool::execute: action parameter found");
+                a
+            }
+            None => {
+                debug!("TodoTool::execute: missing action parameter");
+                return ToolResult::error("action is required");
+            }
         };
 
         match action {
             "add" => {
+                debug!("TodoTool::execute: add action");
                 let task = match input["task"].as_str() {
-                    Some(t) => t,
-                    None => return ToolResult::error("task is required for add action"),
+                    Some(t) => {
+                        debug!("TodoTool::execute: task parameter found for add");
+                        t
+                    }
+                    None => {
+                        debug!("TodoTool::execute: missing task parameter for add");
+                        return ToolResult::error("task is required for add action");
+                    }
                 };
 
                 let mut todos = self.todos.lock().await;
@@ -123,56 +141,99 @@ impl Tool for TodoTool {
                 };
                 todos.push(item);
 
+                debug!(%id, "TodoTool::execute: task added");
                 ToolResult::success(format!("Added task #{}: {}", id, task))
             }
             "complete" => {
+                debug!("TodoTool::execute: complete action");
                 let task_id = match input["task"].as_str() {
                     Some(t) => match t.parse::<usize>() {
-                        Ok(id) => id,
-                        Err(_) => return ToolResult::error("task must be a valid task ID number"),
+                        Ok(id) => {
+                            debug!(%id, "TodoTool::execute: task ID parsed for complete");
+                            id
+                        }
+                        Err(_) => {
+                            debug!("TodoTool::execute: invalid task ID for complete");
+                            return ToolResult::error("task must be a valid task ID number");
+                        }
                     },
-                    None => return ToolResult::error("task (ID) is required for complete action"),
+                    None => {
+                        debug!("TodoTool::execute: missing task ID for complete");
+                        return ToolResult::error("task (ID) is required for complete action");
+                    }
                 };
 
                 let mut todos = self.todos.lock().await;
                 if let Some(item) = todos.iter_mut().find(|t| t.id == task_id) {
                     item.status = TodoStatus::Completed;
+                    debug!(%task_id, "TodoTool::execute: task completed");
                     ToolResult::success(format!("Completed task #{}: {}", task_id, item.task))
                 } else {
+                    debug!(%task_id, "TodoTool::execute: task not found for complete");
                     ToolResult::error(format!("Task #{} not found", task_id))
                 }
             }
             "set_status" => {
+                debug!("TodoTool::execute: set_status action");
                 let task_id = match input["task"].as_str() {
                     Some(t) => match t.parse::<usize>() {
-                        Ok(id) => id,
-                        Err(_) => return ToolResult::error("task must be a valid task ID number"),
+                        Ok(id) => {
+                            debug!(%id, "TodoTool::execute: task ID parsed for set_status");
+                            id
+                        }
+                        Err(_) => {
+                            debug!("TodoTool::execute: invalid task ID for set_status");
+                            return ToolResult::error("task must be a valid task ID number");
+                        }
                     },
-                    None => return ToolResult::error("task (ID) is required for set_status action"),
+                    None => {
+                        debug!("TodoTool::execute: missing task ID for set_status");
+                        return ToolResult::error("task (ID) is required for set_status action");
+                    }
                 };
 
                 let status = match input["status"].as_str() {
-                    Some("pending") => TodoStatus::Pending,
-                    Some("in_progress") => TodoStatus::InProgress,
-                    Some("completed") => TodoStatus::Completed,
-                    Some(s) => return ToolResult::error(format!("Invalid status: {}", s)),
-                    None => return ToolResult::error("status is required for set_status action"),
+                    Some("pending") => {
+                        debug!("TodoTool::execute: status set to pending");
+                        TodoStatus::Pending
+                    }
+                    Some("in_progress") => {
+                        debug!("TodoTool::execute: status set to in_progress");
+                        TodoStatus::InProgress
+                    }
+                    Some("completed") => {
+                        debug!("TodoTool::execute: status set to completed");
+                        TodoStatus::Completed
+                    }
+                    Some(s) => {
+                        debug!(%s, "TodoTool::execute: invalid status value");
+                        return ToolResult::error(format!("Invalid status: {}", s));
+                    }
+                    None => {
+                        debug!("TodoTool::execute: missing status parameter");
+                        return ToolResult::error("status is required for set_status action");
+                    }
                 };
 
                 let mut todos = self.todos.lock().await;
                 if let Some(item) = todos.iter_mut().find(|t| t.id == task_id) {
                     item.status = status.clone();
+                    debug!(%task_id, ?status, "TodoTool::execute: task status updated");
                     ToolResult::success(format!("Set task #{} status to {}", task_id, status))
                 } else {
+                    debug!(%task_id, "TodoTool::execute: task not found for set_status");
                     ToolResult::error(format!("Task #{} not found", task_id))
                 }
             }
             "list" => {
+                debug!("TodoTool::execute: list action");
                 let todos = self.todos.lock().await;
                 if todos.is_empty() {
+                    debug!("TodoTool::execute: no tasks in list");
                     return ToolResult::success("No tasks in the list");
                 }
 
+                debug!(count = %todos.len(), "TodoTool::execute: listing tasks");
                 let output: Vec<String> = todos
                     .iter()
                     .map(|t| {
@@ -188,12 +249,17 @@ impl Tool for TodoTool {
                 ToolResult::success(output.join("\n"))
             }
             "clear" => {
+                debug!("TodoTool::execute: clear action");
                 let mut todos = self.todos.lock().await;
                 let count = todos.len();
                 todos.clear();
+                debug!(%count, "TodoTool::execute: tasks cleared");
                 ToolResult::success(format!("Cleared {} task(s)", count))
             }
-            _ => ToolResult::error(format!("Unknown action: {}", action)),
+            _ => {
+                debug!(%action, "TodoTool::execute: unknown action");
+                ToolResult::error(format!("Unknown action: {}", action))
+            }
         }
     }
 }

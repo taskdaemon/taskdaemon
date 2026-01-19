@@ -2,6 +2,8 @@
 //!
 //! These are compiled into the binary from .pmt files at build time.
 
+use tracing::debug;
+
 /// Consolidated Rule of Five plan prompt
 pub const PLAN: &str = include_str!("../../prompts/plan.pmt");
 
@@ -10,10 +12,20 @@ pub const TITLE_GENERATOR: &str = include_str!("../../prompts/title.pmt");
 
 /// Get the embedded prompt by name
 pub fn get_embedded(name: &str) -> Option<&'static str> {
+    debug!(%name, "get_embedded: called");
     match name {
-        "plan" => Some(PLAN),
-        "title" => Some(TITLE_GENERATOR),
-        _ => None,
+        "plan" => {
+            debug!("get_embedded: matched plan");
+            Some(PLAN)
+        }
+        "title" => {
+            debug!("get_embedded: matched title");
+            Some(TITLE_GENERATOR)
+        }
+        _ => {
+            debug!("get_embedded: no match found");
+            None
+        }
     }
 }
 

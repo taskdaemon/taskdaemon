@@ -1,6 +1,7 @@
 //! ToolExecutor - manages tool execution for a loop
 
 use std::collections::HashMap;
+use tracing::debug;
 
 use crate::llm::{ToolCall, ToolDefinition};
 
@@ -18,6 +19,7 @@ pub struct ToolExecutor {
 impl ToolExecutor {
     /// Create executor with standard tools
     pub fn standard() -> Self {
+        debug!("ToolExecutor::standard: called");
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
         // File system tools
@@ -49,16 +51,19 @@ impl ToolExecutor {
 
     /// Create an empty executor (for testing)
     pub fn empty() -> Self {
+        debug!("ToolExecutor::empty: called");
         Self { tools: HashMap::new() }
     }
 
     /// Add a tool to the executor
     pub fn add_tool(&mut self, tool: Box<dyn Tool>) {
+        debug!(tool_name = %tool.name(), "ToolExecutor::add_tool: called");
         self.tools.insert(tool.name().to_string(), tool);
     }
 
     /// Get tool definitions for LLM
     pub fn definitions(&self) -> Vec<ToolDefinition> {
+        debug!("ToolExecutor::definitions: called");
         self.tools
             .values()
             .map(|t| ToolDefinition {
@@ -71,6 +76,7 @@ impl ToolExecutor {
 
     /// Get definitions for a subset of tools by name
     pub fn definitions_for(&self, tool_names: &[String]) -> Vec<ToolDefinition> {
+        debug!(?tool_names, "ToolExecutor::definitions_for: called");
         tool_names
             .iter()
             .filter_map(|name| self.tools.get(name))
@@ -84,31 +90,45 @@ impl ToolExecutor {
 
     /// Execute a tool call
     pub async fn execute(&self, tool_call: &ToolCall, ctx: &ToolContext) -> ToolResult {
+        debug!(tool_name = %tool_call.name, tool_id = %tool_call.id, "ToolExecutor::execute: called");
         match self.tools.get(&tool_call.name) {
-            Some(tool) => tool.execute(tool_call.input.clone(), ctx).await,
-            None => ToolResult::error(format!("Unknown tool: {}", tool_call.name)),
+            Some(tool) => {
+                debug!("ToolExecutor::execute: tool found, executing");
+                tool.execute(tool_call.input.clone(), ctx).await
+            }
+            None => {
+                debug!("ToolExecutor::execute: unknown tool");
+                ToolResult::error(format!("Unknown tool: {}", tool_call.name))
+            }
         }
     }
 
     /// Execute multiple tool calls
     pub async fn execute_all(&self, tool_calls: &[ToolCall], ctx: &ToolContext) -> Vec<(String, ToolResult)> {
+        debug!(count = %tool_calls.len(), "ToolExecutor::execute_all: called");
         let mut results = Vec::with_capacity(tool_calls.len());
 
         for call in tool_calls {
+            debug!(tool_name = %call.name, tool_id = %call.id, "ToolExecutor::execute_all: executing tool");
             let result = self.execute(call, ctx).await;
             results.push((call.id.clone(), result));
         }
 
+        debug!("ToolExecutor::execute_all: completed all tools");
         results
     }
 
     /// Check if a tool exists
     pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
+        debug!(%name, "ToolExecutor::has_tool: called");
+        let result = self.tools.contains_key(name);
+        debug!(%result, "ToolExecutor::has_tool: returning");
+        result
     }
 
     /// Get tool names
     pub fn tool_names(&self) -> Vec<String> {
+        debug!("ToolExecutor::tool_names: called");
         self.tools.keys().cloned().collect()
     }
 }

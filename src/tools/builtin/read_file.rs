@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::Path;
+use tracing::debug;
 
 use crate::tools::{Tool, ToolContext, ToolResult};
 
@@ -41,25 +42,46 @@ impl Tool for ReadFileTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> ToolResult {
+        debug!(?input, "ReadFileTool::execute: called");
         let path = match input["path"].as_str() {
-            Some(p) => p,
-            None => return ToolResult::error("path is required"),
+            Some(p) => {
+                debug!(%p, "ReadFileTool::execute: path parameter found");
+                p
+            }
+            None => {
+                debug!("ReadFileTool::execute: missing path parameter");
+                return ToolResult::error("path is required");
+            }
         };
 
         let offset = input["offset"].as_u64().unwrap_or(1) as usize;
         let limit = input["limit"].as_u64().unwrap_or(2000) as usize;
+        debug!(%offset, %limit, "ReadFileTool::execute: offset and limit parameters");
 
         let full_path = match ctx.validate_path(Path::new(path)) {
-            Ok(p) => p,
-            Err(e) => return ToolResult::error(e.to_string()),
+            Ok(p) => {
+                debug!(?p, "ReadFileTool::execute: path validated");
+                p
+            }
+            Err(e) => {
+                debug!(%e, "ReadFileTool::execute: path validation failed");
+                return ToolResult::error(e.to_string());
+            }
         };
 
         let content = match tokio::fs::read_to_string(&full_path).await {
-            Ok(c) => c,
-            Err(e) => return ToolResult::error(format!("Failed to read file: {}", e)),
+            Ok(c) => {
+                debug!(content_len = %c.len(), "ReadFileTool::execute: file content read");
+                c
+            }
+            Err(e) => {
+                debug!(%e, "ReadFileTool::execute: failed to read file");
+                return ToolResult::error(format!("Failed to read file: {}", e));
+            }
         };
 
         // Track read for edit validation
+        debug!("ReadFileTool::execute: tracking read for edit validation");
         ctx.track_read(&full_path).await;
 
         // Format with line numbers (cat -n style)
@@ -79,6 +101,7 @@ impl Tool for ReadFileTool {
             })
             .collect();
 
+        debug!(lines_count = %lines.len(), "ReadFileTool::execute: returning formatted lines");
         ToolResult::success(lines.join("\n"))
     }
 }

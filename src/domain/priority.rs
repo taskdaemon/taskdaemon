@@ -1,6 +1,7 @@
 //! Priority levels for task scheduling
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Priority level for Plans and Specs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
@@ -15,11 +16,24 @@ pub enum Priority {
 
 impl std::fmt::Display for Priority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug!(?self, "Priority::fmt: called");
         match self {
-            Self::Low => write!(f, "low"),
-            Self::Normal => write!(f, "normal"),
-            Self::High => write!(f, "high"),
-            Self::Critical => write!(f, "critical"),
+            Self::Low => {
+                debug!("Priority::fmt: Low branch");
+                write!(f, "low")
+            }
+            Self::Normal => {
+                debug!("Priority::fmt: Normal branch");
+                write!(f, "normal")
+            }
+            Self::High => {
+                debug!("Priority::fmt: High branch");
+                write!(f, "high")
+            }
+            Self::Critical => {
+                debug!("Priority::fmt: Critical branch");
+                write!(f, "critical")
+            }
         }
     }
 }
@@ -28,12 +42,28 @@ impl std::str::FromStr for Priority {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        debug!(%s, "Priority::from_str: called");
         match s.to_lowercase().as_str() {
-            "low" => Ok(Self::Low),
-            "normal" => Ok(Self::Normal),
-            "high" => Ok(Self::High),
-            "critical" => Ok(Self::Critical),
-            _ => Err(format!("Unknown priority: {}", s)),
+            "low" => {
+                debug!("Priority::from_str: matched low");
+                Ok(Self::Low)
+            }
+            "normal" => {
+                debug!("Priority::from_str: matched normal");
+                Ok(Self::Normal)
+            }
+            "high" => {
+                debug!("Priority::from_str: matched high");
+                Ok(Self::High)
+            }
+            "critical" => {
+                debug!("Priority::from_str: matched critical");
+                Ok(Self::Critical)
+            }
+            _ => {
+                debug!(%s, "Priority::from_str: unknown priority");
+                Err(format!("Unknown priority: {}", s))
+            }
         }
     }
 }

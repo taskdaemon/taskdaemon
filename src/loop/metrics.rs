@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Aggregate metrics for all loops
 #[derive(Debug, Default)]
@@ -87,9 +88,12 @@ pub struct LoopStats {
 impl LoopStats {
     /// Create new stats for an execution
     pub fn new(exec_id: impl Into<String>, loop_type: impl Into<String>) -> Self {
+        let exec_id_str = exec_id.into();
+        let loop_type_str = loop_type.into();
+        debug!(exec_id = %exec_id_str, loop_type = %loop_type_str, "LoopStats::new: called");
         Self {
-            exec_id: exec_id.into(),
-            loop_type: loop_type.into(),
+            exec_id: exec_id_str,
+            loop_type: loop_type_str,
             started_at: taskstore::now_ms(),
             ..Default::default()
         }
@@ -97,12 +101,14 @@ impl LoopStats {
 
     /// Record an iteration completion
     pub fn record_iteration(&mut self, duration: Duration) {
+        debug!(exec_id = %self.exec_id, duration_ms = duration.as_millis() as u64, "LoopStats::record_iteration: called");
         self.iterations += 1;
         self.iteration_times_ms.push(duration.as_millis() as u64);
     }
 
     /// Record an API call
     pub fn record_api_call(&mut self, input_tokens: u64, output_tokens: u64) {
+        debug!(exec_id = %self.exec_id, input_tokens, output_tokens, "LoopStats::record_api_call: called");
         self.api_calls += 1;
         self.tokens_input += input_tokens;
         self.tokens_output += output_tokens;
@@ -110,29 +116,38 @@ impl LoopStats {
 
     /// Record a tool call
     pub fn record_tool_call(&mut self, tool_name: &str) {
+        debug!(exec_id = %self.exec_id, %tool_name, "LoopStats::record_tool_call: called");
         *self.tool_calls.entry(tool_name.to_string()).or_default() += 1;
     }
 
     /// Mark completion
     pub fn mark_complete(&mut self, status: &str) {
+        debug!(exec_id = %self.exec_id, %status, "LoopStats::mark_complete: called");
         self.ended_at = taskstore::now_ms();
         self.final_status = status.to_string();
     }
 
     /// Calculate average iteration time
     pub fn avg_iteration_time_ms(&self) -> f64 {
+        debug!(exec_id = %self.exec_id, iteration_count = self.iteration_times_ms.len(), "LoopStats::avg_iteration_time_ms: called");
         if self.iteration_times_ms.is_empty() {
+            debug!(exec_id = %self.exec_id, "avg_iteration_time_ms: no iterations");
             0.0
         } else {
-            self.iteration_times_ms.iter().sum::<u64>() as f64 / self.iteration_times_ms.len() as f64
+            let avg = self.iteration_times_ms.iter().sum::<u64>() as f64 / self.iteration_times_ms.len() as f64;
+            debug!(exec_id = %self.exec_id, avg, "avg_iteration_time_ms: calculated");
+            avg
         }
     }
 
     /// Calculate total duration
     pub fn total_duration_ms(&self) -> i64 {
+        debug!(exec_id = %self.exec_id, ended_at = self.ended_at, started_at = self.started_at, "LoopStats::total_duration_ms: called");
         if self.ended_at > 0 {
+            debug!(exec_id = %self.exec_id, "total_duration_ms: loop ended");
             self.ended_at - self.started_at
         } else {
+            debug!(exec_id = %self.exec_id, "total_duration_ms: loop still running");
             taskstore::now_ms() - self.started_at
         }
     }
@@ -141,20 +156,26 @@ impl LoopStats {
 impl LoopMetrics {
     /// Create a new metrics tracker
     pub fn new() -> Self {
+        debug!("LoopMetrics::new: called");
         Self::default()
     }
 
     /// Start tracking a new loop
     pub fn start_loop(&self, exec_id: &str, loop_type: &str) {
+        debug!(%exec_id, %loop_type, "LoopMetrics::start_loop: called");
         let stats = LoopStats::new(exec_id, loop_type);
 
         // Insert loop stats
         if let Ok(mut loops) = self.loops.write() {
+            debug!(%exec_id, "start_loop: inserting loop stats");
             loops.insert(exec_id.to_string(), stats);
+        } else {
+            debug!(%exec_id, "start_loop: failed to acquire loops write lock");
         }
 
         // Update type metrics
         if let Ok(mut type_metrics) = self.type_metrics.write() {
+            debug!(%exec_id, %loop_type, "start_loop: updating type metrics");
             let metrics = type_metrics
                 .entry(loop_type.to_string())
                 .or_insert_with(|| TypeMetrics {
@@ -162,25 +183,35 @@ impl LoopMetrics {
                     ..Default::default()
                 });
             metrics.loops_started += 1;
+        } else {
+            debug!(%exec_id, "start_loop: failed to acquire type_metrics write lock");
         }
     }
 
     /// Record an iteration for a loop
     pub fn record_iteration(&self, exec_id: &str, duration: Duration) {
+        debug!(%exec_id, duration_ms = duration.as_millis() as u64, "LoopMetrics::record_iteration: called");
         if let Ok(mut loops) = self.loops.write()
             && let Some(stats) = loops.get_mut(exec_id)
         {
+            debug!(%exec_id, "record_iteration: recording to stats");
             stats.record_iteration(duration);
+        } else {
+            debug!(%exec_id, "record_iteration: loop not found or lock failed");
         }
         self.global.total_iterations.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record an API call for a loop
     pub fn record_api_call(&self, exec_id: &str, input_tokens: u64, output_tokens: u64) {
+        debug!(%exec_id, input_tokens, output_tokens, "LoopMetrics::record_api_call: called");
         if let Ok(mut loops) = self.loops.write()
             && let Some(stats) = loops.get_mut(exec_id)
         {
+            debug!(%exec_id, "record_api_call: recording to stats");
             stats.record_api_call(input_tokens, output_tokens);
+        } else {
+            debug!(%exec_id, "record_api_call: loop not found or lock failed");
         }
         self.global.total_api_calls.fetch_add(1, Ordering::Relaxed);
         self.global
@@ -193,19 +224,25 @@ impl LoopMetrics {
 
     /// Record a tool call for a loop
     pub fn record_tool_call(&self, exec_id: &str, tool_name: &str) {
+        debug!(%exec_id, %tool_name, "LoopMetrics::record_tool_call: called");
         if let Ok(mut loops) = self.loops.write()
             && let Some(stats) = loops.get_mut(exec_id)
         {
+            debug!(%exec_id, "record_tool_call: recording to stats");
             stats.record_tool_call(tool_name);
+        } else {
+            debug!(%exec_id, "record_tool_call: loop not found or lock failed");
         }
         self.global.total_tool_calls.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Mark a loop as complete
     pub fn complete_loop(&self, exec_id: &str, status: &str) {
+        debug!(%exec_id, %status, "LoopMetrics::complete_loop: called");
         let loop_type = if let Ok(mut loops) = self.loops.write()
             && let Some(stats) = loops.get_mut(exec_id)
         {
+            debug!(%exec_id, "complete_loop: marking stats complete");
             stats.mark_complete(status);
             Some((
                 stats.loop_type.clone(),
@@ -214,6 +251,7 @@ impl LoopMetrics {
                 stats.tokens_input + stats.tokens_output,
             ))
         } else {
+            debug!(%exec_id, "complete_loop: loop not found or lock failed");
             None
         };
 
@@ -223,8 +261,10 @@ impl LoopMetrics {
             && let Some(metrics) = type_metrics.get_mut(&loop_type)
         {
             if status == "complete" {
+                debug!(%exec_id, %loop_type, "complete_loop: incrementing loops_completed");
                 metrics.loops_completed += 1;
             } else {
+                debug!(%exec_id, %loop_type, "complete_loop: incrementing loops_failed");
                 metrics.loops_failed += 1;
             }
             metrics.total_iterations += iterations as u64;
@@ -234,30 +274,44 @@ impl LoopMetrics {
             // Update average
             if metrics.loops_completed > 0 {
                 metrics.avg_iterations_per_loop = metrics.total_iterations as f64 / metrics.loops_completed as f64;
+                debug!(%exec_id, %loop_type, avg = metrics.avg_iterations_per_loop, "complete_loop: updated average");
             }
+        } else {
+            debug!(%exec_id, "complete_loop: could not update type metrics");
         }
     }
 
     /// Get stats for a specific loop
     pub fn get_loop_stats(&self, exec_id: &str) -> Option<LoopStats> {
-        self.loops.read().ok()?.get(exec_id).cloned()
+        debug!(%exec_id, "LoopMetrics::get_loop_stats: called");
+        let result = self.loops.read().ok()?.get(exec_id).cloned();
+        debug!(%exec_id, found = result.is_some(), "get_loop_stats: returning");
+        result
     }
 
     /// Get aggregate metrics for a loop type
     pub fn get_type_metrics(&self, loop_type: &str) -> Option<TypeMetrics> {
-        self.type_metrics.read().ok()?.get(loop_type).cloned()
+        debug!(%loop_type, "LoopMetrics::get_type_metrics: called");
+        let result = self.type_metrics.read().ok()?.get(loop_type).cloned();
+        debug!(%loop_type, found = result.is_some(), "get_type_metrics: returning");
+        result
     }
 
     /// Get all type metrics
     pub fn all_type_metrics(&self) -> Vec<TypeMetrics> {
-        self.type_metrics
+        debug!("LoopMetrics::all_type_metrics: called");
+        let result: Vec<_> = self
+            .type_metrics
             .read()
             .map(|m| m.values().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        debug!(count = result.len(), "all_type_metrics: returning");
+        result
     }
 
     /// Get global summary
     pub fn global_summary(&self) -> GlobalSummary {
+        debug!("LoopMetrics::global_summary: called");
         GlobalSummary {
             total_iterations: self.global.total_iterations.load(Ordering::Relaxed),
             total_api_calls: self.global.total_api_calls.load(Ordering::Relaxed),
@@ -274,6 +328,7 @@ impl LoopMetrics {
 
     /// Export all metrics as JSON
     pub fn export_json(&self) -> serde_json::Value {
+        debug!("LoopMetrics::export_json: called");
         let loops: Vec<_> = self
             .loops
             .read()
@@ -281,6 +336,11 @@ impl LoopMetrics {
             .unwrap_or_default();
         let types: Vec<_> = self.all_type_metrics();
         let global = self.global_summary();
+        debug!(
+            loop_count = loops.len(),
+            type_count = types.len(),
+            "export_json: returning"
+        );
 
         serde_json::json!({
             "global": global,
@@ -310,20 +370,24 @@ pub struct IterationTimer {
 impl IterationTimer {
     /// Start timing an iteration
     pub fn start(exec_id: impl Into<String>) -> Self {
+        let exec_id_str = exec_id.into();
+        debug!(exec_id = %exec_id_str, "IterationTimer::start: called");
         Self {
             start: Instant::now(),
-            exec_id: exec_id.into(),
+            exec_id: exec_id_str,
         }
     }
 
     /// Stop timing and record to metrics
     pub fn stop(self, metrics: &LoopMetrics) {
         let duration = self.start.elapsed();
+        debug!(exec_id = %self.exec_id, duration_ms = duration.as_millis() as u64, "IterationTimer::stop: called");
         metrics.record_iteration(&self.exec_id, duration);
     }
 
     /// Get elapsed duration without stopping
     pub fn elapsed(&self) -> Duration {
+        debug!(exec_id = %self.exec_id, "IterationTimer::elapsed: called");
         self.start.elapsed()
     }
 }

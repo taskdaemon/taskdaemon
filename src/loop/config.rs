@@ -1,6 +1,7 @@
 //! Loop configuration types
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Configuration for a loop type (from YAML)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,27 +44,33 @@ pub struct LoopConfig {
 }
 
 fn default_max_iterations() -> u32 {
+    debug!("default_max_iterations: called");
     100
 }
 
 fn default_max_turns() -> u32 {
+    debug!("default_max_turns: called");
     50
 }
 
 fn default_iteration_timeout() -> u64 {
+    debug!("default_iteration_timeout: called");
     300_000 // 5 minutes
 }
 
 fn default_progress_max_entries() -> usize {
+    debug!("default_progress_max_entries: called");
     5
 }
 
 fn default_progress_max_chars() -> usize {
+    debug!("default_progress_max_chars: called");
     500
 }
 
 impl Default for LoopConfig {
     fn default() -> Self {
+        debug!("LoopConfig::default: called");
         Self {
             // loop_type is empty by default - actual type should come from
             // the LoopLoader based on the execution's loop_type field

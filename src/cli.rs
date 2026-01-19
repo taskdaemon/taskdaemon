@@ -2,6 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing::debug;
 
 /// TaskDaemon - Ralph Wiggum Loop Orchestrator
 #[derive(Parser)]
@@ -30,7 +31,7 @@ pub struct Cli {
 }
 
 /// CLI subcommands
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum Command {
     /// Manage the taskdaemon daemon
     Daemon {
@@ -80,10 +81,54 @@ pub enum Command {
         #[arg(short, long, default_value = "50")]
         lines: usize,
     },
+
+    /// Manage executions (for testing state transitions)
+    Exec {
+        #[command(subcommand)]
+        command: ExecCommand,
+    },
+}
+
+/// Execution management subcommands
+#[derive(Debug, Subcommand)]
+pub enum ExecCommand {
+    /// List all executions
+    List {
+        /// Filter by status (draft, pending, running, paused, complete, failed)
+        #[arg(short, long)]
+        status: Option<String>,
+    },
+
+    /// Start a draft execution (draft -> pending)
+    Start {
+        /// Execution ID (or partial match)
+        id: String,
+    },
+
+    /// Pause a running execution (running -> paused)
+    Pause {
+        /// Execution ID (or partial match)
+        id: String,
+    },
+
+    /// Resume a paused execution (paused -> running)
+    Resume {
+        /// Execution ID (or partial match)
+        id: String,
+    },
+
+    /// Set execution status directly (for testing)
+    Status {
+        /// Execution ID (or partial match)
+        id: String,
+
+        /// New status (draft, pending, running, paused, complete, failed)
+        status: String,
+    },
 }
 
 /// Daemon management subcommands
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum DaemonCommand {
     /// Start the daemon
     Start {
@@ -117,10 +162,12 @@ pub struct ToolCheck {
 impl ToolCheck {
     /// Check if a tool is available and get its version
     pub fn check(name: &'static str, version_args: &[&str]) -> Self {
+        debug!(name, ?version_args, "ToolCheck::check: called");
         let result = std::process::Command::new(name).args(version_args).output();
 
         match result {
             Ok(output) if output.status.success() => {
+                debug!(name, "ToolCheck::check: tool available");
                 let version_str = String::from_utf8_lossy(&output.stdout);
                 let version = parse_version(&version_str);
                 Self {
@@ -129,17 +176,21 @@ impl ToolCheck {
                     version: Some(version),
                 }
             }
-            _ => Self {
-                name,
-                available: false,
-                version: None,
-            },
+            _ => {
+                debug!(name, "ToolCheck::check: tool not available");
+                Self {
+                    name,
+                    available: false,
+                    version: None,
+                }
+            }
         }
     }
 }
 
 /// Parse version from command output (extracts first version-like string)
 fn parse_version(output: &str) -> String {
+    debug!(%output, "parse_version: called");
     // Look for patterns like "1.2.3" or "v1.2.3"
     for word in output.split_whitespace() {
         let word = word.trim_start_matches('v');
@@ -147,23 +198,29 @@ fn parse_version(output: &str) -> String {
             // Take until non-version character
             let version: String = word.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
             if !version.is_empty() {
+                debug!(%version, "parse_version: found version");
                 return version;
             }
         }
     }
+    debug!("parse_version: no version found, returning unknown");
     "unknown".to_string()
 }
 
 /// Check all required tools and return their status
 pub fn check_required_tools() -> Vec<ToolCheck> {
-    vec![
+    debug!("check_required_tools: called");
+    let tools = vec![
         ToolCheck::check("bwrap", &["--version"]),
         ToolCheck::check("git", &["--version"]),
-    ]
+    ];
+    debug!(count = tools.len(), "check_required_tools: returning tools");
+    tools
 }
 
 /// Check if the daemon is running (lightweight check for help display)
 pub fn is_daemon_running() -> bool {
+    debug!("is_daemon_running: called");
     // Use the same path logic as daemon.rs:default_pid_path()
     let pid_file = dirs::runtime_dir()
         .or_else(dirs::data_local_dir)
@@ -172,6 +229,7 @@ pub fn is_daemon_running() -> bool {
         .join("taskdaemon.pid");
 
     if !pid_file.exists() {
+        debug!(?pid_file, "is_daemon_running: pid file does not exist");
         return false;
     }
 
@@ -179,23 +237,30 @@ pub fn is_daemon_running() -> bool {
         && let Ok(pid) = contents.trim().parse::<u32>()
     {
         // Check if process exists
-        return PathBuf::from(format!("/proc/{}", pid)).exists();
+        let exists = PathBuf::from(format!("/proc/{}", pid)).exists();
+        debug!(pid, exists, "is_daemon_running: checked process existence");
+        return exists;
     }
 
+    debug!("is_daemon_running: could not read or parse pid file");
     false
 }
 
 /// Get the log file path
 pub fn get_log_path() -> PathBuf {
-    dirs::data_local_dir()
+    debug!("get_log_path: called");
+    let path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("taskdaemon")
         .join("logs")
-        .join("taskdaemon.log")
+        .join("taskdaemon.log");
+    debug!(?path, "get_log_path: returning path");
+    path
 }
 
 /// Generate the after_help text with tool checks and daemon status
 pub fn generate_after_help() -> String {
+    debug!("generate_after_help: called");
     let tools = check_required_tools();
     let daemon_running = is_daemon_running();
     let log_path = get_log_path();
@@ -205,7 +270,13 @@ pub fn generate_after_help() -> String {
     // Required Tools section
     help.push_str("Required Tools:\n");
     for tool in &tools {
-        let icon = if tool.available { "\u{2705}" } else { "\u{274C}" };
+        let icon = if tool.available {
+            debug!(name = tool.name, "generate_after_help: tool available");
+            "\u{2705}"
+        } else {
+            debug!(name = tool.name, "generate_after_help: tool not available");
+            "\u{274C}"
+        };
         let version = tool.version.as_deref().unwrap_or("not found");
         help.push_str(&format!("  {} {:<10} {}\n", icon, tool.name, version));
     }
@@ -213,7 +284,13 @@ pub fn generate_after_help() -> String {
     // Daemon section
     help.push('\n');
     help.push_str("Daemon:\n");
-    let daemon_icon = if daemon_running { "\u{2705}" } else { "\u{274C}" };
+    let daemon_icon = if daemon_running {
+        debug!("generate_after_help: daemon is running");
+        "\u{2705}"
+    } else {
+        debug!("generate_after_help: daemon is stopped");
+        "\u{274C}"
+    };
     let daemon_status = if daemon_running { "running" } else { "stopped" };
     help.push_str(&format!("  {} {}\n", daemon_icon, daemon_status));
 
@@ -221,6 +298,7 @@ pub fn generate_after_help() -> String {
     help.push('\n');
     help.push_str(&format!("Logs are written to: {}\n", log_path.display()));
 
+    debug!("generate_after_help: returning help text");
     help
 }
 
@@ -237,21 +315,44 @@ impl std::str::FromStr for OutputFormat {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        debug!(%s, "OutputFormat::from_str: called");
         match s.to_lowercase().as_str() {
-            "text" | "plain" => Ok(Self::Text),
-            "json" => Ok(Self::Json),
-            "table" => Ok(Self::Table),
-            _ => Err(format!("Unknown format: {}. Use: text, json, or table", s)),
+            "text" | "plain" => {
+                debug!("OutputFormat::from_str: matched Text");
+                Ok(Self::Text)
+            }
+            "json" => {
+                debug!("OutputFormat::from_str: matched Json");
+                Ok(Self::Json)
+            }
+            "table" => {
+                debug!("OutputFormat::from_str: matched Table");
+                Ok(Self::Table)
+            }
+            _ => {
+                debug!(%s, "OutputFormat::from_str: unknown format");
+                Err(format!("Unknown format: {}. Use: text, json, or table", s))
+            }
         }
     }
 }
 
 impl std::fmt::Display for OutputFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug!(?self, "OutputFormat::fmt: called");
         match self {
-            Self::Text => write!(f, "text"),
-            Self::Json => write!(f, "json"),
-            Self::Table => write!(f, "table"),
+            Self::Text => {
+                debug!("OutputFormat::fmt: writing text");
+                write!(f, "text")
+            }
+            Self::Json => {
+                debug!("OutputFormat::fmt: writing json");
+                write!(f, "json")
+            }
+            Self::Table => {
+                debug!("OutputFormat::fmt: writing table");
+                write!(f, "table")
+            }
         }
     }
 }

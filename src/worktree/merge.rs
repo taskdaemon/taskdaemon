@@ -6,7 +6,7 @@ use std::path::Path;
 
 use eyre::{Result, bail};
 use tokio::process::Command;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Result of a merge operation
 #[derive(Debug, Clone)]
@@ -22,20 +22,44 @@ pub enum MergeResult {
 impl MergeResult {
     /// Check if the merge was successful
     pub fn is_success(&self) -> bool {
-        matches!(self, Self::Success)
+        debug!("MergeResult::is_success: called");
+        let result = matches!(self, Self::Success);
+        if result {
+            debug!("MergeResult::is_success: returning true");
+        } else {
+            debug!("MergeResult::is_success: returning false");
+        }
+        result
     }
 
     /// Check if there was a conflict
     pub fn is_conflict(&self) -> bool {
-        matches!(self, Self::Conflict { .. })
+        debug!("MergeResult::is_conflict: called");
+        let result = matches!(self, Self::Conflict { .. });
+        if result {
+            debug!("MergeResult::is_conflict: returning true");
+        } else {
+            debug!("MergeResult::is_conflict: returning false");
+        }
+        result
     }
 
     /// Get error message if any
     pub fn error_message(&self) -> Option<&str> {
+        debug!("MergeResult::error_message: called");
         match self {
-            Self::Success => None,
-            Self::Conflict { message } => Some(message),
-            Self::PushFailed { message } => Some(message),
+            Self::Success => {
+                debug!("MergeResult::error_message: Success variant");
+                None
+            }
+            Self::Conflict { message } => {
+                debug!("MergeResult::error_message: Conflict variant");
+                Some(message)
+            }
+            Self::PushFailed { message } => {
+                debug!("MergeResult::error_message: PushFailed variant");
+                Some(message)
+            }
         }
     }
 }
@@ -66,6 +90,7 @@ pub async fn merge_to_main(
     exec_id: &str,
     spec_title: &str,
 ) -> Result<MergeResult> {
+    debug!(?repo_root, ?worktree_path, %exec_id, %spec_title, "merge_to_main: called");
     let branch_name = format!("taskdaemon/{}", exec_id);
 
     info!(
@@ -83,6 +108,7 @@ pub async fn merge_to_main(
         .await?;
 
     if !status.stdout.is_empty() {
+        debug!("merge_to_main: uncommitted changes found, auto-committing");
         info!("Auto-committing uncommitted changes in worktree");
 
         // Stage all changes
@@ -101,13 +127,19 @@ pub async fn merge_to_main(
             .await?;
 
         if !commit_output.status.success() {
+            debug!("merge_to_main: auto-commit failed");
             let stderr = String::from_utf8_lossy(&commit_output.stderr);
             warn!("Auto-commit failed: {}", stderr);
             // Continue anyway - might be nothing to commit
+        } else {
+            debug!("merge_to_main: auto-commit succeeded");
         }
+    } else {
+        debug!("merge_to_main: no uncommitted changes");
     }
 
     // 2. Switch to main in repo root
+    debug!("merge_to_main: checking out main branch");
     let checkout_output = Command::new("git")
         .args(["checkout", "main"])
         .current_dir(repo_root)
@@ -115,11 +147,14 @@ pub async fn merge_to_main(
         .await?;
 
     if !checkout_output.status.success() {
+        debug!("merge_to_main: checkout main failed");
         let stderr = String::from_utf8_lossy(&checkout_output.stderr);
         bail!("Failed to checkout main: {}", stderr);
     }
+    debug!("merge_to_main: checkout main succeeded");
 
     // 3. Pull latest main
+    debug!("merge_to_main: pulling latest main");
     let pull_output = Command::new("git")
         .args(["pull", "--rebase"])
         .current_dir(repo_root)
@@ -127,12 +162,16 @@ pub async fn merge_to_main(
         .await?;
 
     if !pull_output.status.success() {
+        debug!("merge_to_main: pull failed (might be no remote)");
         let stderr = String::from_utf8_lossy(&pull_output.stderr);
         warn!("Pull failed (might be no remote): {}", stderr);
         // Continue anyway - might be a local-only repo
+    } else {
+        debug!("merge_to_main: pull succeeded");
     }
 
     // 4. Merge the feature branch with no-ff
+    debug!("merge_to_main: merging feature branch");
     let merge_msg = format!("Merge spec: {}", spec_title);
     let merge_output = Command::new("git")
         .args(["merge", "--no-ff", &branch_name, "-m", &merge_msg])
@@ -143,13 +182,16 @@ pub async fn merge_to_main(
     if !merge_output.status.success() {
         let stderr = String::from_utf8_lossy(&merge_output.stderr);
         if stderr.contains("CONFLICT") {
+            debug!("merge_to_main: merge conflict detected");
             warn!("Merge conflict detected for {}", exec_id);
             return Ok(MergeResult::Conflict {
                 message: stderr.to_string(),
             });
         }
+        debug!("merge_to_main: merge failed");
         bail!("Merge failed: {}", stderr);
     }
+    debug!("merge_to_main: merge succeeded");
 
     info!(
         exec_id = %exec_id,
@@ -157,6 +199,7 @@ pub async fn merge_to_main(
     );
 
     // 5. Push to remote
+    debug!("merge_to_main: pushing to remote");
     let push_output = Command::new("git")
         .args(["push", "origin", "main"])
         .current_dir(repo_root)
@@ -164,12 +207,14 @@ pub async fn merge_to_main(
         .await?;
 
     if !push_output.status.success() {
+        debug!("merge_to_main: push failed");
         let stderr = String::from_utf8_lossy(&push_output.stderr);
         warn!("Push failed: {}", stderr);
         return Ok(MergeResult::PushFailed {
             message: stderr.to_string(),
         });
     }
+    debug!("merge_to_main: push succeeded");
 
     info!(
         exec_id = %exec_id,

@@ -8,6 +8,7 @@
 use std::time::Instant;
 
 use rand::seq::IndexedRandom;
+use tracing::debug;
 
 use super::tree::LoopTree;
 
@@ -63,6 +64,7 @@ pub enum TopLevelPane {
 impl TopLevelPane {
     /// Get the next pane in the cycle
     pub fn next(self) -> Self {
+        debug!(?self, "TopLevelPane::next: called");
         match self {
             Self::Chat => Self::Plan,
             Self::Plan => Self::Loops,
@@ -72,6 +74,7 @@ impl TopLevelPane {
 
     /// Get the previous pane in the cycle
     pub fn prev(self) -> Self {
+        debug!(?self, "TopLevelPane::prev: called");
         match self {
             Self::Chat => Self::Loops,
             Self::Plan => Self::Chat,
@@ -82,6 +85,7 @@ impl TopLevelPane {
 
 /// Get the current top-level pane based on view and repl_mode
 pub fn current_pane(view: &View, repl_mode: ReplMode) -> TopLevelPane {
+    debug!(?view, ?repl_mode, "current_pane: called");
     match view {
         View::Repl => match repl_mode {
             ReplMode::Chat => TopLevelPane::Chat,
@@ -96,6 +100,7 @@ pub fn current_pane(view: &View, repl_mode: ReplMode) -> TopLevelPane {
 impl View {
     /// Get the display name for the header
     pub fn display_name(&self) -> String {
+        debug!(?self, "View::display_name: called");
         match self {
             Self::Repl => "REPL".to_string(),
             Self::Loops => "Loops".to_string(),
@@ -120,6 +125,7 @@ impl View {
     /// Dynamic commands (based on loaded loop types):
     /// - Any loaded type name (e.g., `plan`, `spec`) filters Records by that type
     pub fn from_command(cmd: &str, available_types: &[String]) -> Option<Self> {
+        debug!(%cmd, ?available_types, "View::from_command: called");
         match cmd {
             // REPL view
             "repl" => Some(Self::Repl),
@@ -148,12 +154,16 @@ impl View {
 
     /// Check if this is a list view (can navigate with j/k)
     pub fn is_list_view(&self) -> bool {
-        matches!(self, Self::Loops | Self::Records { .. } | Self::Executions)
+        let result = matches!(self, Self::Loops | Self::Records { .. } | Self::Executions);
+        debug!(?self, result, "View::is_list_view: called");
+        result
     }
 
     /// Check if this is a top-level view (can navigate with left/right)
     pub fn is_top_level(&self) -> bool {
-        matches!(self, Self::Repl | Self::Loops | Self::Executions | Self::Records { .. })
+        let result = matches!(self, Self::Repl | Self::Loops | Self::Executions | Self::Records { .. });
+        debug!(?self, result, "View::is_top_level: called");
+        result
     }
 }
 
@@ -253,7 +263,8 @@ pub enum ConfirmAction {
     PauseLoop(String),
     ResumeLoop(String),
     DeleteExecution(String),
-    StartDraft(String),
+    /// Activate a draft - goes directly to Running (no pending state)
+    ActivateDraft(String),
 }
 
 /// Action pending execution by the runner
@@ -263,7 +274,8 @@ pub enum PendingAction {
     PauseLoop(String),
     ResumeLoop(String),
     DeleteExecution(String),
-    StartDraft(String),
+    /// Activate a draft - goes directly to Running (no pending state)
+    ActivateDraft(String),
 }
 
 /// Request to create a plan from the current conversation
@@ -477,6 +489,8 @@ pub struct AppState {
     // === Describe view state ===
     pub describe_scroll: usize,
     pub describe_max_scroll: usize,
+    /// Show output instead of plan content in Describe view
+    pub describe_show_output: bool,
 
     // === Pending actions ===
     pub pending_task: Option<String>,
@@ -557,6 +571,7 @@ impl Default for AppState {
             logs_scroll: 0,
             describe_scroll: 0,
             describe_max_scroll: 0,
+            describe_show_output: false,
             pending_task: None,
             pending_action: None,
             last_refresh: 0,
@@ -589,11 +604,13 @@ impl Default for AppState {
 impl AppState {
     /// Create new AppState
     pub fn new() -> Self {
+        debug!("AppState::new: called");
         Self::default()
     }
 
     /// Navigate to a new view, pushing current to stack
     pub fn navigate_to(&mut self, view: View) {
+        debug!(?view, "AppState::navigate_to: called");
         self.view_stack.push(self.current_view.clone());
         self.current_view = view;
         self.reset_selection();
@@ -602,36 +619,51 @@ impl AppState {
 
     /// Push a view to the stack and switch to it
     pub fn push_view(&mut self, view: View) {
+        debug!(?view, "AppState::push_view: called");
         self.navigate_to(view);
     }
 
     /// Go back to previous view
     pub fn pop_view(&mut self) -> bool {
+        debug!("AppState::pop_view: called");
         if let Some(prev_view) = self.view_stack.pop() {
+            debug!(?prev_view, "AppState::pop_view: popped view");
             self.current_view = prev_view;
             self.reset_selection();
             self.filter_text.clear();
             true
         } else {
+            debug!("AppState::pop_view: stack empty");
             false
         }
     }
 
     /// Reset selection state for current view
     fn reset_selection(&mut self) {
+        debug!(?self.current_view, "AppState::reset_selection: called");
         match &self.current_view {
             View::Loops => {
+                debug!("AppState::reset_selection: Loops view");
                 self.loops_tree.select_first();
                 self.loops_scroll = 0;
             }
-            View::Records { .. } => self.records_selection = SelectionState::default(),
-            View::Executions => self.executions_selection = SelectionState::default(),
-            _ => {}
+            View::Records { .. } => {
+                debug!("AppState::reset_selection: Records view");
+                self.records_selection = SelectionState::default();
+            }
+            View::Executions => {
+                debug!("AppState::reset_selection: Executions view");
+                self.executions_selection = SelectionState::default();
+            }
+            _ => {
+                debug!("AppState::reset_selection: other view, no selection to reset");
+            }
         }
     }
 
     /// Get mutable selection state for current view
     pub fn current_selection_mut(&mut self) -> Option<&mut SelectionState> {
+        debug!(?self.current_view, "AppState::current_selection_mut: called");
         match &self.current_view {
             View::Loops => None, // Loops uses LoopTree for selection
             View::Records { .. } => Some(&mut self.records_selection),
@@ -642,6 +674,7 @@ impl AppState {
 
     /// Get item count for current view
     pub fn current_item_count(&self) -> usize {
+        debug!(?self.current_view, "AppState::current_item_count: called");
         match &self.current_view {
             View::Repl => self.repl_history.len(),
             View::Loops => self.loops_tree.visible_len(),
@@ -654,16 +687,20 @@ impl AppState {
 
     /// Set an error message
     pub fn set_error(&mut self, msg: impl Into<String>) {
-        self.error_message = Some(msg.into());
+        let msg = msg.into();
+        debug!(%msg, "AppState::set_error: called");
+        self.error_message = Some(msg);
     }
 
     /// Clear error message
     pub fn clear_error(&mut self) {
+        debug!("AppState::clear_error: called");
         self.error_message = None;
     }
 
     /// Get the ID of the currently selected item
     pub fn selected_item_id(&self) -> Option<String> {
+        debug!(?self.current_view, "AppState::selected_item_id: called");
         match &self.current_view {
             View::Loops => self.loops_tree.selected_id().cloned(),
             View::Records { .. } => {
@@ -684,6 +721,7 @@ impl AppState {
 
     /// Get the name/title of the currently selected item
     pub fn selected_item_name(&self) -> Option<String> {
+        debug!(?self.current_view, "AppState::selected_item_name: called");
         match &self.current_view {
             View::Loops => self.loops_tree.selected_node().map(|n| n.item.name.clone()),
             View::Records { .. } => {
@@ -704,6 +742,7 @@ impl AppState {
 
     /// Get the type of the currently selected item
     pub fn selected_item_type(&self) -> Option<String> {
+        debug!(?self.current_view, "AppState::selected_item_type: called");
         match &self.current_view {
             View::Loops => self.loops_tree.selected_node().map(|n| n.item.loop_type.clone()),
             View::Records { .. } => {
@@ -724,12 +763,14 @@ impl AppState {
 
     /// Get breadcrumb string for header
     pub fn breadcrumb(&self) -> String {
+        debug!("AppState::breadcrumb: called");
         self.current_view.display_name()
     }
 
     /// Scroll REPL view up by given lines
     /// max_scroll is the maximum valid scroll offset (content_height - viewport_height)
     pub fn repl_scroll_up(&mut self, lines: usize, max_scroll: usize) {
+        debug!(lines, max_scroll, "AppState::repl_scroll_up: called");
         // When at auto-scroll (None), current position is at max_scroll (bottom)
         let current = self.repl_scroll.unwrap_or(max_scroll);
         // Clamp current to actual max first (in case it was out of bounds)
@@ -740,6 +781,7 @@ impl AppState {
     /// Scroll REPL view down by given lines (towards bottom)
     /// max_scroll is the maximum valid scroll offset (content_height - viewport_height)
     pub fn repl_scroll_down(&mut self, lines: usize, max_scroll: usize) {
+        debug!(lines, max_scroll, "AppState::repl_scroll_down: called");
         // When at auto-scroll (None), current position is at max_scroll (bottom)
         let current = self.repl_scroll.unwrap_or(max_scroll);
         // Clamp current to actual max first (in case it was out of bounds)
@@ -747,6 +789,7 @@ impl AppState {
         let new_scroll = clamped_current.saturating_add(lines).min(max_scroll);
         // If we're at the bottom, switch back to auto-scroll mode
         if new_scroll >= max_scroll {
+            debug!("AppState::repl_scroll_down: at bottom, switching to auto-scroll");
             self.repl_scroll = None;
         } else {
             self.repl_scroll = Some(new_scroll);
@@ -755,27 +798,33 @@ impl AppState {
 
     /// Reset REPL scroll to auto-scroll mode (follow latest)
     pub fn repl_scroll_to_bottom(&mut self) {
+        debug!("AppState::repl_scroll_to_bottom: called");
         self.repl_scroll = None;
     }
 
     /// Check if REPL is in manual scroll mode
     pub fn repl_is_manual_scroll(&self) -> bool {
-        self.repl_scroll.is_some()
+        let result = self.repl_scroll.is_some();
+        debug!(result, "AppState::repl_is_manual_scroll: called");
+        result
     }
 
     /// Scroll Describe view up by given lines
     pub fn describe_scroll_up(&mut self, lines: usize) {
+        debug!(lines, "AppState::describe_scroll_up: called");
         self.describe_scroll = self.describe_scroll.saturating_sub(lines);
     }
 
     /// Scroll Describe view down by given lines
     pub fn describe_scroll_down(&mut self, lines: usize) {
+        debug!(lines, "AppState::describe_scroll_down: called");
         let new_scroll = self.describe_scroll.saturating_add(lines);
         self.describe_scroll = new_scroll.min(self.describe_max_scroll);
     }
 
     /// Reset Describe scroll to top
     pub fn describe_scroll_to_top(&mut self) {
+        debug!("AppState::describe_scroll_to_top: called");
         self.describe_scroll = 0;
     }
 
@@ -793,6 +842,7 @@ impl AppState {
 
     /// Filter records by current filter text
     pub fn filtered_records(&self) -> Vec<&RecordItem> {
+        debug!(filter_text = %self.filter_text, "AppState::filtered_records: called");
         if self.filter_text.is_empty() {
             self.records.iter().collect()
         } else {
@@ -810,6 +860,7 @@ impl AppState {
 
     /// Filter executions by current filter text
     pub fn filtered_executions(&self) -> Vec<&ExecutionItem> {
+        debug!(filter_text = %self.filter_text, "AppState::filtered_executions: called");
         if self.filter_text.is_empty() {
             self.executions.iter().collect()
         } else {
@@ -827,16 +878,21 @@ impl AppState {
 
     /// Toggle expand/collapse for the most recent collapsible tool result
     pub fn toggle_tool_expansion(&mut self) {
+        debug!("AppState::toggle_tool_expansion: called");
         // Find the most recent collapsible tool result
         if let Some(idx) = self.repl_history.iter().rposition(|m| m.is_collapsible())
             && let Some(msg) = self.repl_history.get_mut(idx)
         {
+            debug!(idx, "AppState::toggle_tool_expansion: toggling message at index");
             msg.toggle_expanded();
+        } else {
+            debug!("AppState::toggle_tool_expansion: no collapsible message found");
         }
     }
 
     /// Start streaming - pick random word, set start time, clear token counts
     pub fn start_streaming(&mut self, model: &str) {
+        debug!(%model, "AppState::start_streaming: called");
         let mut rng = rand::rng();
         self.streaming_word = STREAMING_WORDS.choose(&mut rng).unwrap_or(&"Thinking").to_string();
         self.streaming_start = Some(Instant::now());
@@ -847,6 +903,7 @@ impl AppState {
 
     /// Finish a request and accumulate session totals
     pub fn finish_request(&mut self, input_tokens: u64, output_tokens: u64) {
+        debug!(input_tokens, output_tokens, "AppState::finish_request: called");
         self.session_input_tokens += input_tokens;
         self.session_output_tokens += output_tokens;
 
@@ -861,6 +918,10 @@ impl AppState {
         let input_cost = (input_tokens as f64 / 1_000_000.0) * input_price;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * output_price;
         self.session_cost_usd += input_cost + output_cost;
+        debug!(
+            session_cost_usd = self.session_cost_usd,
+            "AppState::finish_request: updated cost"
+        );
 
         // Clear streaming state
         self.streaming_start = None;
@@ -922,6 +983,8 @@ pub struct DescribeData {
     pub execution: Option<ExecutionInfo>,
     /// Plan content (markdown) for plan-type executions
     pub plan_content: Option<String>,
+    /// Execution output (stdout/progress)
+    pub output: Option<String>,
 }
 
 /// Execution info for describe view

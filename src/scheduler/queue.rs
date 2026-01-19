@@ -1,6 +1,7 @@
 //! Queue types for the scheduler
 
 use std::time::{Duration, Instant};
+use tracing::debug;
 
 use crate::domain::Priority;
 
@@ -32,8 +33,10 @@ pub struct ScheduledRequest {
 impl ScheduledRequest {
     /// Create a new scheduled request
     pub fn new(exec_id: impl Into<String>, priority: Priority) -> Self {
+        let exec_id = exec_id.into();
+        debug!(%exec_id, ?priority, "ScheduledRequest::new: called");
         Self {
-            exec_id: exec_id.into(),
+            exec_id,
             priority,
             submitted_at: Instant::now(),
             started_at: None,
@@ -45,12 +48,14 @@ impl Eq for ScheduledRequest {}
 
 impl PartialEq for ScheduledRequest {
     fn eq(&self, other: &Self) -> bool {
+        debug!(%self.exec_id, %other.exec_id, "ScheduledRequest::eq: called");
         self.exec_id == other.exec_id
     }
 }
 
 impl Ord for ScheduledRequest {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        debug!(%self.exec_id, %other.exec_id, "ScheduledRequest::cmp: called");
         // Higher priority first, then earlier submission
         self.priority
             .cmp(&other.priority)

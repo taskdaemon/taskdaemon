@@ -6,6 +6,9 @@
 //! The generic Loop type works with any loop type defined in YAML configuration.
 //! The `type` field determines behavior at runtime.
 
+#[allow(unused_imports)]
+use tracing::debug;
+
 mod execution;
 mod id;
 mod priority;

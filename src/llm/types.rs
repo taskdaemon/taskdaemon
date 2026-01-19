@@ -4,6 +4,7 @@
 //! to support other providers in the future.
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// A completion request - everything needed for one LLM call
 #[derive(Debug, Clone)]
@@ -31,6 +32,7 @@ pub struct Message {
 impl Message {
     /// Create a user message with text content
     pub fn user(text: impl Into<String>) -> Self {
+        debug!("Message::user: called");
         Self {
             role: Role::User,
             content: MessageContent::Text(text.into()),
@@ -39,6 +41,7 @@ impl Message {
 
     /// Create an assistant message with text content
     pub fn assistant(text: impl Into<String>) -> Self {
+        debug!("Message::assistant: called");
         Self {
             role: Role::Assistant,
             content: MessageContent::Text(text.into()),
@@ -47,6 +50,7 @@ impl Message {
 
     /// Create a user message with multiple content blocks
     pub fn user_blocks(blocks: Vec<ContentBlock>) -> Self {
+        debug!(block_count = %blocks.len(), "Message::user_blocks: called");
         Self {
             role: Role::User,
             content: MessageContent::Blocks(blocks),
@@ -55,6 +59,7 @@ impl Message {
 
     /// Create an assistant message with multiple content blocks
     pub fn assistant_blocks(blocks: Vec<ContentBlock>) -> Self {
+        debug!(block_count = %blocks.len(), "Message::assistant_blocks: called");
         Self {
             role: Role::Assistant,
             content: MessageContent::Blocks(blocks),
@@ -81,9 +86,16 @@ pub enum MessageContent {
 impl MessageContent {
     /// Get text content if this is a text message
     pub fn as_text(&self) -> Option<&str> {
+        debug!("MessageContent::as_text: called");
         match self {
-            MessageContent::Text(text) => Some(text),
-            MessageContent::Blocks(_) => None,
+            MessageContent::Text(text) => {
+                debug!("MessageContent::as_text: Text variant");
+                Some(text)
+            }
+            MessageContent::Blocks(_) => {
+                debug!("MessageContent::as_text: Blocks variant");
+                None
+            }
         }
     }
 }
@@ -114,11 +126,13 @@ pub enum ContentBlock {
 impl ContentBlock {
     /// Create a text content block
     pub fn text(text: impl Into<String>) -> Self {
+        debug!("ContentBlock::text: called");
         ContentBlock::Text { text: text.into() }
     }
 
     /// Create a tool result block
     pub fn tool_result(tool_use_id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
+        debug!(%is_error, "ContentBlock::tool_result: called");
         ContentBlock::ToolResult {
             tool_use_id: tool_use_id.into(),
             content: content.into(),
@@ -163,12 +177,28 @@ pub enum StopReason {
 impl StopReason {
     /// Parse from Anthropic API stop_reason string
     pub fn from_anthropic(s: &str) -> Self {
+        debug!(%s, "StopReason::from_anthropic: called");
         match s {
-            "end_turn" => StopReason::EndTurn,
-            "tool_use" => StopReason::ToolUse,
-            "max_tokens" => StopReason::MaxTokens,
-            "stop_sequence" => StopReason::StopSequence,
-            _ => StopReason::EndTurn,
+            "end_turn" => {
+                debug!("StopReason::from_anthropic: EndTurn");
+                StopReason::EndTurn
+            }
+            "tool_use" => {
+                debug!("StopReason::from_anthropic: ToolUse");
+                StopReason::ToolUse
+            }
+            "max_tokens" => {
+                debug!("StopReason::from_anthropic: MaxTokens");
+                StopReason::MaxTokens
+            }
+            "stop_sequence" => {
+                debug!("StopReason::from_anthropic: StopSequence");
+                StopReason::StopSequence
+            }
+            _ => {
+                debug!("StopReason::from_anthropic: unknown, defaulting to EndTurn");
+                StopReason::EndTurn
+            }
         }
     }
 }
@@ -185,11 +215,24 @@ pub struct TokenUsage {
 impl TokenUsage {
     /// Calculate cost in USD based on model pricing
     pub fn cost_usd(&self, model: &str) -> f64 {
+        debug!(%model, %self.input_tokens, %self.output_tokens, "TokenUsage::cost_usd: called");
         let (input_price, output_price) = match model {
-            m if m.contains("opus") => (15.0, 75.0),
-            m if m.contains("sonnet") => (3.0, 15.0),
-            m if m.contains("haiku") => (0.25, 1.25),
-            _ => (3.0, 15.0), // Default to sonnet pricing
+            m if m.contains("opus") => {
+                debug!("TokenUsage::cost_usd: opus pricing");
+                (15.0, 75.0)
+            }
+            m if m.contains("sonnet") => {
+                debug!("TokenUsage::cost_usd: sonnet pricing");
+                (3.0, 15.0)
+            }
+            m if m.contains("haiku") => {
+                debug!("TokenUsage::cost_usd: haiku pricing");
+                (0.25, 1.25)
+            }
+            _ => {
+                debug!("TokenUsage::cost_usd: unknown model, defaulting to sonnet pricing");
+                (3.0, 15.0)
+            }
         };
 
         let input_cost = (self.input_tokens as f64 / 1_000_000.0) * input_price;
@@ -213,15 +256,19 @@ pub struct ToolDefinition {
 impl ToolDefinition {
     /// Create a new tool definition
     pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: serde_json::Value) -> Self {
+        let name = name.into();
+        let description = description.into();
+        debug!(%name, "ToolDefinition::new: called");
         Self {
-            name: name.into(),
-            description: description.into(),
+            name,
+            description,
             input_schema,
         }
     }
 
     /// Convert to Anthropic API schema format
     pub fn to_anthropic_schema(&self) -> serde_json::Value {
+        debug!(%self.name, "ToolDefinition::to_anthropic_schema: called");
         serde_json::json!({
             "name": self.name,
             "description": self.description,

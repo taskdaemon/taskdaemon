@@ -5,6 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use tracing::debug;
+
 use super::state::ExecutionItem;
 
 /// A node in the loop tree
@@ -27,6 +29,7 @@ pub struct TreeNode {
 impl TreeNode {
     /// Create a new tree node from an execution item
     pub fn new(item: ExecutionItem, depth: usize) -> Self {
+        debug!(id = %item.id, depth, "TreeNode::new: called");
         Self {
             item,
             children: Vec::new(),
@@ -39,11 +42,14 @@ impl TreeNode {
 
     /// Check if this node has children
     pub fn has_children(&self) -> bool {
-        !self.children.is_empty()
+        let result = !self.children.is_empty();
+        debug!(id = %self.item.id, result, "TreeNode::has_children: called");
+        result
     }
 
     /// Get progress string for display (e.g., "[2/5]" or "[-]" for no children)
     pub fn progress_string(&self) -> String {
+        debug!(id = %self.item.id, total_children = self.total_children, "TreeNode::progress_string: called");
         if self.total_children == 0 {
             "[-]".to_string()
         } else {
@@ -53,7 +59,9 @@ impl TreeNode {
 
     /// Check if this is a draft (Plan in draft state with no children)
     pub fn is_draft(&self) -> bool {
-        self.item.status == "draft"
+        let result = self.item.status == "draft";
+        debug!(id = %self.item.id, result, "TreeNode::is_draft: called");
+        result
     }
 }
 
@@ -75,6 +83,7 @@ pub struct LoopTree {
 impl LoopTree {
     /// Create a new empty tree
     pub fn new() -> Self {
+        debug!("LoopTree::new: called");
         Self::default()
     }
 
@@ -83,6 +92,7 @@ impl LoopTree {
     /// This is the main entry point for constructing the tree.
     /// It preserves expand state from previous builds.
     pub fn build_from_items(&mut self, items: Vec<ExecutionItem>) {
+        debug!(item_count = items.len(), "LoopTree::build_from_items: called");
         // Save current expand state
         let prev_expand_state = std::mem::take(&mut self.expand_state);
         let prev_selected = self.selected_id.clone();
@@ -130,7 +140,8 @@ impl LoopTree {
         // Calculate completion counts for all nodes
         self.calculate_completion_counts();
 
-        // Restore selection if still valid
+        // Clear selection, then restore if still valid
+        self.selected_id = None;
         if let Some(ref id) = prev_selected
             && self.nodes.contains_key(id)
         {
@@ -154,12 +165,11 @@ impl LoopTree {
         children_by_parent: &HashMap<Option<String>, Vec<&ExecutionItem>>,
         prev_expand_state: &HashMap<String, bool>,
     ) {
+        debug!(id = %item.id, depth, "LoopTree::build_subtree: called");
         let mut node = TreeNode::new(item.clone(), depth);
 
-        // Restore expand state or use default based on status
-        // Default: expand active nodes, collapse drafts and completed
-        let default_expand = !matches!(item.status.as_str(), "draft" | "complete" | "failed");
-        node.expanded = prev_expand_state.get(&item.id).copied().unwrap_or(default_expand);
+        // Restore expand state or default to expanded (show full hierarchy)
+        node.expanded = prev_expand_state.get(&item.id).copied().unwrap_or(true);
 
         // Build children
         if let Some(child_items) = children_by_parent.get(&Some(item.id.clone())) {
@@ -177,6 +187,7 @@ impl LoopTree {
 
     /// Calculate completion counts for all nodes (bottom-up)
     fn calculate_completion_counts(&mut self) {
+        debug!("LoopTree::calculate_completion_counts: called");
         // Process nodes in reverse depth order (leaves first)
         let mut nodes_by_depth: Vec<Vec<String>> = Vec::new();
         for (id, node) in &self.nodes {
@@ -206,10 +217,15 @@ impl LoopTree {
 
     /// Rebuild the list of visible nodes for rendering
     fn rebuild_visible_nodes(&mut self) {
+        debug!("LoopTree::rebuild_visible_nodes: called");
         self.visible_nodes.clear();
         for root_id in &self.roots.clone() {
             self.add_visible_nodes_recursive(root_id);
         }
+        debug!(
+            visible_count = self.visible_nodes.len(),
+            "LoopTree::rebuild_visible_nodes: done"
+        );
     }
 
     /// Recursively add visible nodes
@@ -228,26 +244,31 @@ impl LoopTree {
 
     /// Get the list of visible nodes in display order
     pub fn visible_nodes(&self) -> &[String] {
+        debug!(count = self.visible_nodes.len(), "LoopTree::visible_nodes: called");
         &self.visible_nodes
     }
 
     /// Get a node by ID
     pub fn get(&self, id: &str) -> Option<&TreeNode> {
+        debug!(%id, "LoopTree::get: called");
         self.nodes.get(id)
     }
 
     /// Get the currently selected node ID
     pub fn selected_id(&self) -> Option<&String> {
+        debug!(?self.selected_id, "LoopTree::selected_id: called");
         self.selected_id.as_ref()
     }
 
     /// Get the currently selected node
     pub fn selected_node(&self) -> Option<&TreeNode> {
+        debug!("LoopTree::selected_node: called");
         self.selected_id.as_ref().and_then(|id| self.nodes.get(id))
     }
 
     /// Get the index of the selected node in visible_nodes
     pub fn selected_index(&self) -> Option<usize> {
+        debug!("LoopTree::selected_index: called");
         self.selected_id
             .as_ref()
             .and_then(|id| self.visible_nodes.iter().position(|n| n == id))
@@ -255,20 +276,27 @@ impl LoopTree {
 
     /// Select a node by ID
     pub fn select(&mut self, id: &str) {
+        debug!(%id, "LoopTree::select: called");
         if self.nodes.contains_key(id) {
             self.selected_id = Some(id.to_string());
+        } else {
+            debug!(%id, "LoopTree::select: node not found");
         }
     }
 
     /// Select by visible index
     pub fn select_by_index(&mut self, index: usize) {
+        debug!(index, "LoopTree::select_by_index: called");
         if let Some(id) = self.visible_nodes.get(index).cloned() {
             self.selected_id = Some(id);
+        } else {
+            debug!(index, "LoopTree::select_by_index: index out of bounds");
         }
     }
 
     /// Move selection up
     pub fn select_prev(&mut self) {
+        debug!("LoopTree::select_prev: called");
         if let Some(current_idx) = self.selected_index()
             && current_idx > 0
         {
@@ -278,6 +306,7 @@ impl LoopTree {
 
     /// Move selection down
     pub fn select_next(&mut self) {
+        debug!("LoopTree::select_next: called");
         if let Some(current_idx) = self.selected_index()
             && current_idx + 1 < self.visible_nodes.len()
         {
@@ -287,11 +316,13 @@ impl LoopTree {
 
     /// Move selection to first visible node
     pub fn select_first(&mut self) {
+        debug!("LoopTree::select_first: called");
         self.select_by_index(0);
     }
 
     /// Move selection to last visible node
     pub fn select_last(&mut self) {
+        debug!("LoopTree::select_last: called");
         if !self.visible_nodes.is_empty() {
             self.select_by_index(self.visible_nodes.len() - 1);
         }
@@ -299,6 +330,7 @@ impl LoopTree {
 
     /// Toggle expand/collapse for the selected node
     pub fn toggle_selected(&mut self) {
+        debug!("LoopTree::toggle_selected: called");
         if let Some(id) = self.selected_id.clone() {
             self.toggle(&id);
         }
@@ -306,10 +338,12 @@ impl LoopTree {
 
     /// Toggle expand/collapse for a specific node
     pub fn toggle(&mut self, id: &str) {
+        debug!(%id, "LoopTree::toggle: called");
         if let Some(node) = self.nodes.get_mut(id)
             && node.has_children()
         {
             node.expanded = !node.expanded;
+            debug!(%id, expanded = node.expanded, "LoopTree::toggle: toggled");
             self.expand_state.insert(id.to_string(), node.expanded);
             self.rebuild_visible_nodes();
         }
@@ -317,11 +351,13 @@ impl LoopTree {
 
     /// Expand the selected node
     pub fn expand_selected(&mut self) {
+        debug!("LoopTree::expand_selected: called");
         if let Some(id) = self.selected_id.clone()
             && let Some(node) = self.nodes.get_mut(&id)
             && node.has_children()
             && !node.expanded
         {
+            debug!(%id, "LoopTree::expand_selected: expanding");
             node.expanded = true;
             self.expand_state.insert(id.clone(), true);
             self.rebuild_visible_nodes();
@@ -330,11 +366,13 @@ impl LoopTree {
 
     /// Collapse the selected node
     pub fn collapse_selected(&mut self) {
+        debug!("LoopTree::collapse_selected: called");
         if let Some(id) = self.selected_id.clone()
             && let Some(node) = self.nodes.get_mut(&id)
             && node.has_children()
             && node.expanded
         {
+            debug!(%id, "LoopTree::collapse_selected: collapsing");
             node.expanded = false;
             self.expand_state.insert(id.clone(), false);
             self.rebuild_visible_nodes();
@@ -343,21 +381,28 @@ impl LoopTree {
 
     /// Check if the tree is empty
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        let result = self.nodes.is_empty();
+        debug!(result, "LoopTree::is_empty: called");
+        result
     }
 
     /// Get total number of nodes
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        let len = self.nodes.len();
+        debug!(len, "LoopTree::len: called");
+        len
     }
 
     /// Get number of visible nodes
     pub fn visible_len(&self) -> usize {
-        self.visible_nodes.len()
+        let len = self.visible_nodes.len();
+        debug!(len, "LoopTree::visible_len: called");
+        len
     }
 
     /// Check if a node is the last child of its parent
     pub fn is_last_child(&self, id: &str) -> bool {
+        debug!(%id, "LoopTree::is_last_child: called");
         if let Some(node) = self.nodes.get(id)
             && let Some(ref parent_id) = node.item.parent_id
             && let Some(parent) = self.nodes.get(parent_id)
@@ -370,6 +415,7 @@ impl LoopTree {
 
     /// Get the parent chain for a node (for rendering tree lines)
     pub fn get_ancestor_chain(&self, id: &str) -> Vec<(String, bool)> {
+        debug!(%id, "LoopTree::get_ancestor_chain: called");
         let mut chain = Vec::new();
         let mut current_id = id.to_string();
 
@@ -538,13 +584,13 @@ mod tests {
     }
 
     #[test]
-    fn test_draft_default_collapsed() {
+    fn test_default_expanded() {
         let items = vec![make_item("plan1", None, "draft", "plan")];
 
         let mut tree = LoopTree::new();
         tree.build_from_items(items);
 
         let plan = tree.get("plan1").unwrap();
-        assert!(!plan.expanded); // Drafts should be collapsed by default
+        assert!(plan.expanded); // All nodes expanded by default
     }
 }

@@ -10,6 +10,7 @@ use eyre::Result;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tracing::debug;
 use uuid::Uuid;
 
 /// Type of persisted event
@@ -25,10 +26,20 @@ pub enum PersistedEventType {
 
 impl std::fmt::Display for PersistedEventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug!(?self, "PersistedEventType::fmt: called");
         match self {
-            Self::Alert => write!(f, "Alert"),
-            Self::Query => write!(f, "Query"),
-            Self::Share => write!(f, "Share"),
+            Self::Alert => {
+                debug!("PersistedEventType::fmt: Alert branch");
+                write!(f, "Alert")
+            }
+            Self::Query => {
+                debug!("PersistedEventType::fmt: Query branch");
+                write!(f, "Query")
+            }
+            Self::Share => {
+                debug!("PersistedEventType::fmt: Share branch");
+                write!(f, "Share")
+            }
         }
     }
 }
@@ -54,6 +65,7 @@ pub struct PersistedEvent {
 
 /// Get current Unix timestamp in seconds
 fn now_timestamp() -> i64 {
+    debug!("now_timestamp: called");
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -68,6 +80,7 @@ impl PersistedEvent {
         to_exec_id: Option<String>,
         payload: impl Into<String>,
     ) -> Self {
+        debug!(?event_type, "PersistedEvent::new: called");
         Self {
             id: Uuid::now_v7().to_string(),
             event_type,
@@ -81,6 +94,7 @@ impl PersistedEvent {
 
     /// Create an alert event
     pub fn alert(from_exec_id: impl Into<String>, event_type_name: &str, payload: impl Into<String>) -> Self {
+        debug!(%event_type_name, "PersistedEvent::alert: called");
         Self::new(
             PersistedEventType::Alert,
             from_exec_id,
@@ -95,6 +109,7 @@ impl PersistedEvent {
 
     /// Create a query event
     pub fn query(from_exec_id: impl Into<String>, to_exec_id: impl Into<String>, question: &str) -> Self {
+        debug!(%question, "PersistedEvent::query: called");
         Self::new(
             PersistedEventType::Query,
             from_exec_id,
@@ -110,6 +125,7 @@ impl PersistedEvent {
         share_type: &str,
         data: impl Into<String>,
     ) -> Self {
+        debug!(%share_type, "PersistedEvent::share: called");
         Self::new(
             PersistedEventType::Share,
             from_exec_id,
@@ -124,11 +140,19 @@ impl PersistedEvent {
 
     /// Check if event is resolved
     pub fn is_resolved(&self) -> bool {
-        self.resolved_at.is_some()
+        debug!(id = %self.id, "PersistedEvent::is_resolved: called");
+        let resolved = self.resolved_at.is_some();
+        if resolved {
+            debug!("PersistedEvent::is_resolved: event is resolved");
+        } else {
+            debug!("PersistedEvent::is_resolved: event is not resolved");
+        }
+        resolved
     }
 
     /// Mark event as resolved
     pub fn resolve(&mut self) {
+        debug!(id = %self.id, "PersistedEvent::resolve: called");
         self.resolved_at = Some(now_timestamp());
     }
 }
@@ -141,29 +165,34 @@ pub struct EventStore {
 impl EventStore {
     /// Create a new event store
     pub fn new(store_path: impl Into<PathBuf>) -> Self {
-        Self {
-            store_path: store_path.into(),
-        }
+        let path = store_path.into();
+        debug!(?path, "EventStore::new: called");
+        Self { store_path: path }
     }
 
     /// Get the events file path
     fn events_file(&self) -> PathBuf {
+        debug!("EventStore::events_file: called");
         self.store_path.join("coordinator_events.jsonl")
     }
 
     /// Ensure the store directory exists
     async fn ensure_dir(&self) -> Result<()> {
+        debug!(path = ?self.store_path, "EventStore::ensure_dir: called");
         fs::create_dir_all(&self.store_path).await?;
+        debug!("EventStore::ensure_dir: directory created");
         Ok(())
     }
 
     /// Persist an event
     pub async fn persist(&self, event: &PersistedEvent) -> Result<()> {
+        debug!(event_id = %event.id, ?event.event_type, "EventStore::persist: called");
         self.ensure_dir().await?;
 
         let events_file = self.events_file();
         let line = serde_json::to_string(event)? + "\n";
 
+        debug!(?events_file, "EventStore::persist: opening file");
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -173,17 +202,21 @@ impl EventStore {
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
 
+        debug!("EventStore::persist: event written");
         Ok(())
     }
 
     /// Mark an event as resolved
     pub async fn resolve(&self, event_id: &str) -> Result<bool> {
+        debug!(%event_id, "EventStore::resolve: called");
         let events_file = self.events_file();
 
         if !events_file.exists() {
+            debug!("EventStore::resolve: events file does not exist");
             return Ok(false);
         }
 
+        debug!("EventStore::resolve: events file exists, reading");
         let content = fs::read_to_string(&events_file).await?;
 
         let mut events: Vec<PersistedEvent> = content
@@ -194,18 +227,22 @@ impl EventStore {
         let mut found = false;
         for event in &mut events {
             if event.id == event_id {
+                debug!("EventStore::resolve: found event, marking resolved");
                 event.resolve();
                 found = true;
             }
         }
 
         if found {
+            debug!("EventStore::resolve: writing updated events");
             let new_content: String = events
                 .iter()
                 .map(|e| serde_json::to_string(e).unwrap() + "\n")
                 .collect();
 
             fs::write(&events_file, new_content).await?;
+        } else {
+            debug!("EventStore::resolve: event not found");
         }
 
         Ok(found)
@@ -213,12 +250,15 @@ impl EventStore {
 
     /// Get all unresolved events for crash recovery
     pub async fn get_unresolved(&self) -> Result<Vec<PersistedEvent>> {
+        debug!("EventStore::get_unresolved: called");
         let events_file = self.events_file();
 
         if !events_file.exists() {
+            debug!("EventStore::get_unresolved: events file does not exist");
             return Ok(vec![]);
         }
 
+        debug!("EventStore::get_unresolved: reading events file");
         let content = fs::read_to_string(&events_file).await?;
         let events: Vec<PersistedEvent> = content
             .lines()
@@ -226,44 +266,55 @@ impl EventStore {
             .filter(|e: &PersistedEvent| !e.is_resolved())
             .collect();
 
+        debug!(count = events.len(), "EventStore::get_unresolved: returning events");
         Ok(events)
     }
 
     /// Get all events (resolved and unresolved)
     pub async fn get_all(&self) -> Result<Vec<PersistedEvent>> {
+        debug!("EventStore::get_all: called");
         let events_file = self.events_file();
 
         if !events_file.exists() {
+            debug!("EventStore::get_all: events file does not exist");
             return Ok(vec![]);
         }
 
+        debug!("EventStore::get_all: reading events file");
         let content = fs::read_to_string(&events_file).await?;
         let events: Vec<PersistedEvent> = content
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect();
 
+        debug!(count = events.len(), "EventStore::get_all: returning events");
         Ok(events)
     }
 
     /// Get events for a specific execution
     pub async fn get_for_exec(&self, exec_id: &str) -> Result<Vec<PersistedEvent>> {
+        debug!(%exec_id, "EventStore::get_for_exec: called");
         let all = self.get_all().await?;
-        Ok(all
+        let events: Vec<PersistedEvent> = all
             .into_iter()
             .filter(|e| e.from_exec_id == exec_id || e.to_exec_id.as_deref() == Some(exec_id))
-            .collect())
+            .collect();
+        debug!(count = events.len(), "EventStore::get_for_exec: returning events");
+        Ok(events)
     }
 
     /// Clean up old resolved events (older than specified hours)
     pub async fn cleanup_old(&self, hours: i64) -> Result<usize> {
+        debug!(%hours, "EventStore::cleanup_old: called");
         let events_file = self.events_file();
 
         if !events_file.exists() {
+            debug!("EventStore::cleanup_old: events file does not exist");
             return Ok(0);
         }
 
         let cutoff = now_timestamp() - (hours * 3600);
+        debug!(%cutoff, "EventStore::cleanup_old: reading events file");
         let content = fs::read_to_string(&events_file).await?;
 
         let events: Vec<PersistedEvent> = content
@@ -272,6 +323,7 @@ impl EventStore {
             .collect();
 
         let original_count = events.len();
+        debug!(%original_count, "EventStore::cleanup_old: found events");
 
         // Keep events that are either unresolved or resolved recently
         let kept: Vec<_> = events
@@ -282,9 +334,12 @@ impl EventStore {
         let removed_count = original_count - kept.len();
 
         if removed_count > 0 {
+            debug!(%removed_count, "EventStore::cleanup_old: removing old events");
             let new_content: String = kept.iter().map(|e| serde_json::to_string(e).unwrap() + "\n").collect();
 
             fs::write(&events_file, new_content).await?;
+        } else {
+            debug!("EventStore::cleanup_old: no events to remove");
         }
 
         Ok(removed_count)
@@ -292,10 +347,14 @@ impl EventStore {
 
     /// Clear all events (for testing)
     pub async fn clear(&self) -> Result<()> {
+        debug!("EventStore::clear: called");
         let events_file = self.events_file();
 
         if events_file.exists() {
+            debug!("EventStore::clear: removing events file");
             fs::remove_file(&events_file).await?;
+        } else {
+            debug!("EventStore::clear: events file does not exist");
         }
 
         Ok(())

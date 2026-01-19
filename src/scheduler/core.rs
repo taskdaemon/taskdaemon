@@ -38,6 +38,7 @@ pub struct Scheduler {
 impl Scheduler {
     /// Create a new scheduler with the given configuration
     pub fn new(config: SchedulerConfig) -> Self {
+        debug!(?config, "Scheduler::new: called");
         Self {
             config,
             inner: Mutex::new(SchedulerInner {
@@ -52,10 +53,12 @@ impl Scheduler {
 
     /// Attempt to schedule a request
     pub async fn schedule(&self, exec_id: &str, priority: Priority) -> ScheduleResult {
+        debug!(%exec_id, ?priority, "Scheduler::schedule: called");
         let mut inner = self.inner.lock().await;
 
         // Check if already running
         if inner.running.contains_key(exec_id) {
+            debug!(%exec_id, "Scheduler::schedule: already running, rejecting");
             return ScheduleResult::Rejected {
                 reason: "Already running".to_string(),
             };
@@ -63,6 +66,7 @@ impl Scheduler {
 
         // Check if already queued
         if inner.queue.iter().any(|r| r.exec_id == exec_id) {
+            debug!(%exec_id, "Scheduler::schedule: already queued, rejecting");
             return ScheduleResult::Rejected {
                 reason: "Already queued".to_string(),
             };
@@ -78,6 +82,7 @@ impl Scheduler {
 
         // Check rate limit
         if inner.request_times.len() >= self.config.max_requests_per_window as usize {
+            debug!(%exec_id, "Scheduler::schedule: rate limit exceeded");
             let oldest = inner.request_times.front().unwrap();
             let retry_after = self.config.rate_window() - (now - *oldest);
             inner.stats.total_rate_limited += 1;
@@ -87,6 +92,7 @@ impl Scheduler {
 
         // Check concurrent limit
         if inner.running.len() < self.config.max_concurrent {
+            debug!(%exec_id, "Scheduler::schedule: under concurrent limit, running immediately");
             // Can run immediately
             let request = ScheduledRequest {
                 exec_id: exec_id.to_string(),
@@ -105,6 +111,7 @@ impl Scheduler {
         }
 
         // Queue the request
+        debug!(%exec_id, "Scheduler::schedule: concurrent limit reached, queuing");
         let request = ScheduledRequest {
             exec_id: exec_id.to_string(),
             priority,
@@ -142,17 +149,24 @@ impl Scheduler {
 
     /// Wait until a slot is available for this request
     pub async fn wait_for_slot(&self, exec_id: &str, priority: Priority) -> eyre::Result<()> {
+        debug!(%exec_id, ?priority, "Scheduler::wait_for_slot: called");
         loop {
             match self.schedule(exec_id, priority).await {
-                ScheduleResult::Ready => return Ok(()),
+                ScheduleResult::Ready => {
+                    debug!(%exec_id, "Scheduler::wait_for_slot: ready branch");
+                    return Ok(());
+                }
                 ScheduleResult::Queued { .. } => {
+                    debug!(%exec_id, "Scheduler::wait_for_slot: queued branch, waiting for notification");
                     // Wait for notification that a slot opened
                     self.notify.notified().await;
                 }
                 ScheduleResult::RateLimited { retry_after } => {
+                    debug!(%exec_id, ?retry_after, "Scheduler::wait_for_slot: rate limited branch, sleeping");
                     tokio::time::sleep(retry_after).await;
                 }
                 ScheduleResult::Rejected { reason } => {
+                    debug!(%exec_id, %reason, "Scheduler::wait_for_slot: rejected branch");
                     return Err(eyre!("Schedule rejected: {}", reason));
                 }
             }
@@ -161,23 +175,31 @@ impl Scheduler {
 
     /// Mark a request as complete, opening a slot
     pub async fn complete(&self, exec_id: &str) {
+        debug!(%exec_id, "Scheduler::complete: called");
         let mut inner = self.inner.lock().await;
 
         if let Some(request) = inner.running.remove(exec_id) {
+            debug!(%exec_id, "Scheduler::complete: found in running, removing");
             if let Some(started) = request.started_at {
+                debug!(%exec_id, "Scheduler::complete: has started_at, calculating wait time");
                 let wait_time = started.elapsed().as_millis() as u64;
                 inner.stats.total_wait_time_ms += wait_time;
             }
             inner.stats.total_completed += 1;
             debug!(exec_id, "Completed");
+        } else {
+            debug!(%exec_id, "Scheduler::complete: not found in running");
         }
 
         // Try to start next queued request
         if let Some(mut next) = inner.queue.pop() {
+            debug!(exec_id = %next.exec_id, ?next.priority, "Scheduler::complete: promoting from queue");
             debug!(exec_id = %next.exec_id, ?next.priority, "Promoting from queue");
             next.started_at = Some(Instant::now());
             inner.running.insert(next.exec_id.clone(), next);
             inner.request_times.push_back(Instant::now());
+        } else {
+            debug!("Scheduler::complete: queue empty, nothing to promote");
         }
 
         drop(inner);
@@ -188,6 +210,7 @@ impl Scheduler {
 
     /// Handle external rate limit (429 from API)
     pub async fn handle_rate_limit(&self, retry_after: Duration) {
+        debug!(?retry_after, "Scheduler::handle_rate_limit: called");
         warn!(?retry_after, "Received rate limit from API");
 
         let mut inner = self.inner.lock().await;
@@ -195,6 +218,7 @@ impl Scheduler {
         // Fill the rate window to block new requests
         let now = Instant::now();
         while inner.request_times.len() < self.config.max_requests_per_window as usize {
+            debug!("Scheduler::handle_rate_limit: filling rate window");
             inner.request_times.push_back(now);
         }
 
@@ -203,11 +227,13 @@ impl Scheduler {
         drop(inner);
 
         // Sleep for retry period
+        debug!(?retry_after, "Scheduler::handle_rate_limit: sleeping for retry period");
         tokio::time::sleep(retry_after).await;
     }
 
     /// Get current queue state for TUI
     pub async fn queue_state(&self) -> QueueState {
+        debug!("Scheduler::queue_state: called");
         let inner = self.inner.lock().await;
 
         QueueState {
@@ -220,6 +246,7 @@ impl Scheduler {
 
     /// Get detailed queue for TUI display
     pub async fn queue_details(&self) -> Vec<QueueEntry> {
+        debug!("Scheduler::queue_details: called");
         let inner = self.inner.lock().await;
         let now = Instant::now();
 
@@ -246,25 +273,35 @@ impl Scheduler {
 
     /// Get the scheduler statistics
     pub async fn stats(&self) -> SchedulerStats {
+        debug!("Scheduler::stats: called");
         let inner = self.inner.lock().await;
         inner.stats.clone()
     }
 
     /// Cancel a queued request (remove from queue)
     pub async fn cancel(&self, exec_id: &str) -> bool {
+        debug!(%exec_id, "Scheduler::cancel: called");
         let mut inner = self.inner.lock().await;
 
         // Check if running - can't cancel running
         if inner.running.contains_key(exec_id) {
+            debug!(%exec_id, "Scheduler::cancel: is running, cannot cancel");
             return false;
         }
 
         // Remove from queue
+        debug!(%exec_id, "Scheduler::cancel: removing from queue");
         let original_len = inner.queue.len();
         let queue_vec: Vec<_> = inner.queue.drain().filter(|r| r.exec_id != exec_id).collect();
         inner.queue = queue_vec.into_iter().collect();
 
-        original_len != inner.queue.len()
+        let removed = original_len != inner.queue.len();
+        if removed {
+            debug!(%exec_id, "Scheduler::cancel: successfully removed from queue");
+        } else {
+            debug!(%exec_id, "Scheduler::cancel: not found in queue");
+        }
+        removed
     }
 }
 

@@ -2,6 +2,8 @@
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
+#[allow(unused_imports)]
+use tracing::debug;
 
 use super::{CompletionRequest, CompletionResponse, LlmError, StreamChunk};
 
@@ -34,6 +36,7 @@ pub trait LlmClient: Send + Sync {
 pub mod mock {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing::debug;
 
     /// Mock LLM client for unit tests
     pub struct MockLlmClient {
@@ -43,6 +46,7 @@ pub mod mock {
 
     impl MockLlmClient {
         pub fn new(responses: Vec<CompletionResponse>) -> Self {
+            debug!(response_count = %responses.len(), "MockLlmClient::new: called");
             Self {
                 responses,
                 call_count: AtomicUsize::new(0),
@@ -50,6 +54,7 @@ pub mod mock {
         }
 
         pub fn call_count(&self) -> usize {
+            debug!("MockLlmClient::call_count: called");
             self.call_count.load(Ordering::SeqCst)
         }
     }
@@ -57,11 +62,13 @@ pub mod mock {
     #[async_trait]
     impl LlmClient for MockLlmClient {
         async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+            debug!("MockLlmClient::complete: called");
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
-            self.responses
-                .get(idx)
-                .cloned()
-                .ok_or_else(|| LlmError::InvalidResponse("No more mock responses".to_string()))
+            debug!(%idx, "MockLlmClient::complete: fetching response");
+            self.responses.get(idx).cloned().ok_or_else(|| {
+                debug!("MockLlmClient::complete: no more mock responses");
+                LlmError::InvalidResponse("No more mock responses".to_string())
+            })
         }
 
         async fn stream(
@@ -69,6 +76,7 @@ pub mod mock {
             request: CompletionRequest,
             _chunk_tx: mpsc::Sender<StreamChunk>,
         ) -> Result<CompletionResponse, LlmError> {
+            debug!("MockLlmClient::stream: called");
             // For mock, just return complete response without streaming
             self.complete(request).await
         }

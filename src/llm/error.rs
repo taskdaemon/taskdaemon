@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 use thiserror::Error;
+use tracing::debug;
 
 /// Errors that can occur during LLM operations
 #[derive(Debug, Error)]
@@ -28,26 +29,64 @@ pub enum LlmError {
 impl LlmError {
     /// Check if this is a rate limit error
     pub fn is_rate_limit(&self) -> bool {
-        matches!(self, LlmError::RateLimited { .. })
+        debug!(?self, "is_rate_limit: called");
+        let result = matches!(self, LlmError::RateLimited { .. });
+        if result {
+            debug!("is_rate_limit: true - RateLimited variant");
+        } else {
+            debug!("is_rate_limit: false - not RateLimited variant");
+        }
+        result
     }
 
     /// Check if this error is retryable
     pub fn is_retryable(&self) -> bool {
+        debug!(?self, "is_retryable: called");
         match self {
-            LlmError::RateLimited { .. } => true,
-            LlmError::ApiError { status, .. } => *status >= 500,
-            LlmError::Network(_) => true,
-            LlmError::Timeout(_) => true,
-            LlmError::InvalidResponse(_) => false,
-            LlmError::Json(_) => false,
+            LlmError::RateLimited { .. } => {
+                debug!("is_retryable: RateLimited - true");
+                true
+            }
+            LlmError::ApiError { status, .. } => {
+                let retryable = *status >= 500;
+                if retryable {
+                    debug!(%status, "is_retryable: ApiError 5xx - true");
+                } else {
+                    debug!(%status, "is_retryable: ApiError non-5xx - false");
+                }
+                retryable
+            }
+            LlmError::Network(_) => {
+                debug!("is_retryable: Network - true");
+                true
+            }
+            LlmError::Timeout(_) => {
+                debug!("is_retryable: Timeout - true");
+                true
+            }
+            LlmError::InvalidResponse(_) => {
+                debug!("is_retryable: InvalidResponse - false");
+                false
+            }
+            LlmError::Json(_) => {
+                debug!("is_retryable: Json - false");
+                false
+            }
         }
     }
 
     /// Get the retry duration if this is a rate limit error
     pub fn retry_after(&self) -> Option<Duration> {
+        debug!(?self, "retry_after: called");
         match self {
-            LlmError::RateLimited { retry_after } => Some(*retry_after),
-            _ => None,
+            LlmError::RateLimited { retry_after } => {
+                debug!(?retry_after, "retry_after: RateLimited");
+                Some(*retry_after)
+            }
+            _ => {
+                debug!("retry_after: not RateLimited - None");
+                None
+            }
         }
     }
 }

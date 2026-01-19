@@ -112,7 +112,9 @@ enum PlanProgress {
 impl TuiRunner {
     /// Create a new TuiRunner without StateManager (for testing/standalone mode)
     pub fn new(terminal: Tui) -> Self {
+        debug!("TuiRunner::new: called (no StateManager)");
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        debug!(?worktree, "TuiRunner::new: worktree");
         let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
         let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
 
@@ -139,7 +141,9 @@ impl TuiRunner {
 
     /// Create a new TuiRunner with StateManager connection
     pub fn with_state_manager(terminal: Tui, state_manager: StateManager) -> Self {
+        debug!("TuiRunner::with_state_manager: called");
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        debug!(?worktree, "TuiRunner::with_state_manager: worktree");
         let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
         let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
 
@@ -171,13 +175,20 @@ impl TuiRunner {
         llm_client: Arc<dyn LlmClient>,
         log_conversations: bool,
     ) -> Self {
+        debug!(
+            has_state_manager = state_manager.is_some(),
+            log_conversations, "TuiRunner::with_llm_client: called"
+        );
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        debug!(?worktree, "TuiRunner::with_llm_client: worktree");
         let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
         let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
 
         let conversation_logger = if log_conversations {
+            debug!("TuiRunner::with_llm_client: enabling conversation logger");
             ConversationLogger::enabled()
         } else {
+            debug!("TuiRunner::with_llm_client: disabling conversation logger");
             ConversationLogger::disabled()
         };
 
@@ -204,6 +215,7 @@ impl TuiRunner {
 
     /// Build the system prompt for Chat mode REPL
     fn build_chat_system_prompt(worktree: &Path) -> String {
+        debug!(?worktree, "TuiRunner::build_chat_system_prompt: called");
         format!(
             r#"You are an AI coding assistant in an interactive REPL.
 
@@ -229,6 +241,7 @@ Working directory: {}"#,
 
     /// Build the system prompt for Plan mode REPL
     fn build_plan_system_prompt(worktree: &Path) -> String {
+        debug!(?worktree, "TuiRunner::build_plan_system_prompt: called");
         format!(
             r#"You are a senior software architect helping gather requirements for a technical plan.
 
@@ -260,14 +273,22 @@ Working directory: {}"#,
 
     /// Get the current system prompt based on REPL mode
     fn current_system_prompt(&self) -> &str {
+        debug!(repl_mode = ?self.app.state().repl_mode, "TuiRunner::current_system_prompt: called");
         match self.app.state().repl_mode {
-            ReplMode::Chat => &self.chat_system_prompt,
-            ReplMode::Plan => &self.plan_system_prompt,
+            ReplMode::Chat => {
+                debug!("TuiRunner::current_system_prompt: returning chat prompt");
+                &self.chat_system_prompt
+            }
+            ReplMode::Plan => {
+                debug!("TuiRunner::current_system_prompt: returning plan prompt");
+                &self.plan_system_prompt
+            }
         }
     }
 
     /// Get tool definitions for the REPL
     fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
+        debug!("TuiRunner::get_tool_definitions: called");
         let tool_names = vec![
             "read".to_string(),
             "write".to_string(),
@@ -278,16 +299,21 @@ Working directory: {}"#,
             "bash".to_string(),
         ];
 
-        self.tool_executor.definitions_for(&tool_names)
+        let definitions = self.tool_executor.definitions_for(&tool_names);
+        debug!(count = definitions.len(), "TuiRunner::get_tool_definitions: returning");
+        definitions
     }
 
     /// Run the TUI main loop
     pub async fn run(&mut self) -> Result<()> {
+        debug!("TuiRunner::run: called");
         // Fetch initial data if we have a state manager
         if self.state_manager.is_some() {
+            debug!("TuiRunner::run: state manager present, refreshing data");
             self.refresh_data().await?;
         }
 
+        debug!("TuiRunner::run: entering main loop");
         loop {
             // Process stream chunks for immediate display
             self.process_stream_chunks();
@@ -330,17 +356,21 @@ Working directory: {}"#,
 
             // Check if we should quit
             if self.app.state().should_quit {
+                debug!("TuiRunner::run: should_quit is true, breaking");
                 break;
             }
         }
 
+        debug!("TuiRunner::run: exiting");
         Ok(())
     }
 
     /// Handle a single plan progress message
     fn handle_plan_progress(&mut self, progress: PlanProgress) {
+        debug!(?progress, "TuiRunner::handle_plan_progress: called");
         match progress {
             PlanProgress::Started => {
+                debug!("TuiRunner::handle_plan_progress: Started");
                 // Add initial streaming message that will be appended to
                 self.app
                     .state_mut()
@@ -348,6 +378,7 @@ Working directory: {}"#,
                     .push(ReplMessage::assistant(String::new()));
             }
             PlanProgress::TextChunk(chunk) => {
+                debug!(chunk_len = chunk.len(), "TuiRunner::handle_plan_progress: TextChunk");
                 // Append chunk to the last message (streaming output)
                 if let Some(last) = self.app.state_mut().repl_history.last_mut() {
                     last.content.push_str(&chunk);
@@ -358,6 +389,7 @@ Working directory: {}"#,
                 title,
                 plan_content: _,
             } => {
+                debug!(%exec_id, %title, "TuiRunner::handle_plan_progress: Completed");
                 info!("Plan creation completed: {} / {}", exec_id, title);
                 self.app.state_mut().repl_history.push(ReplMessage::assistant(format!(
                     "\n\n---\nPlan created: {} ({})\nView in Executions tab (Tab to switch).",
@@ -369,6 +401,7 @@ Working directory: {}"#,
                 self.plan_task = None;
             }
             PlanProgress::Failed { error } => {
+                debug!(%error, "TuiRunner::handle_plan_progress: Failed");
                 warn!("Plan creation failed: {}", error);
                 self.app
                     .state_mut()
@@ -382,10 +415,12 @@ Working directory: {}"#,
 
     /// Handle tick event - periodic updates
     async fn handle_tick(&mut self) -> Result<()> {
+        debug!("TuiRunner::handle_tick: called");
         self.app.state_mut().tick();
 
         // Check for pending REPL submit - spawn background task
         if let Some(input) = self.app.state_mut().pending_repl_submit.take() {
+            debug!(input_len = input.len(), "TuiRunner::handle_tick: pending REPL submit");
             info!("REPL submit received: {} chars", input.len());
             self.start_repl_request(&input);
         }
@@ -398,12 +433,17 @@ Working directory: {}"#,
 
         // Check for pending task to start
         if let Some(task) = self.app.state_mut().pending_task.take() {
+            debug!(%task, "TuiRunner::handle_tick: pending task");
             info!("Starting task: {}", task);
             self.start_task(&task).await;
         }
 
         // Check for pending plan creation - spawn background task
         if let Some(request) = self.app.state_mut().pending_plan_create.take() {
+            debug!(
+                message_count = request.messages.len(),
+                "TuiRunner::handle_tick: pending plan create"
+            );
             info!("Creating plan from {} messages", request.messages.len());
             self.start_plan_creation(request);
         }
@@ -413,12 +453,14 @@ Working directory: {}"#,
 
         // Check for pending action (cancel/pause/resume/start draft)
         if let Some(action) = self.app.state_mut().pending_action.take() {
+            debug!(?action, "TuiRunner::handle_tick: pending action");
             info!("Executing action: {:?}", action);
             self.execute_action(action).await;
         }
 
         // Refresh data if interval has elapsed
         if self.state_manager.is_some() && self.last_refresh.elapsed() >= DATA_REFRESH_INTERVAL {
+            debug!("TuiRunner::handle_tick: refreshing data");
             self.refresh_data().await?;
             self.last_refresh = Instant::now();
         }
@@ -428,6 +470,7 @@ Working directory: {}"#,
 
     /// Process pending stream chunks from LLM (non-blocking)
     fn process_stream_chunks(&mut self) {
+        debug!("TuiRunner::process_stream_chunks: called");
         if let Some(rx) = &mut self.stream_rx {
             // Collect all chunks first to avoid borrow issues
             let chunks: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
@@ -467,6 +510,7 @@ Working directory: {}"#,
 
     /// Process LLM task results (non-blocking check)
     async fn process_llm_results(&mut self) {
+        debug!("TuiRunner::process_llm_results: called");
         // Collect results first to avoid borrow conflicts
         let results: Vec<LlmTaskResult> = if let Some(rx) = &mut self.llm_result_rx {
             let mut collected = Vec::new();
@@ -585,6 +629,7 @@ Working directory: {}"#,
 
     /// Finish streaming state
     fn finish_streaming(&mut self) {
+        debug!("TuiRunner::finish_streaming: called");
         info!("Finishing streaming, setting repl_streaming=false");
         self.app.state_mut().repl_streaming = false;
         self.app.state_mut().repl_response_buffer.clear();
@@ -595,6 +640,11 @@ Working directory: {}"#,
 
     /// Handle tool calls from LLM response
     async fn handle_tool_calls(&mut self, content: Option<String>, tool_calls: Vec<ToolCall>) {
+        debug!(
+            tool_count = tool_calls.len(),
+            has_content = content.is_some(),
+            "TuiRunner::handle_tool_calls: called"
+        );
         info!("handle_tool_calls: {} tools to execute", tool_calls.len());
 
         if tool_calls.is_empty() {
@@ -688,6 +738,7 @@ Working directory: {}"#,
 
     /// Start a new REPL request (spawns background task)
     fn start_repl_request(&mut self, input: &str) {
+        debug!(input_len = input.len(), "TuiRunner::start_repl_request: called");
         info!(
             "start_repl_request: mode={:?}, input_len={}, streaming={}",
             self.app.state().repl_mode,
@@ -780,10 +831,15 @@ Working directory: {}"#,
 
     /// Continue LLM request after tool execution (spawns background task)
     fn continue_llm_request(&mut self) {
+        debug!("TuiRunner::continue_llm_request: called");
         // Check if we have an LLM client
         let llm = match &self.llm_client {
-            Some(llm) => Arc::clone(llm),
+            Some(llm) => {
+                debug!("TuiRunner::continue_llm_request: LLM client found");
+                Arc::clone(llm)
+            }
             None => {
+                debug!("TuiRunner::continue_llm_request: no LLM client, finishing");
                 self.finish_streaming();
                 return;
             }
@@ -845,6 +901,7 @@ Working directory: {}"#,
 
     /// Generate a short title from task description using LLM
     async fn generate_title(&self, task: &str) -> Option<String> {
+        debug!(task_len = task.len(), "TuiRunner::generate_title: called");
         let llm = self.llm_client.as_ref()?;
 
         // Load title generator prompt from embedded or file
@@ -860,7 +917,7 @@ Working directory: {}"#,
         };
 
         match llm.complete(request).await {
-            Ok(response) => response.content.map(|s| s.trim().to_string()),
+            Ok(response) => response.content.map(|s| Self::clean_title(s.trim())),
             Err(e) => {
                 debug!("Failed to generate title: {}", e);
                 None
@@ -870,9 +927,14 @@ Working directory: {}"#,
 
     /// Start a new plan loop for the given task
     async fn start_task(&mut self, task: &str) {
+        debug!(%task, "TuiRunner::start_task: called");
         let state_manager = match &self.state_manager {
-            Some(sm) => sm,
+            Some(sm) => {
+                debug!("TuiRunner::start_task: state manager found");
+                sm
+            }
             None => {
+                debug!("TuiRunner::start_task: no state manager");
                 self.app.state_mut().set_error("No state manager - cannot create loop");
                 return;
             }
@@ -880,14 +942,19 @@ Working directory: {}"#,
 
         debug!("Starting plan loop: {}", task);
 
-        // Generate a short title via LLM
-        let title = self.generate_title(task).await;
+        // Generate a short title via LLM (used for both display and ID slug)
+        let title = self
+            .generate_title(task)
+            .await
+            .unwrap_or_else(|| "New Task".to_string());
 
-        // Create a plan execution - "plan" is always the entry point
-        let mut execution = crate::domain::LoopExecution::new("plan", task);
-        if let Some(t) = title {
-            execution.set_title(t);
-        }
+        // Create a plan execution - use the short title for the ID slug
+        let mut execution = crate::domain::LoopExecution::new("plan", &title);
+        execution.set_title(title);
+        // Store the original task in context
+        execution.set_context(serde_json::json!({ "user-request": task }));
+        // New plans start as draft - user must approve before they run
+        execution.set_status(crate::domain::LoopExecutionStatus::Draft);
 
         match state_manager.create_execution(execution).await {
             Ok(id) => {
@@ -904,10 +971,18 @@ Working directory: {}"#,
 
     /// Start plan creation in a background task (non-blocking)
     fn start_plan_creation(&mut self, request: PlanCreateRequest) {
+        debug!(
+            message_count = request.messages.len(),
+            "TuiRunner::start_plan_creation: called"
+        );
         // Validate we have required dependencies
         let state_manager = match &self.state_manager {
-            Some(sm) => sm.clone(),
+            Some(sm) => {
+                debug!("TuiRunner::start_plan_creation: state manager found");
+                sm.clone()
+            }
             None => {
+                debug!("TuiRunner::start_plan_creation: no state manager");
                 warn!("No StateManager - cannot create plan");
                 self.app.state_mut().set_error("No state manager - cannot create plan");
                 return;
@@ -915,8 +990,12 @@ Working directory: {}"#,
         };
 
         let llm = match &self.llm_client {
-            Some(llm) => Arc::clone(llm),
+            Some(llm) => {
+                debug!("TuiRunner::start_plan_creation: LLM client found");
+                Arc::clone(llm)
+            }
             None => {
+                debug!("TuiRunner::start_plan_creation: no LLM client");
                 warn!("No LLM client - cannot create plan");
                 self.app.state_mut().set_error("No LLM client - cannot create plan");
                 return;
@@ -948,6 +1027,7 @@ Working directory: {}"#,
 
     /// Process plan creation progress messages (non-blocking)
     async fn process_plan_progress(&mut self) {
+        debug!("TuiRunner::process_plan_progress: called");
         let progress_messages: Vec<PlanProgress> = if let Some(rx) = &mut self.plan_progress_rx {
             let mut collected = Vec::new();
             while let Ok(msg) = rx.try_recv() {
@@ -1012,6 +1092,10 @@ Working directory: {}"#,
         worktree: PathBuf,
         progress_tx: mpsc::Sender<PlanProgress>,
     ) {
+        debug!(
+            message_count = request.messages.len(),
+            "TuiRunner::run_plan_creation: called"
+        );
         info!("=== run_plan_creation START (Rule of Five) ===");
 
         // Signal that plan creation has started
@@ -1176,6 +1260,7 @@ Working directory: {}"#,
 
     /// Format tool arguments for display (compact form)
     fn format_tool_args(input: &serde_json::Value) -> String {
+        debug!("TuiRunner::format_tool_args: called");
         if let Some(obj) = input.as_object() {
             let parts: Vec<String> = obj
                 .iter()
@@ -1200,16 +1285,19 @@ Working directory: {}"#,
 
     /// Extract the final plan from LLM output (content after "=== FINAL PLAN ===" marker)
     fn extract_final_plan(llm_output: &str) -> String {
+        debug!(output_len = llm_output.len(), "TuiRunner::extract_final_plan: called");
         // Look for the final plan marker
         const MARKER: &str = "=== FINAL PLAN ===";
 
         if let Some(pos) = llm_output.find(MARKER) {
+            debug!("TuiRunner::extract_final_plan: marker found at pos {}", pos);
             // Extract everything after the marker
             let after_marker = &llm_output[pos + MARKER.len()..];
             after_marker.trim().to_string()
         } else {
             // Fallback: if no marker found, use the entire output
             // This handles cases where LLM didn't follow the format
+            debug!("TuiRunner::extract_final_plan: marker not found, using full output");
             warn!("No '=== FINAL PLAN ===' marker found, using full output");
             llm_output.trim().to_string()
         }
@@ -1217,6 +1305,10 @@ Working directory: {}"#,
 
     /// Generate title from conversation (static version for background task)
     async fn generate_title_static(llm: &Arc<dyn LlmClient>, conversation: &str) -> Option<String> {
+        debug!(
+            conversation_len = conversation.len(),
+            "TuiRunner::generate_title_static: called"
+        );
         // Load title generator prompt from embedded or file
         let system_prompt = crate::prompts::embedded::get_embedded("title")
             .unwrap_or("Generate a 2-5 word title. Output ONLY the title.")
@@ -1230,14 +1322,26 @@ Working directory: {}"#,
         };
 
         match llm.complete(request).await {
-            Ok(response) => response.content.map(|s| s.trim().to_string()),
+            Ok(response) => response.content.map(|s| Self::clean_title(s.trim())),
             Err(_) => None,
         }
     }
 
+    /// Clean and validate a generated title (delegates to standalone function)
+    fn clean_title(raw: &str) -> String {
+        debug!(%raw, "TuiRunner::clean_title: called");
+        clean_title(raw)
+    }
+
     /// Check if plan changed significantly (static version)
     fn plan_changed_significantly_static(old: &str, new: &str) -> bool {
+        debug!(
+            old_len = old.len(),
+            new_len = new.len(),
+            "TuiRunner::plan_changed_significantly_static: called"
+        );
         if old.is_empty() {
+            debug!("TuiRunner::plan_changed_significantly_static: old is empty");
             return true;
         }
         // Simple heuristic: check if length changed by more than 5%
@@ -1252,7 +1356,13 @@ Working directory: {}"#,
     /// Returns true if there are meaningful changes, false if the plans are essentially the same.
     /// This is used to detect convergence in the Rule of Five iteration.
     fn plan_changed_significantly(&self, old_plan: &str, new_plan: &str) -> bool {
+        debug!(
+            old_len = old_plan.len(),
+            new_len = new_plan.len(),
+            "TuiRunner::plan_changed_significantly: called"
+        );
         if old_plan.is_empty() {
+            debug!("TuiRunner::plan_changed_significantly: old plan is empty, first pass");
             return true; // First pass always counts as a change
         }
 
@@ -1284,9 +1394,14 @@ Working directory: {}"#,
 
     /// Execute a pending action (cancel/pause/resume/start draft)
     async fn execute_action(&mut self, action: PendingAction) {
+        debug!(?action, "TuiRunner::execute_action: called");
         let state_manager = match &self.state_manager {
-            Some(sm) => sm,
+            Some(sm) => {
+                debug!("TuiRunner::execute_action: state manager found");
+                sm
+            }
             None => {
+                debug!("TuiRunner::execute_action: no state manager");
                 self.app
                     .state_mut()
                     .set_error("No state manager - cannot execute action");
@@ -1296,6 +1411,7 @@ Working directory: {}"#,
 
         match action {
             PendingAction::CancelLoop(id) => {
+                debug!(%id, "TuiRunner::execute_action: CancelLoop");
                 debug!("Cancelling loop: {}", id);
                 match state_manager.cancel_execution(&id).await {
                     Ok(()) => {
@@ -1315,6 +1431,7 @@ Working directory: {}"#,
                     Ok(()) => {
                         debug!("Paused loop {}", id);
                         self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                        self.app.state_mut().describe_data = None; // Force reload
                     }
                     Err(e) => {
                         warn!("Failed to pause loop: {}", e);
@@ -1328,6 +1445,7 @@ Working directory: {}"#,
                     Ok(()) => {
                         debug!("Resumed loop {}", id);
                         self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                        self.app.state_mut().describe_data = None; // Force reload
                     }
                     Err(e) => {
                         warn!("Failed to resume loop: {}", e);
@@ -1348,16 +1466,17 @@ Working directory: {}"#,
                     }
                 }
             }
-            PendingAction::StartDraft(id) => {
-                debug!("Starting draft: {}", id);
-                match state_manager.start_draft(&id).await {
+            PendingAction::ActivateDraft(id) => {
+                debug!("Activating draft: {}", id);
+                match state_manager.activate_draft(&id).await {
                     Ok(()) => {
-                        debug!("Started draft {}", id);
+                        debug!("Activated draft {} (now pending, awaiting LoopManager pickup)", id);
                         self.last_refresh = Instant::now() - DATA_REFRESH_INTERVAL;
+                        self.app.state_mut().describe_data = None; // Force reload
                     }
                     Err(e) => {
-                        warn!("Failed to start draft: {}", e);
-                        self.app.state_mut().set_error(format!("Failed to start draft: {}", e));
+                        warn!("Failed to activate draft: {}", e);
+                        self.app.state_mut().set_error(format!("Failed to activate: {}", e));
                     }
                 }
             }
@@ -1366,45 +1485,59 @@ Working directory: {}"#,
 
     /// Handle key event
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        debug!(?key, "TuiRunner::handle_key: called");
         self.app.handle_key(key)
     }
 
     /// Handle mouse event
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        debug!(?mouse, "TuiRunner::handle_mouse: called");
         use crossterm::event::MouseEventKind;
 
         let state = self.app.state_mut();
 
         // Only handle scroll in REPL view
         if !matches!(state.current_view, View::Repl) {
+            debug!("TuiRunner::handle_mouse: not in REPL view, ignoring");
             return;
         }
 
         let max = state.repl_max_scroll;
         match mouse.kind {
             MouseEventKind::ScrollUp => {
+                debug!("TuiRunner::handle_mouse: ScrollUp");
                 state.repl_scroll_up(3, max);
             }
             MouseEventKind::ScrollDown => {
+                debug!("TuiRunner::handle_mouse: ScrollDown");
                 state.repl_scroll_down(3, max);
             }
             _ => {
+                debug!("TuiRunner::handle_mouse: other event, not handled");
                 // Other mouse events (click, drag) not handled yet
             }
         }
     }
 
     /// Handle terminal resize
-    fn handle_resize(&mut self, _width: u16, _height: u16) {
+    fn handle_resize(&mut self, width: u16, height: u16) {
+        debug!(width, height, "TuiRunner::handle_resize: called");
         // Terminal handles resize automatically, but we might want to adjust state
         debug!("Terminal resized");
     }
 
     /// Refresh data from StateManager
     async fn refresh_data(&mut self) -> Result<()> {
+        debug!("TuiRunner::refresh_data: called");
         let state_manager = match &self.state_manager {
-            Some(sm) => sm,
-            None => return Ok(()),
+            Some(sm) => {
+                debug!("TuiRunner::refresh_data: state manager found");
+                sm
+            }
+            None => {
+                debug!("TuiRunner::refresh_data: no state manager, returning");
+                return Ok(());
+            }
         };
 
         // Sync Loop records
@@ -1493,7 +1626,9 @@ Working directory: {}"#,
                 state.executions_active = items.iter().filter(|r| r.status == "running").count();
                 state.executions_complete = items.iter().filter(|r| r.status == "complete").count();
                 state.executions_failed = items.iter().filter(|r| r.status == "failed").count();
-                state.executions = items;
+                state.executions = items.clone();
+                // Always build the loops tree so it's ready when user switches to Loops view
+                state.loops_tree.build_from_items(items);
             }
             Err(e) => {
                 warn!("Failed to fetch executions: {}", e);
@@ -1519,15 +1654,24 @@ Working directory: {}"#,
 
     /// Load data specific to the current view
     async fn load_view_data(&mut self) -> Result<()> {
+        debug!("TuiRunner::load_view_data: called");
         let state_manager = match &self.state_manager {
-            Some(sm) => sm,
-            None => return Ok(()),
+            Some(sm) => {
+                debug!("TuiRunner::load_view_data: state manager found");
+                sm
+            }
+            None => {
+                debug!("TuiRunner::load_view_data: no state manager, returning");
+                return Ok(());
+            }
         };
 
         let view = self.app.state().current_view.clone();
+        debug!(?view, "TuiRunner::load_view_data: current view");
 
         match view {
             View::Logs { ref target_id } => {
+                debug!(%target_id, "TuiRunner::load_view_data: loading logs");
                 // Load logs for the target (try execution first, then loop record)
                 if let Ok(Some(exec)) = state_manager.get_execution(target_id).await {
                     let entries: Vec<LogEntry> = exec
@@ -1587,6 +1731,7 @@ Working directory: {}"#,
                             progress: exec.progress.lines().last().unwrap_or("").to_string(),
                         }),
                         plan_content,
+                        output: if exec.progress.is_empty() { None } else { Some(exec.progress.clone()) },
                     })
                 } else if let Ok(Some(record)) = state_manager.get_loop(target_id).await {
                     // It's a Loop record
@@ -1605,6 +1750,7 @@ Working directory: {}"#,
                         children: vec![], // TODO: load children
                         execution: None,
                         plan_content: None, // Loop records don't have plan content
+                        output: None,       // Loop records don't have output
                     })
                 } else {
                     None
@@ -1672,6 +1818,35 @@ fn format_timestamp(timestamp_ms: i64) -> String {
     }
 }
 
+/// Clean and validate a generated title, ensuring it's short enough for use as a slug
+fn clean_title(raw: &str) -> String {
+    // Remove quotes if present
+    let cleaned = raw.trim_matches('"').trim_matches('\'').trim();
+
+    // If the "title" looks like a conversational response (starts with I'll, Here's, etc.),
+    // extract just the key noun phrase
+    let title = if cleaned.to_lowercase().starts_with("i'll ")
+        || cleaned.to_lowercase().starts_with("i will ")
+        || cleaned.to_lowercase().starts_with("here's ")
+        || cleaned.to_lowercase().starts_with("this is ")
+    {
+        // Try to extract key words - take the last few meaningful words
+        let words: Vec<&str> = cleaned.split_whitespace().collect();
+        if words.len() > 5 {
+            // Look for key nouns after common verbs
+            words.iter().rev().take(4).rev().cloned().collect::<Vec<_>>().join(" ")
+        } else {
+            cleaned.to_string()
+        }
+    } else {
+        cleaned.to_string()
+    };
+
+    // Limit to 5 words max
+    let words: Vec<&str> = title.split_whitespace().take(5).collect();
+    words.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1705,5 +1880,48 @@ mod tests {
         assert_eq!(format_duration(now), "0:00");
         assert_eq!(format_duration(now - 65_000), "1:05");
         assert_eq!(format_duration(now - 3_600_000), "60:00");
+    }
+
+    // === TESTS: clean_title ===
+
+    #[test]
+    fn test_clean_title_removes_quotes() {
+        assert_eq!(clean_title("\"Hello World\""), "Hello World");
+        assert_eq!(clean_title("'Some Title'"), "Some Title");
+    }
+
+    #[test]
+    fn test_clean_title_limits_to_five_words() {
+        let long = "One Two Three Four Five Six Seven";
+        assert_eq!(clean_title(long), "One Two Three Four Five");
+    }
+
+    #[test]
+    fn test_clean_title_handles_conversational_response() {
+        // "I'll create a Rust CLI project with a greeting feature" -> last 4 words
+        let conv = "I'll create a Rust CLI project with a greeting feature";
+        let result = clean_title(conv);
+        // Should extract last 4 words: "with a greeting feature"
+        assert_eq!(result, "with a greeting feature");
+    }
+
+    #[test]
+    fn test_clean_title_handles_short_conversational() {
+        // Short "I'll" response stays as-is (5 words or less)
+        let short = "I'll do that";
+        assert_eq!(clean_title(short), "I'll do that");
+    }
+
+    #[test]
+    fn test_clean_title_preserves_normal_title() {
+        assert_eq!(clean_title("OAuth Authentication"), "OAuth Authentication");
+        assert_eq!(clean_title("Howdy CLI"), "Howdy CLI");
+    }
+
+    #[test]
+    fn test_clean_title_handles_heres_prefix() {
+        let heres = "Here's the complete specification for your project";
+        let result = clean_title(heres);
+        assert_eq!(result, "specification for your project");
     }
 }

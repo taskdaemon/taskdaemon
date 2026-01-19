@@ -33,9 +33,11 @@ impl std::fmt::Display for RecoveryStats {
 /// - Loops in InProgress state (crashed mid-execution)
 /// - LoopExecutions in Running/Rebasing state (crashed mid-iteration)
 pub async fn scan_for_recovery(state: &StateManager) -> eyre::Result<RecoveryStats> {
+    debug!("scan_for_recovery: called");
     let mut stats = RecoveryStats::default();
 
     // Find loops that were in progress
+    debug!("scan_for_recovery: listing in_progress loops");
     let in_progress_loops = state
         .list_loops(None, Some("in_progress".to_string()), None)
         .await
@@ -43,15 +45,17 @@ pub async fn scan_for_recovery(state: &StateManager) -> eyre::Result<RecoverySta
     stats.loops_to_recover = in_progress_loops.len();
 
     for record in &in_progress_loops {
-        debug!(loop_id = %record.id, loop_type = %record.r#type, "Found in-progress loop needing recovery");
+        debug!(loop_id = %record.id, loop_type = %record.r#type, "scan_for_recovery: found in-progress loop needing recovery");
     }
 
     // Find executions that were active (running or rebasing)
+    debug!("scan_for_recovery: listing running executions");
     let running_execs = state
         .list_executions(Some("running".to_string()), None)
         .await
         .map_err(|e| eyre::eyre!("Failed to list running executions: {}", e))?;
 
+    debug!("scan_for_recovery: listing rebasing executions");
     let rebasing_execs = state
         .list_executions(Some("rebasing".to_string()), None)
         .await
@@ -64,14 +68,15 @@ pub async fn scan_for_recovery(state: &StateManager) -> eyre::Result<RecoverySta
             exec_id = %exec.id,
             loop_type = %exec.loop_type,
             iteration = exec.iteration,
-            "Found active execution needing recovery"
+            "scan_for_recovery: found active execution needing recovery"
         );
     }
 
     if stats.loops_to_recover > 0 || stats.executions_to_recover > 0 {
+        debug!("scan_for_recovery: incomplete work found");
         info!("Recovery scan found incomplete work: {}", stats);
     } else {
-        debug!("Recovery scan found no incomplete work");
+        debug!("scan_for_recovery: no incomplete work found");
     }
 
     Ok(stats)
@@ -79,25 +84,43 @@ pub async fn scan_for_recovery(state: &StateManager) -> eyre::Result<RecoverySta
 
 /// Get all incomplete items that need recovery
 pub async fn get_incomplete_items(state: &StateManager) -> eyre::Result<(Vec<Loop>, Vec<LoopExecution>)> {
+    debug!("get_incomplete_items: called");
     // Get in-progress loops
+    debug!("get_incomplete_items: listing in_progress loops");
     let loops = state
         .list_loops(None, Some("in_progress".to_string()), None)
         .await
         .map_err(|e| eyre::eyre!("Failed to list in-progress loops: {}", e))?;
+    debug!(count = loops.len(), "get_incomplete_items: found in_progress loops");
 
     // Get active executions
+    debug!("get_incomplete_items: listing running executions");
     let mut executions = state
         .list_executions(Some("running".to_string()), None)
         .await
         .map_err(|e| eyre::eyre!("Failed to list running executions: {}", e))?;
+    debug!(
+        count = executions.len(),
+        "get_incomplete_items: found running executions"
+    );
 
+    debug!("get_incomplete_items: listing rebasing executions");
     let rebasing_execs = state
         .list_executions(Some("rebasing".to_string()), None)
         .await
         .map_err(|e| eyre::eyre!("Failed to list rebasing executions: {}", e))?;
+    debug!(
+        count = rebasing_execs.len(),
+        "get_incomplete_items: found rebasing executions"
+    );
 
     executions.extend(rebasing_execs);
 
+    debug!(
+        loops = loops.len(),
+        executions = executions.len(),
+        "get_incomplete_items: returning incomplete items"
+    );
     Ok((loops, executions))
 }
 
@@ -106,11 +129,17 @@ pub async fn get_incomplete_items(state: &StateManager) -> eyre::Result<(Vec<Loo
 /// This transitions active items to appropriate states to indicate they
 /// need to be resumed (rather than restarted from scratch).
 pub async fn mark_crashed_as_paused(state: &StateManager) -> eyre::Result<usize> {
+    debug!("mark_crashed_as_paused: called");
     let (loops, executions) = get_incomplete_items(state).await?;
     let mut count = 0;
 
     // Mark loops as ready (so they can be picked up again)
+    debug!(
+        loop_count = loops.len(),
+        "mark_crashed_as_paused: processing crashed loops"
+    );
     for mut record in loops {
+        debug!(loop_id = %record.id, "mark_crashed_as_paused: marking loop as ready");
         warn!(loop_id = %record.id, loop_type = %record.r#type, "Marking crashed loop as ready for retry");
         record.set_status(LoopStatus::Ready);
         state
@@ -121,7 +150,12 @@ pub async fn mark_crashed_as_paused(state: &StateManager) -> eyre::Result<usize>
     }
 
     // Mark executions as paused
+    debug!(
+        execution_count = executions.len(),
+        "mark_crashed_as_paused: processing crashed executions"
+    );
     for mut exec in executions {
+        debug!(exec_id = %exec.id, "mark_crashed_as_paused: marking execution as paused");
         warn!(
             exec_id = %exec.id,
             loop_type = %exec.loop_type,
@@ -138,7 +172,10 @@ pub async fn mark_crashed_as_paused(state: &StateManager) -> eyre::Result<usize>
     }
 
     if count > 0 {
+        debug!(%count, "mark_crashed_as_paused: marked items as paused");
         info!("Marked {} crashed items as paused for recovery", count);
+    } else {
+        debug!("mark_crashed_as_paused: no items to mark");
     }
 
     Ok(count)
@@ -146,22 +183,29 @@ pub async fn mark_crashed_as_paused(state: &StateManager) -> eyre::Result<usize>
 
 /// Full recovery process: scan, mark as paused, sync store
 pub async fn recover(state: &StateManager) -> eyre::Result<RecoveryStats> {
+    debug!("recover: called");
     info!("Starting crash recovery process");
 
     // First sync from JSONL files to ensure we have latest state
+    debug!("recover: syncing store");
     state
         .sync()
         .await
         .map_err(|e| eyre::eyre!("Failed to sync store: {}", e))?;
 
     // Scan for incomplete work
+    debug!("recover: scanning for recovery");
     let stats = scan_for_recovery(state).await?;
 
     // Mark crashed items as paused
     if stats.loops_to_recover > 0 || stats.executions_to_recover > 0 {
+        debug!("recover: incomplete work found, marking as paused");
         mark_crashed_as_paused(state).await?;
+    } else {
+        debug!("recover: no incomplete work found");
     }
 
+    debug!("recover: complete");
     info!("Crash recovery complete: {}", stats);
     Ok(stats)
 }

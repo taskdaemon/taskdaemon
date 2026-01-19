@@ -29,41 +29,93 @@ pub enum FocusArea {
 impl FocusArea {
     /// Get the focus area for a given pass number (1-5)
     pub fn from_pass(pass: u8) -> Option<Self> {
+        debug!(%pass, "FocusArea::from_pass: called");
         match pass {
-            1 => Some(Self::Completeness),
-            2 => Some(Self::Correctness),
-            3 => Some(Self::EdgeCases),
-            4 => Some(Self::Architecture),
-            5 => Some(Self::Clarity),
-            _ => None,
+            1 => {
+                debug!("FocusArea::from_pass: matched Completeness");
+                Some(Self::Completeness)
+            }
+            2 => {
+                debug!("FocusArea::from_pass: matched Correctness");
+                Some(Self::Correctness)
+            }
+            3 => {
+                debug!("FocusArea::from_pass: matched EdgeCases");
+                Some(Self::EdgeCases)
+            }
+            4 => {
+                debug!("FocusArea::from_pass: matched Architecture");
+                Some(Self::Architecture)
+            }
+            5 => {
+                debug!("FocusArea::from_pass: matched Clarity");
+                Some(Self::Clarity)
+            }
+            _ => {
+                debug!("FocusArea::from_pass: no match, returning None");
+                None
+            }
         }
     }
 
     /// Get the display name for this focus area
     pub fn name(&self) -> &'static str {
+        debug!(?self, "FocusArea::name: called");
         match self {
-            Self::Completeness => "Completeness",
-            Self::Correctness => "Correctness",
-            Self::EdgeCases => "Edge Cases",
-            Self::Architecture => "Architecture",
-            Self::Clarity => "Clarity",
+            Self::Completeness => {
+                debug!("FocusArea::name: returning Completeness");
+                "Completeness"
+            }
+            Self::Correctness => {
+                debug!("FocusArea::name: returning Correctness");
+                "Correctness"
+            }
+            Self::EdgeCases => {
+                debug!("FocusArea::name: returning Edge Cases");
+                "Edge Cases"
+            }
+            Self::Architecture => {
+                debug!("FocusArea::name: returning Architecture");
+                "Architecture"
+            }
+            Self::Clarity => {
+                debug!("FocusArea::name: returning Clarity");
+                "Clarity"
+            }
         }
     }
 
     /// Get the template name for this focus area
     pub fn template_name(&self) -> &'static str {
+        debug!(?self, "FocusArea::template_name: called");
         match self {
-            Self::Completeness => "plan-completeness",
-            Self::Correctness => "plan-correctness",
-            Self::EdgeCases => "plan-edge-cases",
-            Self::Architecture => "plan-architecture",
-            Self::Clarity => "plan-clarity",
+            Self::Completeness => {
+                debug!("FocusArea::template_name: returning plan-completeness");
+                "plan-completeness"
+            }
+            Self::Correctness => {
+                debug!("FocusArea::template_name: returning plan-correctness");
+                "plan-correctness"
+            }
+            Self::EdgeCases => {
+                debug!("FocusArea::template_name: returning plan-edge-cases");
+                "plan-edge-cases"
+            }
+            Self::Architecture => {
+                debug!("FocusArea::template_name: returning plan-architecture");
+                "plan-architecture"
+            }
+            Self::Clarity => {
+                debug!("FocusArea::template_name: returning plan-clarity");
+                "plan-clarity"
+            }
         }
     }
 }
 
 impl std::fmt::Display for FocusArea {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug!(?self, "FocusArea::fmt: called");
         write!(f, "{}", self.name())
     }
 }
@@ -92,6 +144,10 @@ pub struct PromptContext {
 impl PromptContext {
     /// Create a context for the first pass
     pub fn first_pass(conversation: String) -> Self {
+        debug!(
+            conversation_len = conversation.len(),
+            "PromptContext::first_pass: called"
+        );
         Self {
             conversation,
             pass_number: 1,
@@ -108,6 +164,7 @@ impl PromptContext {
 
     /// Create a context for a review pass (2-5)
     pub fn review_pass(pass_number: u8, previous_output: String, focus: FocusArea) -> Self {
+        debug!(%pass_number, ?focus, previous_output_len = previous_output.len(), "PromptContext::review_pass: called");
         Self {
             conversation: String::new(),
             pass_number,
@@ -140,18 +197,41 @@ impl PromptLoader {
     /// * `worktree` - The worktree root (used to find `.taskdaemon/prompts/` and `prompts/`)
     pub fn new(worktree: impl AsRef<Path>) -> Self {
         let worktree = worktree.as_ref();
+        debug!(?worktree, "PromptLoader::new: called");
         let user_dir = worktree.join(".taskdaemon/prompts");
         let repo_dir = worktree.join("prompts");
 
+        let user_dir_exists = user_dir.exists();
+        let repo_dir_exists = repo_dir.exists();
+        debug!(
+            ?user_dir,
+            %user_dir_exists,
+            ?repo_dir,
+            %repo_dir_exists,
+            "PromptLoader::new: checking directories"
+        );
+
+        if user_dir_exists {
+            debug!("PromptLoader::new: user override directory found");
+        } else {
+            debug!("PromptLoader::new: no user override directory");
+        }
+        if repo_dir_exists {
+            debug!("PromptLoader::new: repo directory found");
+        } else {
+            debug!("PromptLoader::new: no repo directory");
+        }
+
         Self {
             hbs: Handlebars::new(),
-            user_dir: if user_dir.exists() { Some(user_dir) } else { None },
-            repo_dir: if repo_dir.exists() { Some(repo_dir) } else { None },
+            user_dir: if user_dir_exists { Some(user_dir) } else { None },
+            repo_dir: if repo_dir_exists { Some(repo_dir) } else { None },
         }
     }
 
     /// Create a loader that only uses embedded prompts (for testing)
     pub fn embedded_only() -> Self {
+        debug!("PromptLoader::embedded_only: called");
         Self {
             hbs: Handlebars::new(),
             user_dir: None,
@@ -166,43 +246,58 @@ impl PromptLoader {
     /// 2. Repo default: `prompts/{name}.pmt`
     /// 3. Embedded fallback
     fn load_template(&self, name: &str) -> Result<String> {
+        debug!(%name, "PromptLoader::load_template: called");
         // Try user override first
         if let Some(ref user_dir) = self.user_dir {
+            debug!("PromptLoader::load_template: checking user override directory");
             let path = user_dir.join(format!("{}.pmt", name));
             if path.exists() {
-                debug!("Loading prompt from user override: {:?}", path);
+                debug!(?path, "PromptLoader::load_template: found in user override");
                 return std::fs::read_to_string(&path)
                     .map_err(|e| eyre!("Failed to read user prompt {}: {}", path.display(), e));
+            } else {
+                debug!(?path, "PromptLoader::load_template: not found in user override");
             }
+        } else {
+            debug!("PromptLoader::load_template: no user override directory configured");
         }
 
         // Try repo default
         if let Some(ref repo_dir) = self.repo_dir {
+            debug!("PromptLoader::load_template: checking repo directory");
             let path = repo_dir.join(format!("{}.pmt", name));
             if path.exists() {
-                debug!("Loading prompt from repo: {:?}", path);
+                debug!(?path, "PromptLoader::load_template: found in repo");
                 return std::fs::read_to_string(&path)
                     .map_err(|e| eyre!("Failed to read repo prompt {}: {}", path.display(), e));
+            } else {
+                debug!(?path, "PromptLoader::load_template: not found in repo");
             }
+        } else {
+            debug!("PromptLoader::load_template: no repo directory configured");
         }
 
         // Fall back to embedded
+        debug!("PromptLoader::load_template: trying embedded fallback");
         if let Some(content) = embedded::get_embedded(name) {
-            debug!("Using embedded prompt: {}", name);
+            debug!(%name, "PromptLoader::load_template: found in embedded");
             return Ok(content.to_string());
         }
 
+        debug!(%name, "PromptLoader::load_template: not found anywhere");
         Err(eyre!("Prompt template not found: {}", name))
     }
 
     /// Render a template with the given context
     pub fn render(&self, template_name: &str, context: &PromptContext) -> Result<String> {
+        debug!(%template_name, pass_number = %context.pass_number, focus_area = %context.focus_area, "PromptLoader::render: called");
         let template = self.load_template(template_name)?;
         info!(
             "Rendering template '{}' for pass {} (focus: {})",
             template_name, context.pass_number, context.focus_area
         );
 
+        debug!("PromptLoader::render: rendering template with handlebars");
         self.hbs
             .render_template(&template, context)
             .map_err(|e| eyre!("Failed to render template {}: {}", template_name, e))
@@ -210,6 +305,7 @@ impl PromptLoader {
 
     /// Get the consolidated plan prompt (includes Rule of Five)
     pub fn plan_prompt(&self) -> Result<String> {
+        debug!("PromptLoader::plan_prompt: called");
         self.load_template("plan")
     }
 }
