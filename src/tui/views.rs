@@ -1109,11 +1109,12 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                         }
                     }
                     View::Loops => vec![
-                        ("[Enter]", "Expand/Collapse"),
+                        ("[Enter]", "Toggle"),
+                        ("[→]", "Expand"),
+                        ("[←]", "Collapse"),
                         ("[d]", "Describe"),
-                        ("[l]", "Logs"),
-                        ("[p]", "Pause"),
-                        ("[s]", "Stop"),
+                        ("[p/r]", "Pause/Resume"),
+                        ("[x]", "Cancel"),
                     ],
                     View::Records { .. } => vec![
                         ("[Enter]", "Children"),
