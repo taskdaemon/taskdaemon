@@ -1,7 +1,7 @@
 # Spec: Dependency Graph Validation
 
-**ID:** 015-dependency-validation  
-**Status:** Draft  
+**ID:** 015-dependency-validation
+**Status:** Draft
 **Dependencies:** [006-domain-types, 011-priority-scheduler]
 
 ## Summary
@@ -109,7 +109,7 @@ impl<T> DependencyGraph<T> {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
         let mut path = Vec::new();
-        
+
         for node in self.nodes.keys() {
             if !visited.contains(node) {
                 self.dfs_detect_cycles(
@@ -123,12 +123,12 @@ impl<T> DependencyGraph<T> {
         }
         cycles
     }
-    
+
     fn dfs_detect_cycles(&self, node: &Uuid, ...) {
         visited.insert(*node);
         rec_stack.insert(*node);
         path.push(*node);
-        
+
         if let Some(neighbors) = self.edges.get(node) {
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
@@ -143,7 +143,7 @@ impl<T> DependencyGraph<T> {
                 }
             }
         }
-        
+
         path.pop();
         rec_stack.remove(node);
     }
@@ -159,24 +159,24 @@ impl<T> DependencyGraph<T> {
         if !cycles.is_empty() {
             return Err(ValidationError::CyclesDetected(cycles));
         }
-        
+
         // Kahn's algorithm
         let mut in_degree = self.calculate_in_degrees();
         let mut queue: VecDeque<_> = in_degree.iter()
             .filter(|(_, &count)| count == 0)
             .map(|(node, _)| *node)
             .collect();
-        
+
         let mut order = Vec::new();
         let mut levels = vec![HashSet::new()];
-        
+
         while !queue.is_empty() {
             let level_size = queue.len();
             for _ in 0..level_size {
                 let node = queue.pop_front().unwrap();
                 order.push(node);
                 levels.last_mut().unwrap().insert(node);
-                
+
                 if let Some(neighbors) = self.edges.get(&node) {
                     for neighbor in neighbors {
                         in_degree.entry(*neighbor).and_modify(|e| *e -= 1);
@@ -190,7 +190,7 @@ impl<T> DependencyGraph<T> {
                 levels.push(HashSet::new());
             }
         }
-        
+
         Ok(TopologicalOrder { order, levels, critical_path: None })
     }
 }

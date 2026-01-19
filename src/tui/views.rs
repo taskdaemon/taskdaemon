@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 use tracing::debug;
 
-use super::state::{AppState, ConfirmDialog, InteractionMode, ReplMode, ReplRole, View};
+use super::state::{AppState, ConfirmDialog, DaemonStatus, InteractionMode, ReplMode, ReplRole, View};
 use super::tree::LoopTree;
 
 /// Status colors (k9s-inspired)
@@ -111,11 +111,20 @@ pub fn render(state: &mut AppState, frame: &mut Frame) {
 /// Render header with view tabs and metrics
 fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
     debug!("render_header: called");
-    // Build left side: TaskDaemon + view tabs
+    // Build left side: TaskDaemon + daemon status indicator + view tabs
     let mut left_spans = vec![Span::styled(
-        " TaskDaemon ",
+        " TaskDaemon",
         Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
     )];
+
+    // Daemon status indicator (colored dot right after TaskDaemon)
+    let (indicator, indicator_color) = match state.daemon_status {
+        DaemonStatus::Connected => ("●", Color::Green),
+        DaemonStatus::VersionMismatch => ("●", Color::Yellow),
+        DaemonStatus::Disconnected => ("●", Color::Red),
+    };
+    left_spans.push(Span::styled(indicator, Style::default().fg(indicator_color)));
+    left_spans.push(Span::raw(" "));
 
     left_spans.push(Span::raw("│ "));
 

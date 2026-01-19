@@ -1,7 +1,7 @@
 # Spec: Execution State Tracking
 
-**ID:** 009-execution-tracking  
-**Status:** Draft  
+**ID:** 009-execution-tracking
+**Status:** Draft
 **Dependencies:** [006-domain-types, 007-state-manager-actor]
 
 ## Summary

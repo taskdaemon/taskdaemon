@@ -1,7 +1,7 @@
 # Spec: Loop Type Definitions
 
-**ID:** 018-loop-type-definitions  
-**Status:** Draft  
+**ID:** 018-loop-type-definitions
+**Status:** Draft
 **Dependencies:** [003-loop-engine-core, 017-config-system]
 
 ## Summary
@@ -169,23 +169,23 @@ impl LoopTypeRegistry {
         for validator in &self.validators {
             validator.validate(&definition)?;
         }
-        
+
         // Check for conflicts
         if let Some(existing) = self.types.get(&definition.name) {
             if existing.version >= definition.version {
                 return Err(RegistryError::VersionConflict);
             }
         }
-        
+
         // Register
         self.types.insert(definition.name.clone(), definition);
         Ok(())
     }
-    
+
     pub fn get(&self, name: &str) -> Option<&LoopTypeDefinition> {
         self.types.get(name)
     }
-    
+
     pub fn resolve_inheritance(&mut self) -> Result<(), RegistryError> {
         // Resolve inherits_from references
         // Merge configurations
@@ -213,7 +213,7 @@ impl TemplateEngine {
             .as_ref()
             .map(|p| self.load_template(p))
             .transpose()?;
-        
+
         // Build context
         let mut render_context = json!({
             "loop_type": loop_type.name,
@@ -221,11 +221,11 @@ impl TemplateEngine {
             "progress": context.progress,
             "variables": context.variables,
         });
-        
+
         // Render
         let system_content = self.handlebars.render_template(&system, &render_context)?;
         let user_content = user.map(|t| self.handlebars.render_template(&t, &render_context)).transpose()?;
-        
+
         Ok(format_prompt(system_content, user_content))
     }
 }

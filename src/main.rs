@@ -264,7 +264,11 @@ async fn cmd_tui(config: &Config) -> Result<()> {
             // Start new daemon
             match daemon.start() {
                 Ok(pid) => {
-                    info!(pid, version = taskdaemon::daemon::VERSION, "cmd_tui: restarted daemon with new version");
+                    info!(
+                        pid,
+                        version = taskdaemon::daemon::VERSION,
+                        "cmd_tui: restarted daemon with new version"
+                    );
                 }
                 Err(e) => {
                     warn!(error = %e, "cmd_tui: failed to restart daemon");
@@ -277,7 +281,11 @@ async fn cmd_tui(config: &Config) -> Result<()> {
         debug!("cmd_tui: daemon not running, starting it");
         match daemon.start() {
             Ok(pid) => {
-                info!(pid, version = taskdaemon::daemon::VERSION, "cmd_tui: started daemon automatically");
+                info!(
+                    pid,
+                    version = taskdaemon::daemon::VERSION,
+                    "cmd_tui: started daemon automatically"
+                );
             }
             Err(e) => {
                 warn!(error = %e, "cmd_tui: failed to start daemon, loops won't run");

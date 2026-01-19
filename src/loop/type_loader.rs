@@ -580,7 +580,8 @@ mod tests {
     fn test_builtin_plan_parses() {
         let loop_type: LoopType = serde_yaml::from_str(BUILTIN_PLAN).unwrap();
         assert!(!loop_type.prompt_template.is_empty());
-        assert_eq!(loop_type.validation_command, "otto ci");
+        // Plan loops complete via complete_task tool, not validation command
+        assert_eq!(loop_type.validation_command, "true");
     }
 
     #[test]

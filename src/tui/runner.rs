@@ -27,10 +27,11 @@ use super::app::App;
 use super::conversation_log::ConversationLogger;
 use super::events::{Event, EventHandler};
 use super::state::{
-    DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, PlanCreateRequest, RecordItem, ReplMessage,
-    ReplMode, ReplRole, View,
+    DaemonStatus, DescribeData, ExecutionInfo, ExecutionItem, LogEntry, PendingAction, PlanCreateRequest, RecordItem,
+    ReplMessage, ReplMode, ReplRole, View,
 };
 use super::views;
+use crate::daemon::DaemonManager;
 
 /// How often to refresh data from StateManager
 const DATA_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -903,26 +904,7 @@ Working directory: {}"#,
     async fn generate_title(&self, task: &str) -> Option<String> {
         debug!(task_len = task.len(), "TuiRunner::generate_title: called");
         let llm = self.llm_client.as_ref()?;
-
-        // Load title generator prompt from embedded or file
-        let system_prompt = crate::prompts::embedded::get_embedded("title")
-            .unwrap_or("Generate a 2-5 word title. Output ONLY the title.")
-            .to_string();
-
-        let request = CompletionRequest {
-            system_prompt,
-            messages: vec![Message::user(task)],
-            tools: vec![],
-            max_tokens: 50,
-        };
-
-        match llm.complete(request).await {
-            Ok(response) => response.content.map(|s| Self::clean_title(s.trim())),
-            Err(e) => {
-                debug!("Failed to generate title: {}", e);
-                None
-            }
-        }
+        crate::llm::name_markdown(llm, task).await
     }
 
     /// Start a new plan loop for the given task
@@ -1529,6 +1511,20 @@ Working directory: {}"#,
     /// Refresh data from StateManager
     async fn refresh_data(&mut self) -> Result<()> {
         debug!("TuiRunner::refresh_data: called");
+
+        // Check daemon status
+        let daemon = DaemonManager::new();
+        let daemon_status = if daemon.is_running() {
+            if daemon.version_matches() {
+                DaemonStatus::Connected
+            } else {
+                DaemonStatus::VersionMismatch
+            }
+        } else {
+            DaemonStatus::Disconnected
+        };
+        self.app.state_mut().daemon_status = daemon_status;
+
         let state_manager = match &self.state_manager {
             Some(sm) => {
                 debug!("TuiRunner::refresh_data: state manager found");

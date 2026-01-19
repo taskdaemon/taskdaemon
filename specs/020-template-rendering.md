@@ -1,7 +1,7 @@
 # Spec: Template Rendering System
 
-**ID:** 020-template-rendering  
-**Status:** Draft  
+**ID:** 020-template-rendering
+**Status:** Draft
 **Dependencies:** [018-loop-type-definitions]
 
 ## Summary
@@ -86,19 +86,19 @@ pub struct TemplateEngine {
 impl TemplateEngine {
     pub fn new(config: TemplateConfig) -> Result<Self, Error> {
         let mut handlebars = Handlebars::new();
-        
+
         // Configure
         handlebars.set_strict_mode(config.strict_mode);
         handlebars.set_dev_mode(config.debug_mode);
-        
+
         // Register built-in helpers
         register_builtin_helpers(&mut handlebars)?;
-        
+
         // Register custom helpers
         for (name, helper) in config.custom_helpers {
             handlebars.register_helper(&name, helper);
         }
-        
+
         Ok(Self {
             handlebars,
             loader: TemplateLoader::new(config.template_dirs),
@@ -106,7 +106,7 @@ impl TemplateEngine {
             debug_mode: config.debug_mode,
         })
     }
-    
+
     pub async fn render(
         &self,
         template_name: &str,
@@ -114,14 +114,14 @@ impl TemplateEngine {
     ) -> Result<String, RenderError> {
         // Load template (with caching)
         let template = self.loader.load(template_name).await?;
-        
+
         // Add debug info if enabled
         let context = if self.debug_mode {
             self.enrich_context_for_debug(context, template_name)
         } else {
             context.clone()
         };
-        
+
         // Render
         self.handlebars
             .render_template(&template, &context)
@@ -141,18 +141,18 @@ pub fn register_builtin_helpers(handlebars: &mut Handlebars) -> Result<(), Error
             format!("{}...", &s[..len as usize - 3])
         }
     });
-    
+
     handlebars_helper!(snake_case: |s: str| {
         s.to_case(Case::Snake)
     });
-    
+
     // Date/time helpers
     handlebars_helper!(format_date: |date: str, format: str| {
         DateTime::parse_from_rfc3339(date)
             .map(|d| d.format(format).to_string())
             .unwrap_or_else(|_| date.to_string())
     });
-    
+
     handlebars_helper!(time_ago: |date: str| {
         DateTime::parse_from_rfc3339(date)
             .map(|d| {
@@ -161,18 +161,18 @@ pub fn register_builtin_helpers(handlebars: &mut Handlebars) -> Result<(), Error
             })
             .unwrap_or_else(|_| date.to_string())
     });
-    
+
     // JSON helpers
     handlebars_helper!(json: |value: Value| {
         serde_json::to_string_pretty(&value).unwrap_or_default()
     });
-    
+
     handlebars_helper!(json_path: |obj: Value, path: str| {
         jsonpath::select(&obj, path).ok()
             .and_then(|v| v.first().cloned())
             .unwrap_or(Value::Null)
     });
-    
+
     // Logic helpers
     handlebars_helper!(default: |value: Value, default: Value| {
         if value.is_null() || (value.is_string() && value.as_str() == Some("")) {
@@ -181,11 +181,11 @@ pub fn register_builtin_helpers(handlebars: &mut Handlebars) -> Result<(), Error
             value
         }
     });
-    
+
     handlebars_helper!(includes: |array: Vec<Value>, item: Value| {
         array.contains(&item)
     });
-    
+
     // Register all helpers
     handlebars.register_helper("truncate", Box::new(truncate));
     handlebars.register_helper("snake_case", Box::new(snake_case));
@@ -195,7 +195,7 @@ pub fn register_builtin_helpers(handlebars: &mut Handlebars) -> Result<(), Error
     handlebars.register_helper("json_path", Box::new(json_path));
     handlebars.register_helper("default", Box::new(default));
     handlebars.register_helper("includes", Box::new(includes));
-    
+
     Ok(())
 }
 ```
@@ -214,17 +214,17 @@ impl ContextBuilder {
             overlays: Vec::new(),
         }
     }
-    
+
     pub fn with_base(mut self, base: Value) -> Self {
         self.base = base;
         self
     }
-    
+
     pub fn overlay(mut self, overlay: Value) -> Self {
         self.overlays.push(overlay);
         self
     }
-    
+
     pub fn add_standard_context(mut self) -> Self {
         self.overlay(json!({
             "timestamp": Utc::now().to_rfc3339(),
@@ -232,14 +232,14 @@ impl ContextBuilder {
             "version": env!("CARGO_PKG_VERSION"),
         }))
     }
-    
+
     pub fn build(self) -> Value {
         let mut result = self.base;
-        
+
         for overlay in self.overlays {
             merge_json(&mut result, overlay);
         }
-        
+
         result
     }
 }
@@ -286,7 +286,7 @@ Dependencies: {{#if dependencies}}{{json dependencies}}{{else}}None{{/if}}
 impl TemplateEngine {
     fn enrich_context_for_debug(&self, context: &Value, template_name: &str) -> Value {
         let mut enriched = context.clone();
-        
+
         if let Some(obj) = enriched.as_object_mut() {
             obj.insert("__debug".to_string(), json!({
                 "template": template_name,
@@ -295,10 +295,10 @@ impl TemplateEngine {
                 "context_keys": obj.keys().collect::<Vec<_>>(),
             }));
         }
-        
+
         enriched
     }
-    
+
     fn enhance_error(&self, error: RenderError, template: &str, context: &Value) -> RenderError {
         RenderError::WithContext {
             error: Box::new(error),

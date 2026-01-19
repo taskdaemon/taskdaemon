@@ -1,7 +1,7 @@
 # Spec: Tool System
 
-**ID:** 005-tool-system  
-**Status:** Draft  
+**ID:** 005-tool-system
+**Status:** Draft
 **Dependencies:** [003-loop-engine-core]
 
 ## Summary
@@ -82,7 +82,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> ToolParameters;
-    
+
     async fn execute(
         &self,
         params: Value,

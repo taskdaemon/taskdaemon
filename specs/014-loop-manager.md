@@ -1,7 +1,7 @@
 # Spec: Loop Manager
 
-**ID:** 014-loop-manager  
-**Status:** Draft  
+**ID:** 014-loop-manager
+**Status:** Draft
 **Dependencies:** [003-loop-engine-core, 011-priority-scheduler, 007-state-manager-actor]
 
 ## Summary
@@ -113,17 +113,17 @@ impl LoopManager {
     pub async fn spawn_loop(&self, request: LoopRequest) -> Result<LoopId, Error> {
         // Acquire resources
         let permit = self.resources.concurrency_limit.acquire().await?;
-        
+
         // Create loop instance
         let loop_id = LoopId::new();
         let engine = self.create_engine(&request)?;
-        
+
         // Spawn task
         let handle = tokio::spawn(async move {
             let _permit = permit; // Hold permit for lifetime
             engine.run().await
         });
-        
+
         // Register loop
         let managed_loop = ManagedLoop {
             id: loop_id.clone(),
@@ -134,7 +134,7 @@ impl LoopManager {
             metrics: LoopMetrics::default(),
             created_at: Utc::now(),
         };
-        
+
         self.loops.write().await.insert(loop_id.clone(), managed_loop);
         Ok(loop_id)
     }

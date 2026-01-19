@@ -356,12 +356,28 @@ async fn test_cascade_plan_spawns_spec() {
     plan.set_status(LoopStatus::Ready);
     state.create_loop(plan.clone()).await.expect("Failed to create plan");
 
-    // Trigger cascade
-    let children = cascade.on_loop_ready(&plan).await.expect("Cascade failed");
+    // Trigger cascade - pass a DIFFERENT ID as parent exec ID to prove it's used
+    let parent_exec_id = "test-parent-execution-id";
+    let children = cascade
+        .on_loop_ready(&plan, parent_exec_id)
+        .await
+        .expect("Cascade failed");
 
     // Should spawn a spec child execution
     assert!(!children.is_empty(), "Should spawn child executions");
     assert_eq!(children[0].loop_type, "spec", "Child should be spec type");
+
+    // CRITICAL: Verify the child's parent field is the EXECUTION ID we passed, NOT the Loop record ID
+    assert_eq!(
+        children[0].parent.as_deref(),
+        Some(parent_exec_id),
+        "Child parent must be the execution ID, not the Loop record ID"
+    );
+    assert_ne!(
+        children[0].parent.as_deref(),
+        Some(plan.id.as_str()),
+        "Child parent must NOT be the Loop record ID"
+    );
 }
 
 #[tokio::test]
@@ -374,8 +390,8 @@ async fn test_cascade_spec_spawns_phase() {
     spec.set_status(LoopStatus::Ready);
     state.create_loop(spec.clone()).await.expect("Failed to create spec");
 
-    // Trigger cascade
-    let children = cascade.on_loop_ready(&spec).await.expect("Cascade failed");
+    // Trigger cascade (use spec.id as parent exec ID for test)
+    let children = cascade.on_loop_ready(&spec, &spec.id).await.expect("Cascade failed");
 
     // Should spawn a phase child execution
     assert!(!children.is_empty(), "Should spawn child executions");
@@ -392,8 +408,8 @@ async fn test_cascade_phase_spawns_ralph() {
     phase.set_status(LoopStatus::Ready);
     state.create_loop(phase.clone()).await.expect("Failed to create phase");
 
-    // Trigger cascade
-    let children = cascade.on_loop_ready(&phase).await.expect("Cascade failed");
+    // Trigger cascade (use phase.id as parent exec ID for test)
+    let children = cascade.on_loop_ready(&phase, &phase.id).await.expect("Cascade failed");
 
     // Should spawn a ralph child execution
     assert!(!children.is_empty(), "Should spawn child executions");
@@ -410,8 +426,8 @@ async fn test_cascade_ralph_is_leaf() {
     ralph.set_status(LoopStatus::Ready);
     state.create_loop(ralph.clone()).await.expect("Failed to create ralph");
 
-    // Trigger cascade
-    let children = cascade.on_loop_ready(&ralph).await.expect("Cascade failed");
+    // Trigger cascade (use ralph.id as parent exec ID for test)
+    let children = cascade.on_loop_ready(&ralph, &ralph.id).await.expect("Cascade failed");
 
     // Ralph should have no children (it's a leaf)
     assert!(children.is_empty(), "Ralph should not spawn any children");

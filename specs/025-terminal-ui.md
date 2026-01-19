@@ -1,7 +1,7 @@
 # Spec: Terminal User Interface
 
-**ID:** 025-terminal-ui  
-**Status:** Draft  
+**ID:** 025-terminal-ui
+**Status:** Draft
 **Dependencies:** [023-analytics-metrics, 009-execution-tracking]
 
 ## Summary
@@ -137,15 +137,15 @@ pub fn render_app(f: &mut Frame, app: &mut App) {
             Constraint::Length(3),      // Command/status area
         ])
         .split(f.size());
-    
+
     // Status bar
     render_status_bar(f, chunks[0], app);
-    
+
     // Main view
     if let Some(view) = app.views.get_mut(&app.current_view) {
         view.render(f, chunks[1], &app.global_state);
     }
-    
+
     // Command area
     render_command_area(f, chunks[2], app);
 }
@@ -159,7 +159,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Percentage(20),  // Connection status
         ])
         .split(area);
-    
+
     // View tabs
     let tabs = vec!["Chat", "Plans", "Executions", "Records", "Metrics"];
     let tab_index = app.current_view as usize;
@@ -168,9 +168,9 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().fg(Color::White))
         .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     f.render_widget(tabs_widget, chunks[0]);
-    
+
     // Status info
-    let status_text = format!("Mode: {:?} | Plans: {} | Active: {}", 
+    let status_text = format!("Mode: {:?} | Plans: {} | Active: {}",
         app.mode,
         app.global_state.plan_count,
         app.global_state.active_loops,
@@ -178,7 +178,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, app: &App) {
     let status = Paragraph::new(status_text)
         .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[1]);
-    
+
     // Connection status
     let conn_status = match &app.global_state.connection {
         DaemonConnection::Connected => "● Connected",
@@ -214,7 +214,7 @@ impl View for ChatView {
                 Constraint::Length(3),   // Input
             ])
             .split(area);
-        
+
         // Messages area
         let messages_area = chunks[0];
         let message_widgets: Vec<ListItem> = self.messages.iter()
@@ -224,28 +224,28 @@ impl View for ChatView {
                     MessageRole::Assistant => Style::default().fg(Color::Green),
                     MessageRole::System => Style::default().fg(Color::Gray),
                 };
-                
+
                 let content = vec![
                     Spans::from(vec![
-                        Span::styled(format!("[{}] ", msg.timestamp.format("%H:%M:%S")), 
+                        Span::styled(format!("[{}] ", msg.timestamp.format("%H:%M:%S")),
                             Style::default().fg(Color::DarkGray)),
                         Span::styled(&msg.sender, style.add_modifier(Modifier::BOLD)),
                     ]),
                     Spans::from(msg.content.clone()),
                 ];
-                
+
                 ListItem::new(content)
             })
             .collect();
-        
+
         let messages_list = List::new(message_widgets)
             .block(Block::default()
                 .borders(Borders::ALL)
                 .title("Chat")
                 .border_style(Style::default().fg(Color::White)));
-        
+
         f.render_stateful_widget(messages_list, messages_area, &mut self.list_state);
-        
+
         // Input area
         let input_widget = Paragraph::new(self.input.as_str())
             .block(Block::default()
@@ -256,7 +256,7 @@ impl View for ChatView {
                 )));
         f.render_widget(input_widget, chunks[1]);
     }
-    
+
     async fn handle_event(&mut self, event: Event, state: &mut GlobalState) -> Result<(), Error> {
         match event {
             Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
@@ -300,19 +300,19 @@ impl View for PlanView {
                 Constraint::Percentage(60),  // Details
             ])
             .split(area);
-        
+
         // Plan tree
         self.render_tree(f, chunks[0]);
-        
+
         // Details panel
         if let Some(selected) = self.tree.selected() {
             self.details_panel.render(f, chunks[1], selected);
         }
     }
-    
+
     fn render_tree(&self, f: &mut Frame, area: Rect) {
         let items = self.build_tree_items();
-        
+
         let tree_widget = Tree::new(items)
             .block(Block::default()
                 .borders(Borders::ALL)
@@ -321,7 +321,7 @@ impl View for PlanView {
             .highlight_style(Style::default()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD));
-        
+
         f.render_stateful_widget(tree_widget, area, &mut self.tree.clone());
     }
 }
@@ -346,7 +346,7 @@ impl View for ExecutionView {
             Cell::from("Duration"),
             Cell::from("Progress"),
         ]);
-        
+
         let rows: Vec<Row> = self.executions.iter()
             .filter(|e| self.filter.matches(e))
             .map(|e| {
@@ -357,7 +357,7 @@ impl View for ExecutionView {
                     ExecutionStatus::Cancelled => Style::default().fg(Color::Yellow),
                     _ => Style::default(),
                 };
-                
+
                 Row::new(vec![
                     Cell::from(e.id.to_string()[..8].to_string()),
                     Cell::from(e.loop_type.clone()),
@@ -368,7 +368,7 @@ impl View for ExecutionView {
                 ])
             })
             .collect();
-        
+
         let table = Table::new(rows)
             .header(header)
             .block(Block::default()
@@ -385,7 +385,7 @@ impl View for ExecutionView {
             ])
             .highlight_style(Style::default().add_modifier(Modifier::BOLD))
             .highlight_symbol("► ");
-        
+
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 }

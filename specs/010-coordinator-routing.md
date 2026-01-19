@@ -1,7 +1,7 @@
 # Spec: Coordinator Message Routing
 
-**ID:** 010-coordinator-routing  
-**Status:** Draft  
+**ID:** 010-coordinator-routing
+**Status:** Draft
 **Dependencies:** [003-loop-engine-core]
 
 ## Summary

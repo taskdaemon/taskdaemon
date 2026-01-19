@@ -45,7 +45,7 @@ Implement the core pipeline model types and definitions that will be used to con
    pub mod definition;
    pub mod triggers;
    pub mod flow;
-   
+
    pub use definition::*;
    pub use triggers::*;
    pub use flow::*;

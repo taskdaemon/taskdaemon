@@ -1,7 +1,7 @@
 # Spec: Loop Engine Core
 
-**ID:** 003-loop-engine-core  
-**Status:** Draft  
+**ID:** 003-loop-engine-core
+**Status:** Draft
 **Dependencies:** [001-llm-client-trait]
 
 ## Summary
@@ -86,7 +86,7 @@ pub struct LoopEngine<T: LoopType> {
 pub trait LoopType: Send + Sync {
     type Context: Send + Sync;
     type Progress: Send + Sync;
-    
+
     fn create_context(&self, prev_progress: Option<Self::Progress>) -> Self::Context;
     fn extract_progress(&self, result: &ExecutionResult) -> Self::Progress;
 }

@@ -1,7 +1,7 @@
 # Spec: LLM Client Trait
 
-**ID:** 001-llm-client-trait  
-**Status:** Draft  
+**ID:** 001-llm-client-trait
+**Status:** Draft
 **Dependencies:** None
 
 ## Summary
@@ -66,12 +66,12 @@ src/llm/
 pub trait LlmClient: Send + Sync {
     type Config: Send + Sync;
     type Error: std::error::Error + Send + Sync + 'static;
-    
+
     async fn chat_completion(
         &self,
         request: ChatRequest,
     ) -> Result<ChatResponse, Self::Error>;
-    
+
     async fn chat_completion_stream(
         &self,
         request: ChatRequest,

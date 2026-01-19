@@ -1,7 +1,7 @@
 # Spec: Priority Queue Scheduler
 
-**ID:** 011-priority-scheduler  
-**Status:** Draft  
+**ID:** 011-priority-scheduler
+**Status:** Draft
 **Dependencies:** [006-domain-types, 010-coordinator-routing]
 
 ## Summary
@@ -111,10 +111,10 @@ impl Scheduler {
     pub async fn next_ready(&mut self) -> Option<ScheduledTask> {
         // 1. Update ready set based on completed tasks
         self.dependencies.update_ready_set();
-        
+
         // 2. Apply anti-starvation boosting
         self.apply_priority_aging();
-        
+
         // 3. Find highest priority ready task
         while let Some(task) = self.queue.peek() {
             if self.is_ready(&task) && self.has_resources(&task) {

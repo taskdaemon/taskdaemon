@@ -1,7 +1,7 @@
 # Spec: Polling Scheduler
 
-**ID:** 016-polling-scheduler  
-**Status:** Draft  
+**ID:** 016-polling-scheduler
+**Status:** Draft
 **Dependencies:** [011-priority-scheduler, 014-loop-manager]
 
 ## Summary
@@ -111,14 +111,14 @@ pub struct ReadySpec {
 impl PollingScheduler {
     pub async fn run(&mut self) {
         let mut interval = tokio::time::interval(self.interval);
-        
+
         loop {
             interval.tick().await;
-            
+
             // Add jitter to prevent thundering herd
             let jitter = self.calculate_jitter();
             sleep(jitter).await;
-            
+
             match self.poll_and_schedule().await {
                 Ok(scheduled) => {
                     self.metrics.record_poll_success(scheduled);
@@ -130,26 +130,26 @@ impl PollingScheduler {
             }
         }
     }
-    
+
     async fn poll_and_schedule(&mut self) -> Result<usize, Error> {
         // 1. Update cache if needed
         if self.ready_cache.is_stale() {
             self.refresh_cache().await?;
         }
-        
+
         // 2. Find ready specs
         let ready_specs = self.find_ready_specs().await?;
-        
+
         // 3. Batch schedule
         let batch = SchedulingBatch {
             ready_specs,
             scheduling_time: Utc::now(),
             resource_snapshot: self.ready_cache.resource_availability.clone(),
         };
-        
+
         // 4. Submit to scheduler
         let scheduled_count = self.schedule_batch(batch).await?;
-        
+
         Ok(scheduled_count)
     }
 }
@@ -167,13 +167,13 @@ impl PollingScheduler {
                 ..Default::default()
             })
             .await?;
-        
+
         // Check each spec
         let mut ready = Vec::new();
         for spec in pending_specs {
             let deps_met = self.check_dependencies(&spec).await?;
             let resources_avail = self.check_resources(&spec);
-            
+
             if deps_met && resources_avail {
                 ready.push(ReadySpec {
                     priority: self.calculate_priority(&spec),
@@ -184,7 +184,7 @@ impl PollingScheduler {
                 });
             }
         }
-        
+
         // Sort by priority
         ready.sort_by_key(|r| std::cmp::Reverse(r.priority));
         ready

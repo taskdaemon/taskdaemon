@@ -1,7 +1,7 @@
 # Spec: Domain Types
 
-**ID:** 006-domain-types  
-**Status:** Draft  
+**ID:** 006-domain-types
+**Status:** Draft
 **Dependencies:** None
 
 ## Summary

@@ -1,7 +1,7 @@
 # Spec: Hot Reload System
 
-**ID:** 021-hot-reload  
-**Status:** Draft  
+**ID:** 021-hot-reload
+**Status:** Draft
 **Dependencies:** [017-config-system, 018-loop-type-definitions]
 
 ## Summary
@@ -128,13 +128,13 @@ pub enum ReloadScope {
 impl HotReloadManager {
     pub async fn watch(&mut self) -> Result<(), Error> {
         let (tx, mut rx) = mpsc::channel(10);
-        
+
         self.watcher.watch(&self.config_path, move |event| {
             if event.kind.is_modify() {
                 let _ = tx.try_send(event);
             }
         })?;
-        
+
         while let Some(event) = rx.recv().await {
             if let Err(e) = self.handle_change(event).await {
                 tracing::error!("Hot reload failed: {}", e);
@@ -149,20 +149,20 @@ impl HotReloadManager {
                 }).await;
             }
         }
-        
+
         Ok(())
     }
-    
+
     async fn handle_change(&mut self, event: Event) -> Result<(), ReloadError> {
         // Load new config
         let new_config = self.load_config().await?;
-        
+
         // Generate diff
         let diff = self.generate_diff(&self.current_config.read().await, &new_config)?;
-        
+
         // Validate changes
         self.validate_reload(&diff, &new_config)?;
-        
+
         // Apply changes
         self.apply_reload(diff, new_config).await
     }
@@ -175,7 +175,7 @@ impl HotReloadManager {
     fn validate_reload(&self, diff: &ConfigDiff, new_config: &TaskDaemonConfig) -> Result<(), ReloadError> {
         // Check reload scope
         let scope = self.determine_reload_scope(diff);
-        
+
         // Reject if full restart required
         if matches!(scope, ReloadScope::Full) {
             return Err(ReloadError::UnsafeChange {
@@ -183,27 +183,27 @@ impl HotReloadManager {
                 changes: self.list_unsafe_changes(diff),
             });
         }
-        
+
         // Validate new configuration
         self.validator.validate(new_config)?;
-        
+
         // Check for breaking changes
         if let Some(breaking) = self.find_breaking_changes(diff) {
             return Err(ReloadError::BreakingChange(breaking));
         }
-        
+
         // Check running loops compatibility
         if !self.check_running_loops_compatible(diff).await? {
             return Err(ReloadError::IncompatibleWithRunning);
         }
-        
+
         Ok(())
     }
-    
+
     fn determine_reload_scope(&self, diff: &ConfigDiff) -> ReloadScope {
         // Analyze which subsystems are affected
         let mut scope = ReloadScope::Templates;
-        
+
         for key in diff.modified.keys().chain(diff.added.keys()).chain(diff.removed.keys()) {
             match key.split('.').next() {
                 Some("daemon") => return ReloadScope::Full,
@@ -213,7 +213,7 @@ impl HotReloadManager {
                 _ => {}
             }
         }
-        
+
         scope
     }
 }
@@ -225,15 +225,15 @@ impl HotReloadManager {
     async fn apply_reload(&mut self, diff: ConfigDiff, new_config: TaskDaemonConfig) -> Result<(), ReloadError> {
         // Create rollback point
         let snapshot = self.create_snapshot();
-        
+
         // Begin atomic update
         let update_guard = self.begin_atomic_update().await?;
-        
+
         match self.perform_reload(&diff, new_config).await {
             Ok(()) => {
                 // Commit the update
                 update_guard.commit().await?;
-                
+
                 // Notify subscribers
                 self.notify_subscribers(ReloadEvent {
                     timestamp: Utc::now(),
@@ -244,7 +244,7 @@ impl HotReloadManager {
                     },
                     rollback_point: Some(snapshot),
                 }).await;
-                
+
                 Ok(())
             }
             Err(e) => {
@@ -255,7 +255,7 @@ impl HotReloadManager {
             }
         }
     }
-    
+
     async fn perform_reload(&mut self, diff: &ConfigDiff, new_config: TaskDaemonConfig) -> Result<(), ReloadError> {
         match diff.reload_scope {
             ReloadScope::Templates => {
@@ -275,7 +275,7 @@ impl HotReloadManager {
             }
             _ => return Err(ReloadError::UnsupportedScope),
         }
-        
+
         // Update current config
         *self.current_config.write().await = new_config;
         Ok(())

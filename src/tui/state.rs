@@ -97,6 +97,18 @@ pub fn current_pane(view: &View, repl_mode: ReplMode) -> TopLevelPane {
     }
 }
 
+/// Daemon connection status for the TUI header indicator
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DaemonStatus {
+    /// Daemon running, version matches CLI
+    Connected,
+    /// Daemon running, version mismatch
+    VersionMismatch,
+    /// Daemon not running
+    #[default]
+    Disconnected,
+}
+
 impl View {
     /// Get the display name for the header
     pub fn display_name(&self) -> String {
@@ -453,6 +465,8 @@ pub struct AppState {
     pub should_quit: bool,
     /// Last error message
     pub error_message: Option<String>,
+    /// Daemon connection status
+    pub daemon_status: DaemonStatus,
 
     // === Cached data for display ===
     /// Loop records (filtered by current view)
@@ -553,6 +567,7 @@ impl Default for AppState {
             filter_text: String::new(),
             should_quit: false,
             error_message: None,
+            daemon_status: DaemonStatus::default(),
             records: Vec::new(),
             executions: Vec::new(),
             loops_tree: LoopTree::new(),

@@ -180,7 +180,7 @@ pipeline_executions_total{pipeline="name",status="success|failure"}
 pipeline_execution_duration_seconds{pipeline="name",quantile="0.5|0.9|0.99"}
 pipeline_active_executions{pipeline="name"}
 
-# Stage-level metrics  
+# Stage-level metrics
 pipeline_stage_executions_total{pipeline="name",stage="name",status="success|failure"}
 pipeline_stage_duration_seconds{pipeline="name",stage="name",quantile="0.5|0.9|0.99"}
 pipeline_stage_queue_time_seconds{pipeline="name",stage="name"}
@@ -201,16 +201,16 @@ The DOT format output for pipeline visualization:
 ```dot
 digraph pipeline {
     rankdir=LR;
-    
+
     // Stages
     planning [label="Planning\n(plan loop)", shape=box, style=rounded];
     specification [label="Specification\n(spec loop)", shape=box, style=rounded];
     implementation [label="Implementation\n(phase loop)", shape=box, style=rounded];
-    
+
     // Dependencies
     planning -> specification [label="on completion"];
     specification -> implementation [label="on event\nspec.ready"];
-    
+
     // Current state (if running)
     planning [fillcolor=green, style="rounded,filled"];
 }

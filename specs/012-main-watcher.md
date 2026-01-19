@@ -1,7 +1,7 @@
 # Spec: Main Branch Watcher
 
-**ID:** 012-main-watcher  
-**Status:** Draft  
+**ID:** 012-main-watcher
+**Status:** Draft
 **Dependencies:** [010-coordinator-routing]
 
 ## Summary
@@ -114,7 +114,7 @@ impl MainWatcher {
         loop {
             if let Some(update) = self.check_for_updates()? {
                 let affected_loops = self.analyze_impact(&update);
-                
+
                 for loop_id in affected_loops {
                     self.coordinator.send(CoordinationMessage::Alert {
                         severity: AlertSeverity::Info,
@@ -123,7 +123,7 @@ impl MainWatcher {
                     }).await?;
                 }
             }
-            
+
             sleep(self.watch_interval).await;
         }
     }

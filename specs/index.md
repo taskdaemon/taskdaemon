@@ -40,7 +40,7 @@ The specs are designed to be implemented in phases that build upon each other:
 
 ### Phase 1: Core Ralph Loop Engine
 - 001: LLM Client Trait
-- 002: Anthropic Client Implementation  
+- 002: Anthropic Client Implementation
 - 003: Loop Engine Core
 - 004: System Captured Progress
 - 005: Tool System

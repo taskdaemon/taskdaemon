@@ -1,7 +1,7 @@
 # Spec: Rate Limiting System
 
-**ID:** 013-rate-limiting  
-**Status:** Draft  
+**ID:** 013-rate-limiting
+**Status:** Draft
 **Dependencies:** [011-priority-scheduler]
 
 ## Summary
@@ -117,17 +117,17 @@ impl HierarchicalRateLimiter {
     pub async fn acquire(&self, context: &RequestContext) -> Result<RateToken, RateLimitError> {
         // Check global limits first
         self.global.check_and_consume(1).await?;
-        
+
         // Then service-specific
         if let Some(limiter) = self.per_service.get(&context.service) {
             limiter.check_and_consume(context.weight).await?;
         }
-        
+
         // Finally per-loop limits
         if let Some(limiter) = self.per_loop.get(&context.loop_id) {
             limiter.check_and_consume(context.weight).await?;
         }
-        
+
         Ok(RateToken::new(context))
     }
 }

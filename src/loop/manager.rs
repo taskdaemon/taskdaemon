@@ -287,6 +287,25 @@ impl LoopManager {
         Ok(true)
     }
 
+    /// Build context text for title generation from a loop execution
+    fn build_title_context(&self, exec: &LoopExecution) -> String {
+        let mut parts = Vec::new();
+
+        parts.push(format!("Type: {}", exec.loop_type));
+
+        if let Some(parent_title) = exec.context.get("parent-title").and_then(|v| v.as_str()) {
+            parts.push(format!("Parent: {}", parent_title));
+        }
+        if let Some(phase_name) = exec.context.get("phase-name").and_then(|v| v.as_str()) {
+            parts.push(format!("Phase: {}", phase_name));
+        }
+        if let Some(phase_desc) = exec.context.get("phase-description").and_then(|v| v.as_str()) {
+            parts.push(format!("Description: {}", phase_desc));
+        }
+
+        parts.join("\n")
+    }
+
     /// Spawn a loop execution as a tokio task
     pub async fn spawn_loop(&mut self, exec: &LoopExecution) -> Result<()> {
         debug!(exec_id = %exec.id, loop_type = %exec.loop_type, "spawn_loop: called");
@@ -294,6 +313,18 @@ impl LoopManager {
         if self.tasks.contains_key(&exec.id) {
             debug!(exec_id = %exec.id, "spawn_loop: loop already running");
             return Ok(());
+        }
+
+        // Generate a unique title for this loop if it doesn't have one
+        let mut exec = exec.clone();
+        let needs_title = exec.title.as_ref().is_none_or(|t| t.is_empty() || t == &exec.loop_type);
+        if needs_title {
+            let context = self.build_title_context(&exec);
+            if let Some(title) = crate::llm::name_markdown(&self.llm, &context).await {
+                info!(exec_id = %exec.id, %title, "Generated title");
+                exec.title = Some(title);
+                self.state.update_execution(exec.clone()).await?;
+            }
         }
 
         // Wait for scheduler slot (handles rate limiting and priority queuing)
@@ -738,7 +769,7 @@ async fn trigger_cascade(
     // Create cascade handler and trigger child execution creation
     debug!(exec_id = %exec.id, "trigger_cascade: calling on_loop_ready");
     let cascade = CascadeHandler::new(Arc::new(state.clone()), type_loader.clone());
-    match cascade.on_loop_ready(&loop_record).await {
+    match cascade.on_loop_ready(&loop_record, &exec.id).await {
         Ok(children) => {
             if children.is_empty() {
                 debug!(loop_id = %loop_record.id, "trigger_cascade: no child types");

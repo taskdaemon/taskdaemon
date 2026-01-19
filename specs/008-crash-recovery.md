@@ -1,7 +1,7 @@
 # Spec: Crash Recovery System
 
-**ID:** 008-crash-recovery  
-**Status:** Draft  
+**ID:** 008-crash-recovery
+**Status:** Draft
 **Dependencies:** [006-domain-types, 007-state-manager-actor]
 
 ## Summary

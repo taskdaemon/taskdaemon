@@ -49,7 +49,10 @@ impl StateManager {
         // This ensures status-based queries work correctly
         let loop_count = store.rebuild_indexes::<Loop>()?;
         let exec_count = store.rebuild_indexes::<LoopExecution>()?;
-        info!(loop_count, exec_count, "Rebuilt indexes for Loop and LoopExecution records");
+        info!(
+            loop_count,
+            exec_count, "Rebuilt indexes for Loop and LoopExecution records"
+        );
 
         let (tx, rx) = mpsc::channel(256);
 

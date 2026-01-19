@@ -181,7 +181,12 @@ impl DaemonManager {
         match self.read_version() {
             Some(daemon_version) => {
                 let matches = daemon_version == VERSION;
-                debug!(daemon_version, cli_version = VERSION, matches, "DaemonManager::version_matches: checked");
+                debug!(
+                    daemon_version,
+                    cli_version = VERSION,
+                    matches,
+                    "DaemonManager::version_matches: checked"
+                );
                 matches
             }
             None => {
@@ -291,7 +296,11 @@ impl DaemonManager {
     pub fn register_self(&self) -> Result<()> {
         debug!("DaemonManager::register_self: called");
         let pid = std::process::id();
-        debug!(pid, version = VERSION, "DaemonManager::register_self: registering pid and version");
+        debug!(
+            pid,
+            version = VERSION,
+            "DaemonManager::register_self: registering pid and version"
+        );
         self.write_pid(pid)?;
         self.write_version(VERSION)?;
         info!(pid, version = VERSION, "Daemon registered");

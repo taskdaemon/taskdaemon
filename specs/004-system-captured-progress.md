@@ -1,7 +1,7 @@
 # Spec: System Captured Progress
 
-**ID:** 004-system-captured-progress  
-**Status:** Draft  
+**ID:** 004-system-captured-progress
+**Status:** Draft
 **Dependencies:** [003-loop-engine-core]
 
 ## Summary

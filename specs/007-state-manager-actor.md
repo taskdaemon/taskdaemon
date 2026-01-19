@@ -1,7 +1,7 @@
 # Spec: State Manager Actor
 
-**ID:** 007-state-manager-actor  
-**Status:** Draft  
+**ID:** 007-state-manager-actor
+**Status:** Draft
 **Dependencies:** [006-domain-types]
 
 ## Summary
@@ -81,14 +81,14 @@ pub enum StateMessage {
     CreatePlan(Plan, oneshot::Sender<Result<Plan, Error>>),
     GetPlan(Uuid, oneshot::Sender<Result<Option<Plan>, Error>>),
     UpdatePlan(Uuid, PlanUpdate, oneshot::Sender<Result<Plan, Error>>),
-    
+
     // Spec operations
     CreateSpec(Spec, oneshot::Sender<Result<Spec, Error>>),
     GetSpecsForPlan(Uuid, oneshot::Sender<Result<Vec<Spec>, Error>>),
-    
+
     // Query operations
     Query(StateQuery, oneshot::Sender<Result<QueryResult, Error>>),
-    
+
     // Maintenance
     Compact(oneshot::Sender<Result<CompactionStats, Error>>),
     Snapshot(oneshot::Sender<Result<StateSnapshot, Error>>),

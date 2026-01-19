@@ -1,7 +1,7 @@
 # Spec: Pipeline Configuration
 
-**ID:** 019-pipeline-config  
-**Status:** Draft  
+**ID:** 019-pipeline-config
+**Status:** Draft
 **Dependencies:** [018-loop-type-definitions, 017-config-system]
 
 ## Summary
@@ -250,24 +250,24 @@ pub struct PipelineEngine {
 impl PipelineEngine {
     pub async fn execute(&mut self, input: Value) -> Result<PipelineResult, Error> {
         self.state = PipelineState::Running;
-        
+
         for stage in &self.definition.stages {
             // Wait for triggers
             self.wait_for_triggers(stage).await?;
-            
+
             // Prepare input
             let stage_input = self.map_input(stage, &input)?;
-            
+
             // Execute loop
             let loop_result = self.execute_stage(stage, stage_input).await?;
-            
+
             // Map output
             let stage_output = self.map_output(stage, &loop_result)?;
-            
+
             // Update state
             self.state.stage_outputs.insert(stage.name.clone(), stage_output);
         }
-        
+
         Ok(PipelineResult {
             outputs: self.state.stage_outputs.clone(),
             execution_time: self.state.elapsed(),

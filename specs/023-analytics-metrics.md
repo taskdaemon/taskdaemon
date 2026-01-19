@@ -1,7 +1,7 @@
 # Spec: Analytics and Metrics System
 
-**ID:** 023-analytics-metrics  
-**Status:** Draft  
+**ID:** 023-analytics-metrics
+**Status:** Draft
 **Dependencies:** [009-execution-tracking]
 
 ## Summary
@@ -135,7 +135,7 @@ impl MetricsCollector {
             },
             execution.duration().as_secs_f64(),
         ).await;
-        
+
         // Token usage
         self.record_counter(
             "llm_tokens_used",
@@ -145,7 +145,7 @@ impl MetricsCollector {
             },
             execution.metrics.total_tokens.prompt_tokens,
         ).await;
-        
+
         // Tool usage
         for (tool, count) in &execution.metrics.tool_invocations {
             self.record_counter(
@@ -157,7 +157,7 @@ impl MetricsCollector {
                 *count as u64,
             ).await;
         }
-        
+
         // Error tracking
         if execution.error.is_some() {
             self.record_counter(
@@ -170,7 +170,7 @@ impl MetricsCollector {
             ).await;
         }
     }
-    
+
     pub async fn collect_system_metrics(&self) {
         // CPU usage
         let cpu_percent = sys_info::cpu_usage();
@@ -179,7 +179,7 @@ impl MetricsCollector {
             hashmap! {},
             (cpu_percent * 100.0) as i64,
         ).await;
-        
+
         // Memory usage
         let memory = sys_info::mem_info().unwrap();
         self.record_gauge(
@@ -187,7 +187,7 @@ impl MetricsCollector {
             hashmap! {},
             (memory.total - memory.free) as i64,
         ).await;
-        
+
         // Active loops
         let active_loops = self.count_active_loops().await;
         self.record_gauge(
@@ -212,36 +212,36 @@ impl TimeSeriesStorage {
     pub async fn write_metric(&self, metric: &MetricPoint) -> Result<(), StorageError> {
         // Determine shard based on timestamp
         let shard = self.get_shard(metric.timestamp);
-        
+
         // Compress metric
         let compressed = self.compressor.compress(metric)?;
-        
+
         // Write to shard file
         shard.append(compressed).await?;
-        
+
         // Update indices
         self.indices.write().await.index_metric(metric);
-        
+
         Ok(())
     }
-    
+
     pub async fn query(
         &self,
         query: &MetricQuery,
     ) -> Result<Vec<MetricPoint>, StorageError> {
         // Use indices to find relevant shards
         let shards = self.indices.read().await.find_shards(query);
-        
+
         // Read from shards in parallel
         let mut results = Vec::new();
         let futures: Vec<_> = shards.into_iter()
             .map(|shard| self.read_shard(shard, query))
             .collect();
-        
+
         for result in join_all(futures).await {
             results.extend(result?);
         }
-        
+
         // Apply query filters and aggregations
         self.apply_query_operations(results, query)
     }
@@ -269,9 +269,9 @@ impl AnalyticsEngine {
             time_range,
             aggregation: Some(Aggregation::Percentiles(vec![0.5, 0.95, 0.99])),
         };
-        
+
         let results = self.storage.query(&query).await?;
-        
+
         Ok(PerformanceStats {
             median_duration: results.percentile(0.5),
             p95_duration: results.percentile(0.95),
@@ -280,7 +280,7 @@ impl AnalyticsEngine {
             success_rate: self.calculate_success_rate(&results),
         })
     }
-    
+
     pub async fn token_usage_report(
         &self,
         time_range: TimeRange,
@@ -292,9 +292,9 @@ impl AnalyticsEngine {
             aggregation: Some(Aggregation::Sum),
             group_by: vec!["loop_type".to_string(), "token_type".to_string()],
         };
-        
+
         let results = self.storage.query(&query).await?;
-        
+
         Ok(TokenUsageReport {
             total_tokens: results.sum(),
             by_loop_type: results.group_sum("loop_type"),
@@ -324,12 +324,12 @@ pub struct MetricsDashboard {
 impl MetricsDashboard {
     pub async fn start(&self) {
         let mut interval = tokio::time::interval(self.update_interval);
-        
+
         loop {
             interval.tick().await;
-            
+
             let dashboard_data = self.collect_dashboard_data().await;
-            
+
             // Notify subscribers
             let subscribers = self.subscribers.read().await;
             for subscriber in subscribers.iter() {
@@ -337,7 +337,7 @@ impl MetricsDashboard {
             }
         }
     }
-    
+
     async fn collect_dashboard_data(&self) -> DashboardData {
         DashboardData {
             system_health: self.calculate_system_health().await,

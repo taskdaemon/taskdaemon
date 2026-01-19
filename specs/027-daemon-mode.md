@@ -1,7 +1,7 @@
 # Spec: Daemon Mode
 
-**ID:** 027-daemon-mode  
-**Status:** Draft  
+**ID:** 027-daemon-mode
+**Status:** Draft
 **Dependencies:** [026-cli-commands]
 
 ## Summary
@@ -107,10 +107,10 @@ impl Daemon {
             }
             Err(e) => return Err(Error::Fork(e)),
         }
-        
+
         // Create new session
         setsid()?;
-        
+
         // Second fork (prevents acquiring controlling terminal)
         match unsafe { fork() } {
             Ok(ForkResult::Parent { .. }) => {
@@ -121,39 +121,39 @@ impl Daemon {
             }
             Err(e) => return Err(Error::Fork(e)),
         }
-        
+
         // Set up daemon environment
         self.setup_daemon_environment()?;
-        
+
         Ok(())
     }
-    
+
     fn setup_daemon_environment(&self) -> Result<(), Error> {
         // Change working directory
         std::env::set_current_dir(&self.config.work_dir)?;
-        
+
         // Set umask
         unsafe {
             libc::umask(self.config.umask as libc::mode_t);
         }
-        
+
         // Close standard file descriptors
         self.close_standard_fds()?;
-        
+
         // Redirect stdout/stderr if configured
         if let Some(stdout_path) = &self.config.stdout_redirect {
             self.redirect_fd(1, stdout_path)?;
         }
-        
+
         if let Some(stderr_path) = &self.config.stderr_redirect {
             self.redirect_fd(2, stderr_path)?;
         }
-        
+
         // Drop privileges if configured
         if let Some(user) = &self.config.user {
             self.drop_privileges(user, self.config.group.as_deref())?;
         }
-        
+
         Ok(())
     }
 }
@@ -175,44 +175,44 @@ impl PidFile {
             locked: false,
         }
     }
-    
+
     pub fn acquire(&mut self) -> Result<(), Error> {
         // Check if PID file exists
         if self.path.exists() {
             // Read existing PID
             let existing_pid = self.read_pid()?;
-            
+
             // Check if process is still running
             if let Some(pid) = existing_pid {
                 if self.is_process_running(pid)? {
                     return Err(Error::AlreadyRunning(pid));
                 }
             }
-            
+
             // Stale PID file, remove it
             fs::remove_file(&self.path)?;
         }
-        
+
         // Create PID file with exclusive lock
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&self.path)?;
-        
+
         // Lock the file
         file.try_lock_exclusive()?;
-        
+
         // Write our PID
         let pid = std::process::id();
         writeln!(&file, "{}", pid)?;
         file.sync_all()?;
-        
+
         self.pid = Some(Pid::from_raw(pid as i32));
         self.locked = true;
-        
+
         Ok(())
     }
-    
+
     pub fn release(&mut self) -> Result<(), Error> {
         if self.locked && self.path.exists() {
             fs::remove_file(&self.path)?;
@@ -220,7 +220,7 @@ impl PidFile {
         }
         Ok(())
     }
-    
+
     fn is_process_running(&self, pid: Pid) -> Result<bool, Error> {
         // Send signal 0 to check if process exists
         match kill(pid, None) {
@@ -252,19 +252,19 @@ impl SignalHandler {
         let (shutdown_tx, _) = broadcast::channel(1);
         let (reload_tx, _) = broadcast::channel(1);
         let (status_tx, _) = broadcast::channel(1);
-        
+
         let handler = Self {
             shutdown_tx: shutdown_tx.clone(),
             reload_tx: reload_tx.clone(),
             status_tx: status_tx.clone(),
         };
-        
+
         // Set up signal handlers
         let mut sigterm = signal(SignalKind::terminate())?;
         let mut sigint = signal(SignalKind::interrupt())?;
         let mut sighup = signal(SignalKind::hangup())?;
         let mut sigusr1 = signal(SignalKind::user_defined1())?;
-        
+
         // Spawn signal handling task
         tokio::spawn(async move {
             loop {
@@ -288,14 +288,14 @@ impl SignalHandler {
                 }
             }
         });
-        
+
         Ok(handler)
     }
-    
+
     pub fn shutdown_signal(&self) -> broadcast::Receiver<()> {
         self.shutdown_tx.subscribe()
     }
-    
+
     pub fn reload_signal(&self) -> broadcast::Receiver<()> {
         self.reload_tx.subscribe()
     }
@@ -314,12 +314,12 @@ impl ServiceLifecycle {
     pub async fn run(&mut self) -> Result<(), Error> {
         // Start health check server
         let health_handle = self.health_server.start();
-        
+
         // Get signal receivers
         let mut shutdown = self.signal_handler.shutdown_signal();
         let mut reload = self.signal_handler.reload_signal();
         let mut status = self.signal_handler.status_signal();
-        
+
         // Main service loop
         loop {
             tokio::select! {
@@ -336,14 +336,14 @@ impl ServiceLifecycle {
                         }
                     }
                 }
-                
+
                 // Handle shutdown signal
                 _ = shutdown.recv() => {
                     info!("Shutting down gracefully...");
                     self.graceful_shutdown().await?;
                     break;
                 }
-                
+
                 // Handle reload signal
                 _ = reload.recv() => {
                     info!("Reloading configuration...");
@@ -351,28 +351,28 @@ impl ServiceLifecycle {
                         error!("Failed to reload config: {}", e);
                     }
                 }
-                
+
                 // Handle status signal
                 _ = status.recv() => {
                     self.dump_status().await;
                 }
             }
         }
-        
+
         // Stop health server
         health_handle.abort();
-        
+
         Ok(())
     }
-    
+
     async fn graceful_shutdown(&self) -> Result<(), Error> {
         // Set grace period
         let grace_period = Duration::from_secs(30);
         let deadline = Instant::now() + grace_period;
-        
+
         // Stop accepting new work
         self.app.stop_accepting_work().await;
-        
+
         // Wait for active work to complete
         while self.app.has_active_work().await {
             if Instant::now() > deadline {
@@ -381,13 +381,13 @@ impl ServiceLifecycle {
             }
             sleep(Duration::from_millis(100)).await;
         }
-        
+
         // Save state
         self.app.save_state().await?;
-        
+
         // Shutdown app
         self.app.shutdown().await?;
-        
+
         Ok(())
     }
 }
@@ -404,7 +404,7 @@ impl HealthServer {
     pub fn start(&self) -> JoinHandle<()> {
         let app = self.app.clone();
         let port = self.port;
-        
+
         tokio::spawn(async move {
             let health_route = warp::path("health")
                 .map(move || {
@@ -430,7 +430,7 @@ impl HealthServer {
                         }
                     }
                 });
-            
+
             let ready_route = warp::path("ready")
                 .map(move || {
                     if app.is_ready() {
@@ -439,9 +439,9 @@ impl HealthServer {
                         StatusCode::SERVICE_UNAVAILABLE
                     }
                 });
-            
+
             let routes = health_route.or(ready_route);
-            
+
             warp::serve(routes)
                 .run(([127, 0, 0, 1], port))
                 .await;

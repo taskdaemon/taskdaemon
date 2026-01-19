@@ -368,7 +368,7 @@ Implement TaskDaemon, a distributed task execution system that uses AI-powered l
 
 ### Performance Requirements
 - Support 50+ concurrent loops
-- Sub-100ms TUI response time  
+- Sub-100ms TUI response time
 - Graceful degradation under load
 - Efficient state persistence (<10ms per write)
 - Memory usage under 1GB for typical workloads
@@ -503,7 +503,7 @@ Implement TaskDaemon, a distributed task execution system that uses AI-powered l
 - **Performance degradation**: Continuous monitoring, profiling tools, optimization pipeline
 - **Dependency failures**: Vendored dependencies, fallback mechanisms, version pinning
 
-### Project Risks  
+### Project Risks
 - **Scope creep**: Clear phase boundaries, feature flags, MVP focus
 - **Timeline delays**: Buffer time per phase, parallel development tracks, regular checkpoints
 - **Technical debt**: Code review requirements, refactoring sprints, documentation standards

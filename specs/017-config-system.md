@@ -1,7 +1,7 @@
 # Spec: Configuration System
 
-**ID:** 017-config-system  
-**Status:** Draft  
+**ID:** 017-config-system
+**Status:** Draft
 **Dependencies:** None
 
 ## Summary
@@ -133,25 +133,25 @@ impl ConfigLoader {
     pub async fn load(&self) -> Result<TaskDaemonConfig, ConfigError> {
         // 1. Find config file
         let config_path = self.find_config_file()?;
-        
+
         // 2. Load YAML
         let mut config: TaskDaemonConfig = self.load_yaml(&config_path)?;
-        
+
         // 3. Apply environment overrides
         self.apply_env_overrides(&mut config)?;
-        
+
         // 4. Apply defaults
         self.apply_defaults(&mut config)?;
-        
+
         // 5. Resolve inheritance
         self.resolve_inheritance(&mut config)?;
-        
+
         // 6. Validate
         self.validate(&config)?;
-        
+
         Ok(config)
     }
-    
+
     fn apply_env_overrides(&self, config: &mut TaskDaemonConfig) -> Result<(), ConfigError> {
         // TASKDAEMON_DAEMON_PORT=8080
         // TASKDAEMON_LLM_API_KEY=sk-...
@@ -171,14 +171,14 @@ pub struct ConfigRuntime {
 impl ConfigRuntime {
     pub async fn watch_for_changes(&mut self) {
         let (tx, mut rx) = mpsc::channel(10);
-        
+
         // Set up file watcher
         let mut watcher = notify::recommended_watcher(move |res| {
             if let Ok(event) = res {
                 let _ = tx.blocking_send(event);
             }
         })?;
-        
+
         loop {
             match rx.recv().await {
                 Some(event) => {
@@ -214,17 +214,17 @@ loops:
     max_iterations: 50
     timeout: 30m
     tools: [read, write, edit]
-    
+
   spec:
     inherits: plan
     template_path: templates/spec.hbs
     max_iterations: 20
-    
+
 storage:
   type: jsonl
   path: /var/taskdaemon/store
   compaction_interval: 1h
-  
+
 llm:
   type: anthropic
   api_key: ${ANTHROPIC_API_KEY}

@@ -1,7 +1,7 @@
 # Spec: Anthropic Client Implementation
 
-**ID:** 002-anthropic-client  
-**Status:** Draft  
+**ID:** 002-anthropic-client
+**Status:** Draft
 **Dependencies:** [001-llm-client-trait]
 
 ## Summary

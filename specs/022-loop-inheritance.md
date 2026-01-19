@@ -1,7 +1,7 @@
 # Spec: Loop Inheritance System
 
-**ID:** 022-loop-inheritance  
-**Status:** Draft  
+**ID:** 022-loop-inheritance
+**Status:** Draft
 **Dependencies:** [018-loop-type-definitions]
 
 ## Summary
@@ -123,42 +123,42 @@ impl InheritanceResolver {
         if let Some(resolved) = self.resolved_cache.read().await.get(type_name) {
             return Ok(resolved.clone());
         }
-        
+
         // Build inheritance chain
         let chain = self.build_inheritance_chain(type_name)?;
-        
+
         // Validate chain
         self.validate_chain(&chain)?;
-        
+
         // Merge definitions
         let resolved = self.merge_chain(chain)?;
-        
+
         // Cache result
         self.resolved_cache.write().await.insert(type_name.to_string(), resolved.clone());
-        
+
         Ok(resolved)
     }
-    
+
     fn build_inheritance_chain(&self, type_name: &str) -> Result<Vec<&InheritableLoopType>, ResolveError> {
         let mut chain = Vec::new();
         let mut current = type_name;
         let mut visited = HashSet::new();
-        
+
         while let Some(loop_type) = self.types.get(current) {
             // Check for circular inheritance
             if !visited.insert(current) {
                 return Err(ResolveError::CircularInheritance(current.to_string()));
             }
-            
+
             chain.push(loop_type);
-            
+
             if let Some(parent) = &loop_type.parent {
                 current = parent;
             } else {
                 break;
             }
         }
-        
+
         // Reverse to get base-first order
         chain.reverse();
         Ok(chain)
@@ -175,55 +175,55 @@ pub struct ConfigMerger {
 impl ConfigMerger {
     pub fn merge_chain(&self, chain: Vec<&InheritableLoopType>) -> Result<LoopTypeDefinition, MergeError> {
         let mut result = LoopTypeDefinition::default();
-        
+
         for loop_type in chain {
             result = self.merge_single(result, loop_type)?;
         }
-        
+
         Ok(result)
     }
-    
+
     fn merge_single(
         &self,
         mut base: LoopTypeDefinition,
         inheritable: &InheritableLoopType,
     ) -> Result<LoopTypeDefinition, MergeError> {
         let strategy = &inheritable.merge_strategy;
-        
+
         // Merge config
         if let Some(config_override) = &inheritable.overrides.config {
             base.config = self.merge_config(base.config, config_override, strategy)?;
         }
-        
+
         // Merge tools
         base.tools = self.merge_tools(base.tools, &inheritable.overrides.tools)?;
-        
+
         // Merge templates
         base.templates = self.merge_templates(base.templates, &inheritable.overrides.templates)?;
-        
+
         // Apply other fields
         base.name = inheritable.definition.name.clone();
         base.version = inheritable.definition.version.clone();
         base.description = inheritable.definition.description.clone();
-        
+
         Ok(base)
     }
-    
+
     fn merge_tools(&self, mut base: Vec<String>, override: &ToolOverride) -> Result<Vec<String>, MergeError> {
         if let Some(replacement) = &override.replace {
             return Ok(replacement.clone());
         }
-        
+
         // Remove specified tools
         base.retain(|tool| !override.remove.contains(tool));
-        
+
         // Add new tools
         for tool in &override.add {
             if !base.contains(tool) {
                 base.push(tool.clone());
             }
         }
-        
+
         Ok(base)
     }
 }
@@ -249,13 +249,13 @@ impl TemplateInheritance {
                 .or_default()
                 .insert(block_name.clone(), content.clone());
         }
-        
+
         // Process templates with inheritance
         self.process_template_inheritance(type_name, templates)?;
-        
+
         Ok(())
     }
-    
+
     pub fn render_with_inheritance(
         &self,
         type_name: &str,
@@ -264,12 +264,12 @@ impl TemplateInheritance {
     ) -> Result<String, RenderError> {
         // Build inheritance context
         let mut render_context = context.clone();
-        
+
         // Add available blocks
         if let Some(blocks) = self.block_registry.get(type_name) {
             render_context["blocks"] = json!(blocks);
         }
-        
+
         // Render with block support
         self.engine.render(template_name, &render_context)
     }
