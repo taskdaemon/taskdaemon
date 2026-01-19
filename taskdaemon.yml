@@ -7,10 +7,15 @@
 #   - ~/.config/taskdaemon/taskdaemon.yml (global)
 #   - <project>/.taskdaemon.yml (per-project)
 
+# === Debug Configuration ===
+debug:
+  # Log all REPL conversations to ~/.taskdaemon/conversations/ as JSONL
+  log-conversations: true
+
 # === LLM Configuration ===
 llm:
   provider: anthropic
-  model: claude-sonnet-4-20250514
+  model: claude-opus-4-20250514
   api-key-env: ANTHROPIC_API_KEY
   base-url: https://api.anthropic.com
   max-tokens: 16384
@@ -34,10 +39,12 @@ git:
   disk-quota-gb: 100
 
 # === Storage Configuration ===
-storage:
-  taskstore-dir: .taskstore
-  jsonl-warn-mb: 100
-  jsonl-error-mb: 500
+# Default uses XDG data directory: ~/.local/share/taskdaemon
+# Uncomment to override:
+# storage:
+#   taskstore-dir: ~/.local/share/taskdaemon
+#   jsonl-warn-mb: 100
+#   jsonl-error-mb: 500
 
 # === Loop Type Paths ===
 loops:
@@ -45,6 +52,9 @@ loops:
     - builtin
     - ~/.config/taskdaemon/loops
     - .taskdaemon/loops
+  # Default loop type for TUI quick-create (when user presses 'n')
+  # Leave empty to prompt for type selection, or set to any loaded loop type name
+  default-type:
 
 # =============================================================================
 # BUILT-IN LOOP TYPE DEFINITIONS
@@ -59,9 +69,10 @@ loops:
 # -----------------------------------------------------------------------------
 # Level 1: Takes user idea, produces Plan markdown using Rule of Five
 # Input: User's feature request or idea
-# Output: .taskstore/plans/<id>.md
+# Output: Plan markdown document
 # -----------------------------------------------------------------------------
 plan:
+  # No parent - this is a root loop type
   description: "Create or refine a Plan document using Rule of Five methodology"
 
   prompt-template: |
@@ -108,10 +119,10 @@ plan:
   outputs:
     - plan-markdown
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
     - complete_task
@@ -121,9 +132,10 @@ plan:
 # -----------------------------------------------------------------------------
 # Level 2: Takes completed Plan, produces N Spec markdowns with dependencies
 # Input: Plan markdown
-# Output: .taskstore/specs/<id>.md (multiple)
+# Output: Multiple Spec markdown documents
 # -----------------------------------------------------------------------------
 spec:
+  parent: plan
   description: "Decompose a Plan into atomic Spec documents with dependencies"
 
   prompt-template: |
@@ -155,7 +167,7 @@ spec:
     - Define phases for implementation
     - Specify dependencies on other Specs (if any)
 
-    Write Specs to: .taskstore/specs/<spec-id>.md
+    Write Specs to the specs output directory.
     Update specs.jsonl with metadata including deps field.
 
     When all Plan functionality is covered by Specs, validation will succeed.
@@ -173,10 +185,10 @@ spec:
     - spec-markdowns
     - specs-jsonl
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
     - complete_task
@@ -189,6 +201,7 @@ spec:
 # Output: Committed code in feature branch
 # -----------------------------------------------------------------------------
 phase:
+  parent: spec
   description: "Implement a single phase of a Spec in an isolated git worktree"
 
   prompt-template: |
@@ -255,13 +268,13 @@ phase:
   outputs:
     - committed-code
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
-    - run_command
+    - bash
     - query_loop
     - share_data
     - complete_task
@@ -274,6 +287,7 @@ phase:
 # Output: Varies based on task
 # -----------------------------------------------------------------------------
 ralph:
+  # No parent - standalone loop type
   description: "Generic loop for arbitrary tasks - the classic Ralph Wiggum pattern"
 
   prompt-template: |
@@ -323,13 +337,13 @@ ralph:
   outputs:
     - task-artifacts
   tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
+    - read
+    - write
+    - edit
+    - list
     - glob
     - grep
-    - run_command
+    - bash
     - query_loop
     - share_data
     - complete_task

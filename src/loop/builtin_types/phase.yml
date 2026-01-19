@@ -1,0 +1,63 @@
+# Phase Loop Type
+# Level 3: Takes completed Spec, produces N phase.md artifacts with dependencies
+# This is a decomposition step, not implementation
+parent: spec
+description: "Decompose a Spec into atomic phase documents with dependencies"
+
+prompt-template: |
+  You are decomposing a Spec into Phases (atomic implementation units).
+
+  ## Spec Content
+  {{spec-content}}
+
+  {{#if existing-phases}}
+  ## Existing Phases
+  {{existing-phases}}
+  {{/if}}
+
+  {{#if coverage-gaps}}
+  ## Coverage Analysis
+  What the Spec covers that Phases don't yet:
+  {{coverage-gaps}}
+  {{/if}}
+
+  {{#if progress}}
+  ## Previous Iterations
+  {{progress}}
+  {{/if}}
+
+  ## Instructions
+  Create Phase documents for uncovered functionality. Each Phase should:
+  - Be atomic (completable in one focused implementation session)
+  - Have clear acceptance criteria with testable requirements
+  - Specify files to be created or modified
+  - Define dependencies on other Phases (if any)
+  - Include specific test cases to validate completion
+
+  Write Phase documents to the phases output directory.
+  Update the phases index with metadata including deps field.
+
+  When all Spec functionality is covered by Phases, validation will succeed.
+
+validation-command: "true"  # Phase loops complete via complete_task tool, not validation
+success-exit-code: 0
+max-iterations: 50
+iteration-timeout-ms: 300000
+
+inputs:
+  - spec-content
+  - existing-phases
+  - coverage-gaps
+outputs:
+  - phase-markdowns
+  - phases-jsonl
+tools:
+  - read
+  - write
+  - edit
+  - list
+  - glob
+  - grep
+  - query_loop
+  - share_data
+  - complete_task

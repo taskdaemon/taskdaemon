@@ -11,7 +11,7 @@ name = "taskdaemon"
 path = "src/lib.rs"
 
 [[bin]]
-name = "taskdaemon"
+name = "td"
 path = "src/main.rs"
 
 [dependencies]
@@ -26,7 +26,31 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
-# Dependencies will be added via cargo add
+thiserror = "2.0.17"
+async-trait = "0.1.89"
+futures = "0.3.31"
+glob = "0.3.3"
+handlebars = "6.4.0"
+tracing = "0.1.44"
+reqwest-eventsource = "0.6.0"
+uuid = { version = "1.19.0", features = ["serde", "v7"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+ratatui = "0.30.0"
+crossterm = "0.29.0"
+nix = { version = "0.30.1", features = ["signal"] }
+chrono = { version = "0.4", features = ["serde"] }
+rustyline = "17.0.2"
+walkdir = "2.5.0"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.16"
+grep-matcher = "0.1.8"
+fast_html2md = "0.0.55"
+tui-markdown = "0.3"
+rand = "0.9"
 
 [build-dependencies]
+
+[dev-dependencies]
+tempfile = "3.24.0"
 # For build.rs if needed

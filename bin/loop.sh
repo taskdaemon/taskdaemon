@@ -44,20 +44,42 @@ while true; do
     echo -e "${YELLOW}=== Iteration $iteration of $MAX_ITERATIONS ===${NC}"
 
     if [[ $iteration -gt $MAX_ITERATIONS ]]; then
-        echo -e "${GREEN}Max iterations reached. Exiting.${NC}"
-        exit 0
+        echo -e "${RED}Max iterations reached. Exiting.${NC}"
+        exit 1
     fi
 
-    # Run Claude with the prompt
-    cat "$PROMPT_FILE" | claude -p \
+    # Run Claude interactively (no -p flag - shows full TUI output)
+    claude --model "$MODEL" \
         --dangerously-skip-permissions \
-        --model "$MODEL" \
-        --verbose
+        < "$PROMPT_FILE"
+
+    # Check for completion marker + CI validation
+    echo ""
+    if [[ -f ".taskdaemon-complete" ]]; then
+        echo -e "${YELLOW}Completion marker found. Running final validation (otto ci)...${NC}"
+        if otto ci; then
+            echo -e "${GREEN}=== ALL PHASES COMPLETE ===${NC}"
+            echo -e "${GREEN}Loop finished after $iteration iterations.${NC}"
+            cat .taskdaemon-complete
+            exit 0
+        else
+            echo -e "${RED}Completion marker exists but CI failed. Removing marker...${NC}"
+            rm -f .taskdaemon-complete
+        fi
+    else
+        echo -e "${YELLOW}No completion marker yet. Running CI check...${NC}"
+        if otto ci; then
+            echo -e "${YELLOW}CI passes but .taskdaemon-complete not found.${NC}"
+            echo -e "${YELLOW}More phases to implement. Continuing...${NC}"
+        else
+            echo -e "${RED}CI failed. Continuing...${NC}"
+        fi
+    fi
 
     # Optional: push changes after each iteration
     # git push origin $(git branch --show-current) 2>/dev/null || true
 
     echo ""
-    echo -e "${GREEN}Iteration $iteration complete. Sleeping ${SLEEP_BETWEEN}s...${NC}"
+    echo -e "${YELLOW}Sleeping ${SLEEP_BETWEEN}s before next iteration...${NC}"
     sleep "$SLEEP_BETWEEN"
 done
