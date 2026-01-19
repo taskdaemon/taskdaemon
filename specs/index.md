@@ -33,6 +33,11 @@ This directory contains all specification documents for the TaskDaemon implement
 | 025 | [Terminal User Interface](025-terminal-ui.md) | [023, 009] | Draft |
 | 026 | [CLI Commands](026-cli-commands.md) | [025, 014] | Draft |
 | 027 | [Daemon Mode](027-daemon-mode.md) | [026] | Draft |
+| 028 | [Project Setup and Directory Structure](028-project-setup.md) | None | Draft |
+| 029 | [Core Library Implementation](029-library-implementation.md) | [028] | Draft |
+| 030 | [CLI Binary Implementation](030-cli-implementation.md) | [028, 029] | Draft |
+| 031 | [Build and Installation](031-build-installation.md) | [028, 029, 030] | Draft |
+| 032 | [End-to-End Testing and Validation](032-testing-validation.md) | [028, 029, 030, 031] | Draft |
 
 ## Implementation Order
 
@@ -78,6 +83,13 @@ The specs are designed to be implemented in phases that build upon each other:
 - 025: Terminal User Interface
 - 026: CLI Commands
 - 027: Daemon Mode
+
+### Howdy Tool Implementation
+- 028: Project Setup and Directory Structure
+- 029: Core Library Implementation
+- 030: CLI Binary Implementation  
+- 031: Build and Installation
+- 032: End-to-End Testing and Validation
 
 ## Spec Metadata Schema
 
