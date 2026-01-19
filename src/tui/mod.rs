@@ -11,6 +11,7 @@ mod conversation_log;
 mod events;
 mod runner;
 pub mod state;
+pub mod tree;
 mod views;
 
 pub use app::App;
