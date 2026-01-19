@@ -114,6 +114,9 @@ impl App {
                 } else if matches!(self.state.current_view, View::Describe { .. }) {
                     // Scroll up in Describe view
                     self.state.describe_scroll_up(1);
+                } else if matches!(self.state.current_view, View::Loops) {
+                    // Tree navigation for Loops view
+                    self.state.loops_tree.select_prev();
                 } else if let Some(sel) = self.state.current_selection_mut() {
                     sel.select_prev();
                 }
@@ -126,6 +129,9 @@ impl App {
                 } else if matches!(self.state.current_view, View::Describe { .. }) {
                     // Scroll down in Describe view
                     self.state.describe_scroll_down(1);
+                } else if matches!(self.state.current_view, View::Loops) {
+                    // Tree navigation for Loops view
+                    self.state.loops_tree.select_next();
                 } else {
                     let max = self.state.current_item_count();
                     if let Some(sel) = self.state.current_selection_mut() {
@@ -155,6 +161,8 @@ impl App {
                     self.state.repl_scroll = Some(0);
                 } else if matches!(self.state.current_view, View::Describe { .. }) {
                     self.state.describe_scroll_to_top();
+                } else if matches!(self.state.current_view, View::Loops) {
+                    self.state.loops_tree.select_first();
                 } else if let Some(sel) = self.state.current_selection_mut() {
                     sel.select_first();
                 }
@@ -166,6 +174,8 @@ impl App {
                 } else if matches!(self.state.current_view, View::Describe { .. }) {
                     // Scroll to bottom in Describe view
                     self.state.describe_scroll = self.state.describe_max_scroll;
+                } else if matches!(self.state.current_view, View::Loops) {
+                    self.state.loops_tree.select_last();
                 } else {
                     let max = self.state.current_item_count();
                     if let Some(sel) = self.state.current_selection_mut() {
@@ -182,34 +192,50 @@ impl App {
                 self.handle_escape();
             }
 
-            // === List view actions (Executions, Records) - not in REPL ===
-            (KeyCode::Char('l'), _) if !matches!(self.state.current_view, View::Repl) => {
-                // View logs for selected item
+            // === Loops tree expand/collapse ===
+            (KeyCode::Right, _) if matches!(self.state.current_view, View::Loops) => {
+                self.state.loops_tree.expand_selected();
+            }
+            (KeyCode::Left, _) if matches!(self.state.current_view, View::Loops) => {
+                self.state.loops_tree.collapse_selected();
+            }
+            (KeyCode::Char('h'), _) if matches!(self.state.current_view, View::Loops) => {
+                self.state.loops_tree.collapse_selected();
+            }
+
+            // === List view actions (Executions, Records, Loops) - not in REPL ===
+            (KeyCode::Char('l'), _) if !matches!(self.state.current_view, View::Repl | View::Loops) => {
+                // View logs for selected item (not in Loops view - 'l' expands there)
                 if let Some(id) = self.state.selected_item_id() {
                     self.state.push_view(View::Logs { target_id: id });
                 }
             }
-            (KeyCode::Char('d'), _) if !matches!(self.state.current_view, View::Repl) => {
+            (KeyCode::Char('d'), _)
+                if matches!(
+                    self.state.current_view,
+                    View::Executions | View::Records { .. } | View::Loops
+                ) =>
+            {
                 // Describe selected item
                 self.handle_describe();
             }
-            (KeyCode::Char('x'), _) if !matches!(self.state.current_view, View::Repl) => {
+            (KeyCode::Char('x'), _) if matches!(self.state.current_view, View::Executions | View::Loops) => {
                 // Cancel selected execution
                 self.handle_cancel();
             }
-            (KeyCode::Char('p'), _) if !matches!(self.state.current_view, View::Repl) => {
+            (KeyCode::Char('p'), _) if matches!(self.state.current_view, View::Executions | View::Loops) => {
                 // Pause selected execution
                 self.handle_pause();
             }
-            (KeyCode::Char('r'), _) if !matches!(self.state.current_view, View::Repl) => {
+            (KeyCode::Char('r'), _) if matches!(self.state.current_view, View::Executions | View::Loops) => {
                 // Resume selected execution
                 self.handle_resume();
             }
-            (KeyCode::Char('s'), _) if !matches!(self.state.current_view, View::Repl) => {
+            (KeyCode::Char('s'), _) if matches!(self.state.current_view, View::Executions | View::Loops) => {
                 // Start selected draft execution
                 self.handle_start_draft();
             }
-            (KeyCode::Char('D'), _) if !matches!(self.state.current_view, View::Repl) => {
+            (KeyCode::Char('D'), _) if matches!(self.state.current_view, View::Executions | View::Loops) => {
                 // Delete selected execution
                 self.handle_delete();
             }
@@ -332,7 +358,18 @@ impl App {
 
     /// Handle describe action
     fn handle_describe(&mut self) {
-        if let (Some(id), Some(loop_type)) = (self.state.selected_item_id(), self.state.selected_item_type()) {
+        // Get selected item from tree if in Loops view, otherwise use standard selection
+        let (id, loop_type) = if matches!(self.state.current_view, View::Loops) {
+            self.state
+                .loops_tree
+                .selected_node()
+                .map(|n| (n.item.id.clone(), n.item.loop_type.clone()))
+                .unzip()
+        } else {
+            (self.state.selected_item_id(), self.state.selected_item_type())
+        };
+
+        if let (Some(id), Some(loop_type)) = (id, loop_type) {
             self.state.push_view(View::Describe {
                 target_id: id,
                 target_type: loop_type,
@@ -342,82 +379,118 @@ impl App {
 
     /// Handle cancel action
     fn handle_cancel(&mut self) {
-        if !matches!(self.state.current_view, View::Executions) {
-            return;
-        }
-
-        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+        // Get selected item from tree if in Loops view, otherwise use standard selection
+        let selected = if matches!(self.state.current_view, View::Loops) {
+            self.state.loops_tree.selected_node().map(|n| n.item.clone())
+        } else if matches!(self.state.current_view, View::Executions) {
             let filtered = self.state.filtered_executions();
-            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
-                && !["complete", "failed", "cancelled", "stopped"].contains(&exec_item.status.as_str())
-            {
-                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::cancel_loop(id, &name));
-            }
+            filtered
+                .get(self.state.executions_selection.selected_index)
+                .copied()
+                .cloned()
+        } else {
+            return;
+        };
+
+        if let Some(item) = selected
+            && !["complete", "failed", "cancelled", "stopped"].contains(&item.status.as_str())
+        {
+            self.state.interaction_mode =
+                InteractionMode::Confirm(ConfirmDialog::cancel_loop(item.id.clone(), &item.name));
         }
     }
 
     /// Handle pause action
     fn handle_pause(&mut self) {
-        if !matches!(self.state.current_view, View::Executions) {
-            return;
-        }
-
-        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+        // Get selected item from tree if in Loops view, otherwise use standard selection
+        let selected = if matches!(self.state.current_view, View::Loops) {
+            self.state.loops_tree.selected_node().map(|n| n.item.clone())
+        } else if matches!(self.state.current_view, View::Executions) {
             let filtered = self.state.filtered_executions();
-            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
-                && exec_item.status == "running"
-            {
-                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::pause_loop(id, &name));
-            }
+            filtered
+                .get(self.state.executions_selection.selected_index)
+                .copied()
+                .cloned()
+        } else {
+            return;
+        };
+
+        if let Some(item) = selected
+            && item.status == "running"
+        {
+            self.state.interaction_mode =
+                InteractionMode::Confirm(ConfirmDialog::pause_loop(item.id.clone(), &item.name));
         }
     }
 
     /// Handle resume action
     fn handle_resume(&mut self) {
-        if !matches!(self.state.current_view, View::Executions) {
-            return;
-        }
-
-        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+        // Get selected item from tree if in Loops view, otherwise use standard selection
+        let selected = if matches!(self.state.current_view, View::Loops) {
+            self.state.loops_tree.selected_node().map(|n| n.item.clone())
+        } else if matches!(self.state.current_view, View::Executions) {
             let filtered = self.state.filtered_executions();
-            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
-                && exec_item.status == "paused"
-            {
-                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
-                    ConfirmAction::ResumeLoop(id),
-                    format!("Resume {}?", name),
-                ));
-            }
+            filtered
+                .get(self.state.executions_selection.selected_index)
+                .copied()
+                .cloned()
+        } else {
+            return;
+        };
+
+        if let Some(item) = selected
+            && item.status == "paused"
+        {
+            self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
+                ConfirmAction::ResumeLoop(item.id.clone()),
+                format!("Resume {}?", item.name),
+            ));
         }
     }
 
     /// Handle delete action
     fn handle_delete(&mut self) {
-        if !matches!(self.state.current_view, View::Executions) {
+        // Get selected item from tree if in Loops view, otherwise use standard selection
+        let selected = if matches!(self.state.current_view, View::Loops) {
+            self.state.loops_tree.selected_node().map(|n| n.item.clone())
+        } else if matches!(self.state.current_view, View::Executions) {
+            let filtered = self.state.filtered_executions();
+            filtered
+                .get(self.state.executions_selection.selected_index)
+                .copied()
+                .cloned()
+        } else {
             return;
-        }
+        };
 
-        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
-            self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::delete_execution(id, &name));
+        if let Some(item) = selected {
+            self.state.interaction_mode =
+                InteractionMode::Confirm(ConfirmDialog::delete_execution(item.id.clone(), &item.name));
         }
     }
 
     /// Handle start draft action (transitions Draft -> Pending)
     fn handle_start_draft(&mut self) {
-        if !matches!(self.state.current_view, View::Executions) {
-            return;
-        }
-
-        if let (Some(id), Some(name)) = (self.state.selected_item_id(), self.state.selected_item_name()) {
+        // Get selected item from tree if in Loops view, otherwise use standard selection
+        let selected = if matches!(self.state.current_view, View::Loops) {
+            self.state.loops_tree.selected_node().map(|n| n.item.clone())
+        } else if matches!(self.state.current_view, View::Executions) {
             let filtered = self.state.filtered_executions();
-            if let Some(exec_item) = filtered.get(self.state.executions_selection.selected_index)
-                && exec_item.status == "draft"
-            {
-                self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
-                    ConfirmAction::StartDraft(id),
-                    format!("Start execution of {}?", name),
-                ));
-            }
+            filtered
+                .get(self.state.executions_selection.selected_index)
+                .copied()
+                .cloned()
+        } else {
+            return;
+        };
+
+        if let Some(item) = selected
+            && item.status == "draft"
+        {
+            self.state.interaction_mode = InteractionMode::Confirm(ConfirmDialog::new(
+                ConfirmAction::StartDraft(item.id.clone()),
+                format!("Start execution of {}?", item.name),
+            ));
         }
     }
 
