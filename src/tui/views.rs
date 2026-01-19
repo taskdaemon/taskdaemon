@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 use tracing::debug;
 
 use super::state::{AppState, ConfirmDialog, InteractionMode, ReplMode, ReplRole, View};
+use super::tree::LoopTree;
 
 /// Status colors (k9s-inspired)
 mod colors {
@@ -86,6 +87,7 @@ pub fn render(state: &mut AppState, frame: &mut Frame) {
     // Render main content based on current view
     match &state.current_view {
         View::Repl => render_repl_view(state, frame, chunks[1]),
+        View::Loops => render_loops_tree(state, frame, chunks[1]),
         View::Records { .. } => render_records_table(state, frame, chunks[1]),
         View::Executions => render_executions_table(state, frame, chunks[1]),
         View::Logs { .. } => render_logs_view(state, frame, chunks[1]),
@@ -134,11 +136,14 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
         left_spans.push(Span::styled("Chat|Plan", Style::default().fg(colors::DIM)));
     }
 
-    // Remaining view tabs
-    let other_tabs = [
-        ("Executions", matches!(state.current_view, View::Executions)),
-        ("Records", matches!(state.current_view, View::Records { .. })),
-    ];
+    // Remaining view tab: Loops
+    let other_tabs = [(
+        "Loops",
+        matches!(
+            state.current_view,
+            View::Loops | View::Executions | View::Records { .. }
+        ),
+    )];
 
     for (name, is_active) in other_tabs.iter() {
         left_spans.push(Span::styled(" · ", Style::default().fg(colors::DIM)));
@@ -734,6 +739,152 @@ fn render_executions_table(state: &AppState, frame: &mut Frame, area: Rect) {
     }
 }
 
+/// Render hierarchical Loops tree view
+fn render_loops_tree(state: &AppState, frame: &mut Frame, area: Rect) {
+    let tree = &state.loops_tree;
+    let selected_id = tree.selected_id();
+
+    // Build lines for each visible node with tree graphics
+    let lines: Vec<Line> = tree
+        .visible_nodes()
+        .iter()
+        .map(|id| {
+            let node = tree.get(id).expect("visible node should exist");
+            let is_selected = selected_id.is_some_and(|sel| sel == id);
+
+            // Build prefix with tree graphics
+            let prefix = build_tree_prefix(tree, id, node.depth);
+
+            // Expand/collapse indicator
+            let expand_icon = if node.has_children() {
+                if node.expanded { "▼ " } else { "▶ " }
+            } else {
+                "  "
+            };
+
+            // Status icon
+            let status_icon_str = status_icon(&node.item.status);
+
+            // Type indicator (for non-ralph levels)
+            let type_indicator = match node.item.loop_type.as_str() {
+                "plan" => "Plan: ",
+                "spec" => "Spec: ",
+                "phase" => "Phase: ",
+                "ralph" => "",
+                _ => "",
+            };
+
+            // Progress (e.g., "[2/5]" for non-leaf, "(iter 3/10)" for ralph)
+            let progress = if node.item.loop_type == "ralph" {
+                format!(" ({})", node.item.iteration)
+            } else {
+                format!(" {}", node.progress_string())
+            };
+
+            // Build the line
+            let style = if is_selected {
+                Style::default().bg(colors::SELECTED_BG)
+            } else {
+                Style::default()
+            };
+
+            let status_color = status_color(&node.item.status);
+
+            Line::from(vec![
+                Span::styled(prefix, Style::default().fg(colors::DIM)),
+                Span::styled(expand_icon, Style::default().fg(colors::DIM)),
+                Span::styled(status_icon_str, Style::default().fg(status_color)),
+                Span::raw(" "),
+                Span::styled(type_indicator, Style::default().fg(colors::DIM)),
+                Span::styled(&node.item.name, style),
+                Span::styled(progress, Style::default().fg(colors::DIM)),
+            ])
+        })
+        .collect();
+
+    // Calculate scroll offset for selection visibility
+    let inner_height = area.height.saturating_sub(2) as usize; // -2 for borders
+    let selected_idx = tree.selected_index().unwrap_or(0);
+    let scroll_offset = if selected_idx >= state.loops_scroll + inner_height {
+        selected_idx.saturating_sub(inner_height - 1)
+    } else if selected_idx < state.loops_scroll {
+        selected_idx
+    } else {
+        state.loops_scroll
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Loops ({}) ", tree.len()))
+                .border_style(Style::default().fg(colors::HEADER)),
+        )
+        .scroll((scroll_offset as u16, 0));
+
+    frame.render_widget(paragraph, area);
+
+    if tree.is_empty() {
+        render_empty_message(
+            frame,
+            area,
+            "No loops yet. Use the Plan pane (Tab) to create a new Plan.",
+        );
+    }
+}
+
+/// Build tree prefix with Unicode box-drawing characters
+fn build_tree_prefix(tree: &LoopTree, id: &str, depth: usize) -> String {
+    if depth == 0 {
+        return String::new();
+    }
+
+    let mut prefix = String::new();
+
+    // Get ancestor chain to determine which vertical lines to draw
+    let node = tree.get(id).expect("node should exist");
+    let mut ancestors: Vec<(String, bool)> = Vec::new();
+
+    // Walk up the tree to get all ancestors
+    let mut current_id = id.to_string();
+    let mut current_node = node;
+
+    while let Some(ref parent_id) = current_node.item.parent_id {
+        let is_last = tree.is_last_child(&current_id);
+        ancestors.push((current_id.clone(), is_last));
+
+        if let Some(parent) = tree.get(parent_id) {
+            current_id = parent_id.clone();
+            current_node = parent;
+        } else {
+            break;
+        }
+    }
+
+    ancestors.reverse();
+
+    // Build prefix: for each ancestor level, draw │ if not last child, or space if last
+    for (i, (_ancestor_id, is_last)) in ancestors.iter().enumerate() {
+        if i == ancestors.len() - 1 {
+            // This is the current node's connection
+            if *is_last {
+                prefix.push_str("└─");
+            } else {
+                prefix.push_str("├─");
+            }
+        } else {
+            // This is an ancestor's vertical line
+            if *is_last {
+                prefix.push_str("  "); // No vertical line (ancestor was last child)
+            } else {
+                prefix.push_str("│ "); // Vertical continuation
+            }
+        }
+    }
+
+    prefix
+}
+
 /// Render Logs view
 fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
     let target_id = if let View::Logs { target_id } = &state.current_view {
@@ -957,6 +1108,13 @@ fn render_footer(state: &AppState, frame: &mut Frame, area: Rect) {
                             vec![("[Enter]", "Send"), ("/clear", "Clear")]
                         }
                     }
+                    View::Loops => vec![
+                        ("[Enter]", "Expand/Collapse"),
+                        ("[d]", "Describe"),
+                        ("[l]", "Logs"),
+                        ("[p]", "Pause"),
+                        ("[s]", "Stop"),
+                    ],
                     View::Records { .. } => vec![
                         ("[Enter]", "Children"),
                         ("[d]", "Describe"),

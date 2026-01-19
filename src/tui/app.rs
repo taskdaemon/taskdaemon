@@ -101,11 +101,8 @@ impl App {
             (KeyCode::Char('P'), _) => {
                 self.navigate_to_pane(TopLevelPane::Plan);
             }
-            (KeyCode::Char('E'), _) => {
-                self.navigate_to_pane(TopLevelPane::Executions);
-            }
-            (KeyCode::Char('R'), _) => {
-                self.navigate_to_pane(TopLevelPane::Records);
+            (KeyCode::Char('L'), _) => {
+                self.navigate_to_pane(TopLevelPane::Loops);
             }
 
             // === Navigation (list views) or Scroll (REPL/Describe view) ===
@@ -273,14 +270,8 @@ impl App {
                 self.state.current_view = View::Repl;
                 self.state.repl_mode = ReplMode::Plan;
             }
-            TopLevelPane::Executions => {
-                self.state.current_view = View::Executions;
-            }
-            TopLevelPane::Records => {
-                self.state.current_view = View::Records {
-                    type_filter: None,
-                    parent_filter: None,
-                };
+            TopLevelPane::Loops => {
+                self.state.current_view = View::Loops;
             }
         }
         self.state.view_stack.clear();
@@ -289,6 +280,10 @@ impl App {
     /// Handle drill down (Enter key)
     fn handle_drill_down(&mut self) {
         match &self.state.current_view {
+            View::Loops => {
+                // Toggle expand/collapse for selected node
+                self.state.loops_tree.toggle_selected();
+            }
             View::Records { .. } => {
                 // Drill into children for selected record or show describe
                 if let (Some(id), Some(loop_type)) = (self.state.selected_item_id(), self.state.selected_item_type()) {
@@ -882,9 +877,11 @@ mod tests {
         app.execute_command("records".to_string());
         assert!(matches!(app.state().current_view, View::Records { .. }));
 
+        // :loops now switches to View::Loops (tree view)
         app.execute_command("loops".to_string());
-        assert!(matches!(app.state().current_view, View::Executions));
+        assert!(matches!(app.state().current_view, View::Loops));
 
+        // :executions still switches to legacy flat view
         app.execute_command("executions".to_string());
         assert!(matches!(app.state().current_view, View::Executions));
     }

@@ -9,6 +9,8 @@ use std::time::Instant;
 
 use rand::seq::IndexedRandom;
 
+use super::tree::LoopTree;
+
 /// Fun words for the streaming status indicator (Claude Code style)
 pub const STREAMING_WORDS: &[&str] = &[
     "Pondering",
@@ -29,7 +31,9 @@ pub enum View {
     /// Interactive REPL for AI-assisted coding (default view)
     #[default]
     Repl,
-    /// All running executions (`:loops` or `:executions`)
+    /// Hierarchical tree view of all loops (`:loops`)
+    Loops,
+    /// All running executions (`:executions`) - legacy flat view
     Executions,
     /// Loop records filtered by type (`:records` or `:<type>` e.g., `:plan`)
     Records {
@@ -48,13 +52,12 @@ pub enum View {
     },
 }
 
-/// Top-level panes for Tab cycling (in order): Chat, Plan, Executions, Records
+/// Top-level panes for Tab cycling (in order): Chat, Plan, Loops
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopLevelPane {
     Chat,
     Plan,
-    Executions,
-    Records,
+    Loops,
 }
 
 impl TopLevelPane {
@@ -62,19 +65,17 @@ impl TopLevelPane {
     pub fn next(self) -> Self {
         match self {
             Self::Chat => Self::Plan,
-            Self::Plan => Self::Executions,
-            Self::Executions => Self::Records,
-            Self::Records => Self::Chat,
+            Self::Plan => Self::Loops,
+            Self::Loops => Self::Chat,
         }
     }
 
     /// Get the previous pane in the cycle
     pub fn prev(self) -> Self {
         match self {
-            Self::Chat => Self::Records,
+            Self::Chat => Self::Loops,
             Self::Plan => Self::Chat,
-            Self::Executions => Self::Plan,
-            Self::Records => Self::Executions,
+            Self::Loops => Self::Plan,
         }
     }
 }
@@ -86,9 +87,9 @@ pub fn current_pane(view: &View, repl_mode: ReplMode) -> TopLevelPane {
             ReplMode::Chat => TopLevelPane::Chat,
             ReplMode::Plan => TopLevelPane::Plan,
         },
-        View::Executions => TopLevelPane::Executions,
-        View::Records { .. } => TopLevelPane::Records,
-        _ => TopLevelPane::Chat, // Default for nested views
+        View::Loops | View::Executions => TopLevelPane::Loops,
+        View::Records { .. } => TopLevelPane::Loops, // Records deprecated, map to Loops
+        _ => TopLevelPane::Chat,                     // Default for nested views
     }
 }
 
@@ -97,11 +98,12 @@ impl View {
     pub fn display_name(&self) -> String {
         match self {
             Self::Repl => "REPL".to_string(),
+            Self::Loops => "Loops".to_string(),
+            Self::Executions => "Executions".to_string(),
             Self::Records {
                 type_filter: Some(t), ..
             } => format!("Records ({})", t),
             Self::Records { type_filter: None, .. } => "Records".to_string(),
-            Self::Executions => "Executions".to_string(),
             Self::Logs { .. } => "Logs".to_string(),
             Self::Describe { .. } => "Describe".to_string(),
         }
@@ -111,8 +113,9 @@ impl View {
     ///
     /// Built-in commands:
     /// - `repl` - show the interactive REPL
-    /// - `records` or `all` - show all Loop records
-    /// - `loops` or `executions` - show all LoopExecution records
+    /// - `loops` - show hierarchical loop tree
+    /// - `executions` - show flat execution list (legacy)
+    /// - `records` or `all` - show all Loop records (deprecated)
     ///
     /// Dynamic commands (based on loaded loop types):
     /// - Any loaded type name (e.g., `plan`, `spec`) filters Records by that type
@@ -120,13 +123,15 @@ impl View {
         match cmd {
             // REPL view
             "repl" => Some(Self::Repl),
-            // All records
+            // Hierarchical loop tree (primary view)
+            "loops" => Some(Self::Loops),
+            // Legacy flat execution list
+            "executions" => Some(Self::Executions),
+            // All records (deprecated)
             "records" | "all" => Some(Self::Records {
                 type_filter: None,
                 parent_filter: None,
             }),
-            // All executions
-            "loops" | "executions" => Some(Self::Executions),
             // Check if it's a known loop type
             _ => {
                 if available_types.iter().any(|t| t == cmd) {
@@ -143,12 +148,12 @@ impl View {
 
     /// Check if this is a list view (can navigate with j/k)
     pub fn is_list_view(&self) -> bool {
-        matches!(self, Self::Records { .. } | Self::Executions)
+        matches!(self, Self::Loops | Self::Records { .. } | Self::Executions)
     }
 
     /// Check if this is a top-level view (can navigate with left/right)
     pub fn is_top_level(&self) -> bool {
-        matches!(self, Self::Repl | Self::Executions | Self::Records { .. })
+        matches!(self, Self::Repl | Self::Loops | Self::Executions | Self::Records { .. })
     }
 }
 
@@ -442,6 +447,8 @@ pub struct AppState {
     pub records: Vec<RecordItem>,
     /// Loop executions
     pub executions: Vec<ExecutionItem>,
+    /// Hierarchical loop tree for Loops view
+    pub loops_tree: LoopTree,
     /// Log entries for current target
     pub logs: Vec<LogEntry>,
     /// Describe data for current target
@@ -450,6 +457,8 @@ pub struct AppState {
     // === Selection state per view ===
     pub records_selection: SelectionState,
     pub executions_selection: SelectionState,
+    /// Scroll offset for Loops tree view
+    pub loops_scroll: usize,
 
     // === Metrics ===
     pub total_records: usize,
@@ -532,10 +541,12 @@ impl Default for AppState {
             error_message: None,
             records: Vec::new(),
             executions: Vec::new(),
+            loops_tree: LoopTree::new(),
             logs: Vec::new(),
             describe_data: None,
             records_selection: SelectionState::default(),
             executions_selection: SelectionState::default(),
+            loops_scroll: 0,
             total_records: 0,
             executions_draft: 0,
             executions_active: 0,
@@ -609,6 +620,10 @@ impl AppState {
     /// Reset selection state for current view
     fn reset_selection(&mut self) {
         match &self.current_view {
+            View::Loops => {
+                self.loops_tree.select_first();
+                self.loops_scroll = 0;
+            }
             View::Records { .. } => self.records_selection = SelectionState::default(),
             View::Executions => self.executions_selection = SelectionState::default(),
             _ => {}
@@ -618,6 +633,7 @@ impl AppState {
     /// Get mutable selection state for current view
     pub fn current_selection_mut(&mut self) -> Option<&mut SelectionState> {
         match &self.current_view {
+            View::Loops => None, // Loops uses LoopTree for selection
             View::Records { .. } => Some(&mut self.records_selection),
             View::Executions => Some(&mut self.executions_selection),
             _ => None,
@@ -628,6 +644,7 @@ impl AppState {
     pub fn current_item_count(&self) -> usize {
         match &self.current_view {
             View::Repl => self.repl_history.len(),
+            View::Loops => self.loops_tree.visible_len(),
             View::Records { .. } => self.filtered_records().len(),
             View::Executions => self.filtered_executions().len(),
             View::Logs { .. } => self.logs.len(),
@@ -648,6 +665,7 @@ impl AppState {
     /// Get the ID of the currently selected item
     pub fn selected_item_id(&self) -> Option<String> {
         match &self.current_view {
+            View::Loops => self.loops_tree.selected_id().cloned(),
             View::Records { .. } => {
                 let filtered = self.filtered_records();
                 filtered
@@ -667,6 +685,7 @@ impl AppState {
     /// Get the name/title of the currently selected item
     pub fn selected_item_name(&self) -> Option<String> {
         match &self.current_view {
+            View::Loops => self.loops_tree.selected_node().map(|n| n.item.name.clone()),
             View::Records { .. } => {
                 let filtered = self.filtered_records();
                 filtered
@@ -686,6 +705,7 @@ impl AppState {
     /// Get the type of the currently selected item
     pub fn selected_item_type(&self) -> Option<String> {
         match &self.current_view {
+            View::Loops => self.loops_tree.selected_node().map(|n| n.item.loop_type.clone()),
             View::Records { .. } => {
                 let filtered = self.filtered_records();
                 filtered
@@ -924,7 +944,9 @@ mod tests {
             View::from_command("records", &types),
             Some(View::Records { type_filter: None, .. })
         ));
-        assert!(matches!(View::from_command("loops", &types), Some(View::Executions)));
+        // :loops now maps to View::Loops (tree view)
+        assert!(matches!(View::from_command("loops", &types), Some(View::Loops)));
+        // :executions still maps to legacy flat view
         assert!(matches!(
             View::from_command("executions", &types),
             Some(View::Executions)
@@ -1007,12 +1029,11 @@ mod tests {
         assert_eq!(current_pane(&View::Repl, ReplMode::Chat), TopLevelPane::Chat);
         // Plan mode
         assert_eq!(current_pane(&View::Repl, ReplMode::Plan), TopLevelPane::Plan);
-        // Executions
-        assert_eq!(
-            current_pane(&View::Executions, ReplMode::Chat),
-            TopLevelPane::Executions
-        );
-        // Records
+        // Loops
+        assert_eq!(current_pane(&View::Loops, ReplMode::Chat), TopLevelPane::Loops);
+        // Executions (legacy, maps to Loops)
+        assert_eq!(current_pane(&View::Executions, ReplMode::Chat), TopLevelPane::Loops);
+        // Records (deprecated, maps to Loops)
         assert_eq!(
             current_pane(
                 &View::Records {
@@ -1021,7 +1042,7 @@ mod tests {
                 },
                 ReplMode::Chat
             ),
-            TopLevelPane::Records
+            TopLevelPane::Loops
         );
         // Non-top-level views default to Chat
         assert_eq!(
@@ -1037,16 +1058,14 @@ mod tests {
 
     #[test]
     fn test_pane_cycling() {
-        // Test next cycle
+        // Test next cycle: Chat -> Plan -> Loops -> Chat
         assert_eq!(TopLevelPane::Chat.next(), TopLevelPane::Plan);
-        assert_eq!(TopLevelPane::Plan.next(), TopLevelPane::Executions);
-        assert_eq!(TopLevelPane::Executions.next(), TopLevelPane::Records);
-        assert_eq!(TopLevelPane::Records.next(), TopLevelPane::Chat);
+        assert_eq!(TopLevelPane::Plan.next(), TopLevelPane::Loops);
+        assert_eq!(TopLevelPane::Loops.next(), TopLevelPane::Chat);
 
-        // Test prev cycle
-        assert_eq!(TopLevelPane::Chat.prev(), TopLevelPane::Records);
-        assert_eq!(TopLevelPane::Records.prev(), TopLevelPane::Executions);
-        assert_eq!(TopLevelPane::Executions.prev(), TopLevelPane::Plan);
+        // Test prev cycle: Chat -> Loops -> Plan -> Chat
+        assert_eq!(TopLevelPane::Chat.prev(), TopLevelPane::Loops);
+        assert_eq!(TopLevelPane::Loops.prev(), TopLevelPane::Plan);
         assert_eq!(TopLevelPane::Plan.prev(), TopLevelPane::Chat);
     }
 }
