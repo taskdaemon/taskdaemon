@@ -86,7 +86,7 @@ fn main() {
                 std::process::exit(0);
             }
         }
-        
+
         eprintln!("Error: {:#}", e);
         std::process::exit(1);
     }
@@ -97,10 +97,10 @@ fn main() {
 Update CLI metadata for better help output:
 ```rust
 /// Print colored greetings to the terminal
-/// 
+///
 /// This tool prints a greeting message in color when outputting to a terminal.
 /// Colors are automatically disabled when piping to other commands.
-/// 
+///
 /// Examples:
 ///   howdy                    # prints "howdy" in green
 ///   howdy -g "Hello!"        # prints "Hello!" in green
@@ -118,7 +118,7 @@ Update CLI metadata for better help output:
 )]
 struct Args {
     /// The greeting message to display
-    /// 
+    ///
     /// If empty or only whitespace, defaults to "howdy"
     #[arg(
         short,

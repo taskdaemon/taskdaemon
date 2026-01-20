@@ -49,24 +49,24 @@ use eyre::{Result, WrapErr};
 use std::io::{self, Write};
 
 /// Prints a colored greeting message to stdout.
-/// 
+///
 /// The greeting is printed in green when outputting to a terminal.
 /// Colors are automatically disabled when piping to another process.
-/// 
+///
 /// # Arguments
 /// * `greeting` - The greeting message to print. If empty or only whitespace,
 ///                defaults to "howdy".
-/// 
+///
 /// # Returns
 /// * `Result<()>` - Ok if successful, Err if stdout write fails
-/// 
+///
 /// # Examples
 /// ```no_run
 /// use howdy::print_greeting;
-/// 
+///
 /// // Print default greeting
 /// print_greeting("").unwrap();
-/// 
+///
 /// // Print custom greeting
 /// print_greeting("Hello, World!").unwrap();
 /// ```
@@ -76,20 +76,20 @@ pub fn print_greeting(greeting: &str) -> Result<()> {
     } else {
         greeting
     };
-    
+
     // Use colored crate which handles TTY detection automatically
     let colored_greeting = greeting.green();
-    
+
     // Print to stdout with explicit flush
     let stdout = io::stdout();
     let mut handle = stdout.lock();
-    
+
     writeln!(handle, "{}", colored_greeting)
         .wrap_err("Failed to write greeting to stdout")?;
-    
+
     handle.flush()
         .wrap_err("Failed to flush stdout")?;
-    
+
     Ok(())
 }
 ```
@@ -100,17 +100,17 @@ Add to src/lib.rs:
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_default_greeting() {
         // Test with empty string
         assert!(print_greeting("").is_ok());
-        
+
         // Test with whitespace
         assert!(print_greeting("   ").is_ok());
         assert!(print_greeting("\t\n").is_ok());
     }
-    
+
     #[test]
     fn test_custom_greeting() {
         assert!(print_greeting("Hello, World!").is_ok());
@@ -140,28 +140,28 @@ writeln!(handle, "{}", colored_greeting)
 Add comprehensive documentation:
 ```rust
 //! # Howdy Library
-//! 
+//!
 //! A simple library for printing colored greetings to the terminal.
-//! 
+//!
 //! ## Features
-//! 
+//!
 //! - Automatic TTY detection - colors only appear in terminals
 //! - Graceful handling of pipe closures
 //! - Unicode support for international greetings
 //! - Minimal dependencies and small binary size
-//! 
+//!
 //! ## Usage
-//! 
+//!
 //! ```no_run
 //! use howdy::print_greeting;
-//! 
+//!
 //! fn main() -> eyre::Result<()> {
 //!     // Use default greeting
 //!     print_greeting("")?;
-//!     
+//!
 //!     // Use custom greeting
 //!     print_greeting("Bonjour!")?;
-//!     
+//!
 //!     Ok(())
 //! }
 //! ```

@@ -87,7 +87,7 @@ The specs are designed to be implemented in phases that build upon each other:
 ### Howdy Tool Implementation
 - 028: Project Setup and Directory Structure
 - 029: Core Library Implementation
-- 030: CLI Binary Implementation  
+- 030: CLI Binary Implementation
 - 031: Build and Installation
 - 032: End-to-End Testing and Validation
 

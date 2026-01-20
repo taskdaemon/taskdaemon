@@ -40,6 +40,8 @@ pub enum StateEvent {
     ExecutionCreated { id: String, loop_type: String },
     /// An execution status changed
     ExecutionUpdated { id: String },
+    /// An execution is now pending and ready for pickup by LoopManager
+    ExecutionPending { id: String },
 }
 
 /// Path to the state change notification file
@@ -208,6 +210,7 @@ impl StateManager {
         debug!(execution_id = %execution.id, loop_type = %execution.loop_type, "create_execution: called");
         let exec_id = execution.id.clone();
         let loop_type = execution.loop_type.clone();
+        let is_pending = execution.status == LoopExecutionStatus::Pending;
 
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
@@ -222,10 +225,17 @@ impl StateManager {
         // Broadcast event so TUI can update immediately (same-process)
         // Also notify via file for cross-process updates
         if result.is_ok() {
-            let _ = self
-                .event_tx
-                .send(StateEvent::ExecutionCreated { id: exec_id, loop_type });
+            let _ = self.event_tx.send(StateEvent::ExecutionCreated {
+                id: exec_id.clone(),
+                loop_type,
+            });
             notify_state_change();
+
+            // If created with Pending status, also notify LoopManager for immediate pickup
+            // This happens when cascade creates child executions
+            if is_pending {
+                let _ = self.event_tx.send(StateEvent::ExecutionPending { id: exec_id });
+            }
         }
 
         result
@@ -501,7 +511,15 @@ impl StateManager {
 
         debug!("activate_draft: setting status to Pending for LoopManager pickup");
         execution.set_status(LoopExecutionStatus::Pending);
-        self.update_execution(execution).await
+        let exec_id = execution.id.clone();
+        let result = self.update_execution(execution).await;
+
+        // Notify LoopManager that work is ready for immediate pickup
+        if result.is_ok() {
+            let _ = self.event_tx.send(StateEvent::ExecutionPending { id: exec_id });
+        }
+
+        result
     }
 }
 

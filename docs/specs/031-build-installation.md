@@ -158,16 +158,16 @@ echo -e "\nVerification passed!"
 1. Build verification:
    - Confirm release build completes without errors
    - Verify optimization flags are applied
-   
+
 2. Installation testing:
    - Verify file is copied correctly
    - Check permissions are set
-   
+
 3. Execution testing:
    - Run all flag combinations
    - Test from various directories
    - Verify piping behavior
-   
+
 4. System testing:
    - Test on system without Rust installed (if possible)
    - Verify no unexpected dependencies

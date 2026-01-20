@@ -61,9 +61,9 @@ test_case() {
     local cmd="$2"
     local expected="$3"
     local expect_fail="${4:-false}"
-    
+
     echo -n "Testing: $name... "
-    
+
     if [ "$expect_fail" = "true" ]; then
         if ! $cmd 2>/dev/null; then
             echo "PASS (expected failure)"

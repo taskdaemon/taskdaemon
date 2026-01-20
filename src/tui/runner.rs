@@ -1125,6 +1125,12 @@ Working directory: {}"#,
                             debug!(%id, "process_state_events: execution updated");
                             should_refresh = true;
                         }
+                        StateEvent::ExecutionPending { id } => {
+                            debug!(%id, "process_state_events: execution pending (for LoopManager)");
+                            // TUI doesn't need to do anything special for pending events,
+                            // but we refresh to show the status change
+                            should_refresh = true;
+                        }
                     },
                     Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {

@@ -88,10 +88,10 @@ Create src/lib.rs:
 use eyre::Result;
 
 /// Prints a colored greeting message to stdout.
-/// 
+///
 /// # Arguments
 /// * `greeting` - The greeting message to print
-/// 
+///
 /// # Returns
 /// * `Result<()>` - Ok if successful, Err if stdout write fails
 pub fn print_greeting(greeting: &str) -> Result<()> {
@@ -116,10 +116,10 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    
+
     // TODO: Call library function
     println!("Greeting: {}", args.greeting);
-    
+
     Ok(())
 }
 ```
