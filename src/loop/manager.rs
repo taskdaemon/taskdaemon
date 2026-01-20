@@ -48,7 +48,9 @@ impl Default for LoopManagerConfig {
     fn default() -> Self {
         Self {
             max_concurrent_loops: 50,
-            poll_interval_secs: 10,
+            // Increased from 10s to 60s since event-driven pickup handles immediate work.
+            // Polling is now a fallback for edge cases, orphan recovery, and missed events.
+            poll_interval_secs: 60,
             shutdown_timeout_secs: 60,
             repo_root: PathBuf::from("."),
             worktree_dir: PathBuf::from("/tmp/taskdaemon/worktrees"),
@@ -1155,7 +1157,7 @@ mod tests {
     fn test_loop_manager_config_default() {
         let config = LoopManagerConfig::default();
         assert_eq!(config.max_concurrent_loops, 50);
-        assert_eq!(config.poll_interval_secs, 10);
+        assert_eq!(config.poll_interval_secs, 60); // Increased for event-driven pickup
         assert_eq!(config.shutdown_timeout_secs, 60);
     }
 }

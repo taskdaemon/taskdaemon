@@ -822,9 +822,10 @@ async fn run_daemon(config: &Config) -> Result<()> {
     info!("LLM client initialized (model: {})", config.llm.model);
 
     // Initialize LoopManager for loop orchestration
+    // poll_interval_secs is 60s (fallback) since event-driven pickup handles immediate work
     let manager_config = LoopManagerConfig {
         max_concurrent_loops: config.concurrency.max_loops as usize,
-        poll_interval_secs: 10,
+        poll_interval_secs: 60,
         shutdown_timeout_secs: 60,
         repo_root: repo_root.clone(),
         worktree_dir: config.git.worktree_dir.clone(),
