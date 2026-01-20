@@ -168,7 +168,11 @@ async fn cmd_start(config: &Config, foreground: bool) -> Result<()> {
 
     if daemon.is_running() {
         debug!(pid = ?daemon.running_pid(), "cmd_start: daemon already running");
-        println!("TaskDaemon is already running (PID: {})", daemon.running_pid().unwrap());
+        if let Some(pid) = daemon.running_pid() {
+            println!("TaskDaemon is already running (PID: {})", pid);
+        } else {
+            println!("TaskDaemon is already running");
+        }
         return Ok(());
     }
 
@@ -196,9 +200,13 @@ async fn cmd_stop() -> Result<()> {
     }
 
     debug!("cmd_stop: daemon is running, stopping");
-    let pid = daemon.running_pid().unwrap();
+    let pid = daemon.running_pid();
     daemon.stop()?;
-    println!("TaskDaemon stopped (was PID: {})", pid);
+    if let Some(pid) = pid {
+        println!("TaskDaemon stopped (was PID: {})", pid);
+    } else {
+        println!("TaskDaemon stopped");
+    }
     Ok(())
 }
 
@@ -225,7 +233,9 @@ async fn cmd_status(detailed: bool, format: OutputFormat) -> Result<()> {
             if status.running {
                 debug!("cmd_status: daemon is running");
                 println!("Status: running");
-                println!("PID: {}", status.pid.unwrap());
+                if let Some(pid) = status.pid {
+                    println!("PID: {}", pid);
+                }
             } else {
                 debug!("cmd_status: daemon is stopped");
                 println!("Status: stopped");

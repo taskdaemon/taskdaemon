@@ -813,17 +813,41 @@ fn render_loops_tree(state: &AppState, frame: &mut Frame, area: Rect) {
                 Style::default()
             };
 
-            let status_color = status_color(&node.item.status);
+            let exec_status_color = status_color(&node.item.status);
 
-            Line::from(vec![
+            // Build base spans
+            let mut spans = vec![
                 Span::styled(prefix, Style::default().fg(colors::DIM)),
                 Span::styled(expand_icon, Style::default().fg(colors::DIM)),
-                Span::styled(status_icon_str, Style::default().fg(status_color)),
+                Span::styled(status_icon_str, Style::default().fg(exec_status_color)),
                 Span::raw(" "),
                 Span::styled(type_indicator, Style::default().fg(colors::DIM)),
                 Span::styled(&node.item.name, style),
                 Span::styled(progress, Style::default().fg(colors::DIM)),
-            ])
+            ];
+
+            // Add artifact info if present (e.g., "→ plan.md ✓")
+            if let Some(ref artifact_file) = node.item.artifact_file {
+                // Extract just the filename from the path
+                let filename = std::path::Path::new(artifact_file)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(artifact_file);
+
+                // Get artifact status icon and color
+                let (artifact_icon, artifact_color) = if let Some(ref status) = node.item.artifact_status {
+                    (status_icon(status), status_color(status))
+                } else {
+                    ("○", Color::DarkGray)
+                };
+
+                spans.push(Span::styled(" → ", Style::default().fg(colors::DIM)));
+                spans.push(Span::styled(filename.to_string(), Style::default().fg(Color::Cyan)));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(artifact_icon, Style::default().fg(artifact_color)));
+            }
+
+            Line::from(spans)
         })
         .collect();
 

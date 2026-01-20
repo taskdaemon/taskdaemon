@@ -33,10 +33,54 @@ pub struct DaemonMetrics {
     pub total_iterations: u64,
 }
 
+/// Event broadcast when state changes that TUI should react to
+#[derive(Debug, Clone)]
+pub enum StateEvent {
+    /// A new execution was created (e.g., cascade spawned a child)
+    ExecutionCreated { id: String, loop_type: String },
+    /// An execution status changed
+    ExecutionUpdated { id: String },
+}
+
+/// Path to the state change notification file
+/// This file contains a monotonically increasing counter that's bumped on every state change.
+/// External processes can poll this file to detect when they should refresh.
+fn state_notify_path() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("taskdaemon")
+        .join(".state_version")
+}
+
+/// Bump the state version to notify other processes of changes
+fn notify_state_change() {
+    let path = state_notify_path();
+
+    // Read current version, increment, write back
+    let version: u64 = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+
+    if let Err(e) = std::fs::write(&path, format!("{}", version + 1)) {
+        tracing::debug!(error = %e, "Failed to write state notification file");
+    }
+}
+
+/// Read the current state version (for external processes to poll)
+pub fn read_state_version() -> u64 {
+    std::fs::read_to_string(state_notify_path())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 /// Handle to send commands to the StateManager
 #[derive(Clone)]
 pub struct StateManager {
     tx: mpsc::Sender<StateCommand>,
+    /// Broadcast sender for state change notifications
+    event_tx: tokio::sync::broadcast::Sender<StateEvent>,
 }
 
 impl StateManager {
@@ -56,12 +100,20 @@ impl StateManager {
 
         let (tx, rx) = mpsc::channel(256);
 
+        // Broadcast channel for state change notifications (TUI subscribes)
+        let (event_tx, _) = tokio::sync::broadcast::channel(64);
+
         // Spawn the actor task
         tokio::spawn(actor_loop(store, rx));
 
         info!("StateManager spawned");
 
-        Ok(Self { tx })
+        Ok(Self { tx, event_tx })
+    }
+
+    /// Subscribe to state change events (for instant TUI updates)
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<StateEvent> {
+        self.event_tx.subscribe()
     }
 
     // === Loop operations (generic work units) ===
@@ -154,6 +206,9 @@ impl StateManager {
     /// Create a new LoopExecution
     pub async fn create_execution(&self, execution: LoopExecution) -> StateResponse<String> {
         debug!(execution_id = %execution.id, loop_type = %execution.loop_type, "create_execution: called");
+        let exec_id = execution.id.clone();
+        let loop_type = execution.loop_type.clone();
+
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StateCommand::CreateExecution {
@@ -162,7 +217,18 @@ impl StateManager {
             })
             .await
             .map_err(|_| StateError::ChannelError)?;
-        reply_rx.await.map_err(|_| StateError::ChannelError)?
+        let result = reply_rx.await.map_err(|_| StateError::ChannelError)?;
+
+        // Broadcast event so TUI can update immediately (same-process)
+        // Also notify via file for cross-process updates
+        if result.is_ok() {
+            let _ = self
+                .event_tx
+                .send(StateEvent::ExecutionCreated { id: exec_id, loop_type });
+            notify_state_change();
+        }
+
+        result
     }
 
     /// Get a LoopExecution by ID
@@ -190,7 +256,14 @@ impl StateManager {
             })
             .await
             .map_err(|_| StateError::ChannelError)?;
-        reply_rx.await.map_err(|_| StateError::ChannelError)?
+        let result = reply_rx.await.map_err(|_| StateError::ChannelError)?;
+
+        // Notify other processes of state change
+        if result.is_ok() {
+            notify_state_change();
+        }
+
+        result
     }
 
     /// List LoopExecutions with optional filters

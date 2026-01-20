@@ -1371,6 +1371,9 @@ mod tests {
             duration: "0:00".to_string(),
             parent_id: parent.map(|s| s.to_string()),
             progress: String::new(),
+            artifact_id: None,
+            artifact_file: None,
+            artifact_status: None,
         }
     }
 

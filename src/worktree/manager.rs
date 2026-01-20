@@ -113,15 +113,11 @@ impl WorktreeManager {
         let branch_name = format!("{}/{}", self.config.branch_prefix, exec_id);
 
         // Create the worktree
+        let worktree_str = worktree_path
+            .to_str()
+            .ok_or_else(|| WorktreeError::CreateFailed("Invalid worktree path (non-UTF8)".to_string()))?;
         let output = Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                worktree_path.to_str().unwrap(),
-                "-b",
-                &branch_name,
-                "HEAD",
-            ])
+            .args(["worktree", "add", worktree_str, "-b", &branch_name, "HEAD"])
             .current_dir(&self.config.repo_root)
             .output()
             .await
@@ -156,8 +152,11 @@ impl WorktreeManager {
         debug!("WorktreeManager::remove: worktree exists, proceeding with removal");
 
         // Remove the worktree
+        let worktree_str = worktree_path
+            .to_str()
+            .ok_or_else(|| WorktreeError::RemoveFailed("Invalid worktree path (non-UTF8)".to_string()))?;
         let output = Command::new("git")
-            .args(["worktree", "remove", worktree_path.to_str().unwrap(), "--force"])
+            .args(["worktree", "remove", worktree_str, "--force"])
             .current_dir(&self.config.repo_root)
             .output()
             .await
@@ -312,10 +311,17 @@ impl WorktreeManager {
             let path = entry.path();
             if path.is_dir() {
                 debug!(?path, "WorktreeManager::list: found worktree directory");
-                let exec_id = path.file_name().unwrap().to_str().unwrap().to_string();
+                let Some(file_name) = path.file_name() else {
+                    debug!(?path, "WorktreeManager::list: skipping path without file name");
+                    continue;
+                };
+                let Some(exec_id) = file_name.to_str() else {
+                    debug!(?path, "WorktreeManager::list: skipping non-UTF8 path");
+                    continue;
+                };
                 let branch_name = format!("{}/{}", self.config.branch_prefix, exec_id);
                 worktrees.push(WorktreeInfo {
-                    exec_id,
+                    exec_id: exec_id.to_string(),
                     path,
                     branch: branch_name,
                 });

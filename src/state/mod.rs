@@ -7,6 +7,6 @@ mod manager;
 mod messages;
 mod recovery;
 
-pub use manager::{DaemonMetrics, StateManager};
+pub use manager::{DaemonMetrics, StateEvent, StateManager, read_state_version};
 pub use messages::{StateCommand, StateError, StateResponse};
 pub use recovery::{RecoveryStats, recover, scan_for_recovery};

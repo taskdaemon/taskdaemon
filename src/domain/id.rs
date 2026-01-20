@@ -203,7 +203,8 @@ impl<'a> IdResolver<'a> {
             }
             1 => {
                 debug!(?matches, "IdResolver::resolve: exactly one match");
-                Ok(Some(matches.into_iter().next().unwrap()))
+                // SAFETY: We just checked matches.len() == 1, so next() will always succeed
+                Ok(matches.into_iter().next())
             }
             _ => {
                 debug!(?matches, "IdResolver::resolve: ambiguous, multiple matches");

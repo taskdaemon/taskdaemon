@@ -30,7 +30,7 @@ impl CascadeHandler {
     /// Get child loop types for a given parent type
     fn get_child_types(&self, parent_type: &str) -> Vec<String> {
         debug!(%parent_type, "get_child_types: called");
-        let loader = self.type_loader.read().unwrap();
+        let loader = self.type_loader.read().expect("type_loader RwLock poisoned");
         loader
             .children_of(parent_type)
             .into_iter()
@@ -77,9 +77,8 @@ impl CascadeHandler {
                 exec
             };
             self.state.create_loop_execution(exec.clone()).await?;
+            info!(exec_id = %exec.id, %parent_exec_id, child_type = %child_type, "Created child loop");
             executions.push(exec);
-
-            info!(exec_id = %executions.last().unwrap().id, %parent_exec_id, child_type = %child_type, "Created child loop");
         }
 
         Ok(executions)

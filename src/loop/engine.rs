@@ -80,6 +80,12 @@ pub struct LoopEngine {
 
     /// Scheduler for rate limiting LLM calls
     scheduler: Option<Arc<Scheduler>>,
+
+    /// Execution context from LoopExecution (for parent content, etc.)
+    execution_context: serde_json::Value,
+
+    /// Main repo root (for reading parent files)
+    repo_root: PathBuf,
 }
 
 impl LoopEngine {
@@ -97,12 +103,14 @@ impl LoopEngine {
             llm,
             tool_executor: ToolExecutor::standard(),
             progress,
-            worktree,
+            worktree: worktree.clone(),
             iteration: 0,
             status: LoopStatus::Running,
             handlebars: Handlebars::new(),
             coord_handle: None,
             scheduler: None,
+            execution_context: serde_json::json!({}),
+            repo_root: worktree,
         }
     }
 
@@ -126,13 +134,29 @@ impl LoopEngine {
             llm,
             tool_executor: ToolExecutor::standard(),
             progress,
-            worktree,
+            worktree: worktree.clone(),
             iteration: 0,
             status: LoopStatus::Running,
             handlebars: Handlebars::new(),
             coord_handle: Some(coord_handle),
             scheduler: None,
+            execution_context: serde_json::json!({}),
+            repo_root: worktree,
         }
+    }
+
+    /// Set the execution context (from LoopExecution.context)
+    pub fn with_execution_context(mut self, context: serde_json::Value) -> Self {
+        debug!(exec_id = %self.exec_id, "with_execution_context: called");
+        self.execution_context = context;
+        self
+    }
+
+    /// Set the repo root path (for reading parent files)
+    pub fn with_repo_root(mut self, repo_root: PathBuf) -> Self {
+        debug!(exec_id = %self.exec_id, ?repo_root, "with_repo_root: called");
+        self.repo_root = repo_root;
+        self
     }
 
     /// Set the scheduler for rate limiting LLM calls
@@ -700,6 +724,12 @@ impl LoopEngine {
         context.insert("iteration".to_string(), self.iteration.to_string());
         debug!(exec_id = %self.exec_id, "build_template_context: added basic info");
 
+        // Add execution context values (from cascade)
+        self.populate_execution_context(&mut context);
+
+        // Read parent content from file if this is a child loop
+        self.populate_parent_content(&mut context).await;
+
         // Git status
         debug!(exec_id = %self.exec_id, "build_template_context: getting git status");
         if let Ok(output) = tokio::process::Command::new("git")
@@ -743,6 +773,73 @@ impl LoopEngine {
 
         debug!(exec_id = %self.exec_id, context_keys = context.len(), "build_template_context: complete");
         Ok(context)
+    }
+
+    /// Populate template context from execution context (cascade values)
+    fn populate_execution_context(&self, context: &mut HashMap<String, String>) {
+        debug!(exec_id = %self.exec_id, "populate_execution_context: called");
+
+        // Copy string values from execution_context to template context
+        if let Some(obj) = self.execution_context.as_object() {
+            for (key, value) in obj {
+                if let Some(s) = value.as_str() {
+                    debug!(exec_id = %self.exec_id, %key, "populate_execution_context: adding value");
+                    context.insert(key.clone(), s.to_string());
+                }
+            }
+        }
+    }
+
+    /// Populate parent content from file (for cascade child loops)
+    async fn populate_parent_content(&self, context: &mut HashMap<String, String>) {
+        debug!(exec_id = %self.exec_id, "populate_parent_content: called");
+
+        // Get parent type and file path from execution context
+        let parent_type = self.execution_context.get("parent-type").and_then(|v| v.as_str());
+        let parent_file = self.execution_context.get("parent-file").and_then(|v| v.as_str());
+
+        debug!(exec_id = %self.exec_id, ?parent_type, ?parent_file, "populate_parent_content: checking parent");
+
+        // If we have a parent file, read it and set the appropriate content variable
+        if let Some(file_path) = parent_file {
+            // Try both repo_root and worktree paths
+            let full_path = if file_path.starts_with('/') {
+                PathBuf::from(file_path)
+            } else {
+                self.repo_root.join(file_path)
+            };
+
+            debug!(exec_id = %self.exec_id, ?full_path, "populate_parent_content: reading parent file");
+
+            match tokio::fs::read_to_string(&full_path).await {
+                Ok(content) => {
+                    info!(exec_id = %self.exec_id, file = ?full_path, len = content.len(), "Read parent content");
+
+                    // Map parent type to the correct template variable
+                    let var_name = match parent_type {
+                        Some("plan") => "plan-content",
+                        Some("spec") => "spec-content",
+                        Some("phase") => "phase-content",
+                        _ => "parent-content",
+                    };
+
+                    debug!(exec_id = %self.exec_id, %var_name, "populate_parent_content: setting variable");
+                    context.insert(var_name.to_string(), content);
+                }
+                Err(e) => {
+                    warn!(exec_id = %self.exec_id, file = ?full_path, error = %e, "Failed to read parent file");
+                }
+            }
+        }
+
+        // Also try to find and read output file from context (for user-request, etc.)
+        if let Some(output_file) = self.execution_context.get("output-file").and_then(|v| v.as_str()) {
+            let output_path = self.worktree.join(output_file);
+            if let Ok(content) = tokio::fs::read_to_string(&output_path).await {
+                debug!(exec_id = %self.exec_id, file = ?output_path, "populate_parent_content: read output file");
+                context.insert("current-plan".to_string(), content);
+            }
+        }
     }
 
     /// Render the prompt template with context

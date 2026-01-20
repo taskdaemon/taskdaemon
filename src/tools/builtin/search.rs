@@ -179,15 +179,18 @@ async fn search_tavily(query: &str, max_results: usize, api_key: &str) -> ToolRe
     };
 
     // Format results
-    let results = result["results"].as_array();
-    if results.is_none() || results.unwrap().is_empty() {
+    let Some(results) = result["results"].as_array() else {
+        debug!("search_tavily: no results found");
+        return ToolResult::success("No results found");
+    };
+
+    if results.is_empty() {
         debug!("search_tavily: no results found");
         return ToolResult::success("No results found");
     }
 
-    debug!(results_count = %results.unwrap().len(), "search_tavily: formatting results");
+    debug!(results_count = %results.len(), "search_tavily: formatting results");
     let output: Vec<String> = results
-        .unwrap()
         .iter()
         .enumerate()
         .map(|(i, r)| {
@@ -244,15 +247,18 @@ async fn search_brave(query: &str, max_results: usize, api_key: &str) -> ToolRes
     };
 
     // Format results
-    let results = result["web"]["results"].as_array();
-    if results.is_none() || results.unwrap().is_empty() {
+    let Some(results) = result["web"]["results"].as_array() else {
+        debug!("search_brave: no results found");
+        return ToolResult::success("No results found");
+    };
+
+    if results.is_empty() {
         debug!("search_brave: no results found");
         return ToolResult::success("No results found");
     }
 
-    debug!(results_count = %results.unwrap().len(), "search_brave: formatting results");
+    debug!(results_count = %results.len(), "search_brave: formatting results");
     let output: Vec<String> = results
-        .unwrap()
         .iter()
         .enumerate()
         .map(|(i, r)| {
@@ -313,15 +319,18 @@ async fn search_serpapi(query: &str, max_results: usize, api_key: &str) -> ToolR
     };
 
     // Format results
-    let results = result["organic_results"].as_array();
-    if results.is_none() || results.unwrap().is_empty() {
+    let Some(results) = result["organic_results"].as_array() else {
+        debug!("search_serpapi: no results found");
+        return ToolResult::success("No results found");
+    };
+
+    if results.is_empty() {
         debug!("search_serpapi: no results found");
         return ToolResult::success("No results found");
     }
 
-    debug!(results_count = %results.unwrap().len(), "search_serpapi: formatting results");
+    debug!(results_count = %results.len(), "search_serpapi: formatting results");
     let output: Vec<String> = results
-        .unwrap()
         .iter()
         .enumerate()
         .map(|(i, r)| {

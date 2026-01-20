@@ -10,13 +10,24 @@ use reqwest_eventsource::{Event, EventSource};
 use serde::Deserialize;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{
     CompletionRequest, CompletionResponse, ContentBlock, LlmClient, LlmError, Message, MessageContent, StopReason,
     StreamChunk, TokenUsage, ToolCall,
 };
 use crate::config::LlmConfig;
+
+/// Maximum number of retries for transient errors
+const MAX_RETRIES: u32 = 3;
+
+/// Initial backoff delay for retries
+const INITIAL_BACKOFF_MS: u64 = 1000;
+
+/// Check if an HTTP status code is retryable
+fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500 | 502 | 503 | 504 | 529)
+}
 
 /// Anthropic Claude API client
 pub struct AnthropicClient {
@@ -179,41 +190,71 @@ impl LlmClient for AnthropicClient {
         let url = format!("{}/v1/messages", self.base_url);
         let body = self.build_request_body(&request);
 
-        let response = self
-            .http
-            .post(url.clone())
-            .header("x-api-key", self.api_key.clone())
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let mut last_error = None;
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let backoff = INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1);
+                warn!(
+                    attempt,
+                    backoff_ms = backoff,
+                    "complete: retrying after transient error"
+                );
+                tokio::time::sleep(Duration::from_millis(backoff)).await;
+            }
 
-        if response.status().as_u16() == 429 {
-            debug!("complete: rate limited (429)");
-            // Rate limited - extract retry-after header
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(60);
+            let response = match self
+                .http
+                .post(url.clone())
+                .header("x-api-key", self.api_key.clone())
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    debug!(attempt, error = %e, "complete: network error");
+                    last_error = Some(LlmError::Network(e));
+                    continue;
+                }
+            };
 
-            return Err(LlmError::RateLimited {
-                retry_after: Duration::from_secs(retry_after),
-            });
-        }
-
-        if !response.status().is_success() {
             let status = response.status().as_u16();
-            debug!(%status, "complete: API error");
-            let text = response.text().await.unwrap_or_default();
-            return Err(LlmError::ApiError { status, message: text });
+
+            if status == 429 {
+                debug!("complete: rate limited (429)");
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(60);
+
+                return Err(LlmError::RateLimited {
+                    retry_after: Duration::from_secs(retry_after),
+                });
+            }
+
+            if is_retryable_status(status) && attempt < MAX_RETRIES {
+                let text = response.text().await.unwrap_or_default();
+                debug!(attempt, status, "complete: retryable error");
+                last_error = Some(LlmError::ApiError { status, message: text });
+                continue;
+            }
+
+            if !response.status().is_success() {
+                debug!(%status, "complete: API error");
+                let text = response.text().await.unwrap_or_default();
+                return Err(LlmError::ApiError { status, message: text });
+            }
+
+            debug!("complete: success");
+            let api_response: AnthropicResponse = response.json().await?;
+            return Ok(self.parse_response(api_response));
         }
 
-        debug!("complete: success");
-        let api_response: AnthropicResponse = response.json().await?;
-        Ok(self.parse_response(api_response))
+        Err(last_error.unwrap_or_else(|| LlmError::InvalidResponse("Max retries exceeded".to_string())))
     }
 
     async fn stream(
@@ -226,15 +267,41 @@ impl LlmClient for AnthropicClient {
         let mut body = self.build_request_body(&request);
         body["stream"] = serde_json::json!(true);
 
-        let http_request = self
-            .http
-            .post(url)
-            .header("x-api-key", self.api_key.clone())
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body);
+        let mut last_error = None;
+        let mut es = None;
 
-        let mut es = EventSource::new(http_request).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        // Retry loop for establishing the connection
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let backoff = INITIAL_BACKOFF_MS * 2u64.pow(attempt - 1);
+                warn!(attempt, backoff_ms = backoff, "stream: retrying connection after error");
+                tokio::time::sleep(Duration::from_millis(backoff)).await;
+            }
+
+            let http_request = self
+                .http
+                .post(url.clone())
+                .header("x-api-key", self.api_key.clone())
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body);
+
+            match EventSource::new(http_request) {
+                Ok(event_source) => {
+                    es = Some(event_source);
+                    break;
+                }
+                Err(e) => {
+                    debug!(attempt, error = %e, "stream: EventSource creation failed");
+                    last_error = Some(LlmError::InvalidResponse(e.to_string()));
+                    continue;
+                }
+            }
+        }
+
+        let mut es = es.ok_or_else(|| {
+            last_error.unwrap_or_else(|| LlmError::InvalidResponse("Failed to create EventSource".to_string()))
+        })?;
 
         let mut full_content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();

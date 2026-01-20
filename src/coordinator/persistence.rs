@@ -237,7 +237,7 @@ impl EventStore {
             debug!("EventStore::resolve: writing updated events");
             let new_content: String = events
                 .iter()
-                .map(|e| serde_json::to_string(e).unwrap() + "\n")
+                .map(|e| serde_json::to_string(e).expect("PersistedEvent serialization failed") + "\n")
                 .collect();
 
             fs::write(&events_file, new_content).await?;
@@ -335,7 +335,10 @@ impl EventStore {
 
         if removed_count > 0 {
             debug!(%removed_count, "EventStore::cleanup_old: removing old events");
-            let new_content: String = kept.iter().map(|e| serde_json::to_string(e).unwrap() + "\n").collect();
+            let new_content: String = kept
+                .iter()
+                .map(|e| serde_json::to_string(e).expect("PersistedEvent serialization failed") + "\n")
+                .collect();
 
             fs::write(&events_file, new_content).await?;
         } else {

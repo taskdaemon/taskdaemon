@@ -306,6 +306,24 @@ impl LoopManager {
         parts.join("\n")
     }
 
+    /// Get the output file path for a loop execution based on its type
+    ///
+    /// Returns the path relative to repo root where this loop should write its output:
+    /// - plan: `.taskdaemon/plans/{exec_id}/plan.md`
+    /// - spec: `.taskdaemon/specs/{exec_id}/spec.md`
+    /// - phase: `.taskdaemon/phases/{exec_id}/phase.md`
+    /// - ralph: None (produces code, not markdown)
+    fn get_output_file_path(&self, exec: &LoopExecution) -> Option<String> {
+        let path = match exec.loop_type.as_str() {
+            "plan" => format!(".taskdaemon/plans/{}/plan.md", exec.id),
+            "spec" => format!(".taskdaemon/specs/{}/spec.md", exec.id),
+            "phase" => format!(".taskdaemon/phases/{}/phase.md", exec.id),
+            _ => return None, // ralph and other types don't produce markdown artifacts
+        };
+        debug!(exec_id = %exec.id, loop_type = %exec.loop_type, %path, "get_output_file_path");
+        Some(path)
+    }
+
     /// Spawn a loop execution as a tokio task
     pub async fn spawn_loop(&mut self, exec: &LoopExecution) -> Result<()> {
         debug!(exec_id = %exec.id, loop_type = %exec.loop_type, "spawn_loop: called");
@@ -323,9 +341,16 @@ impl LoopManager {
             if let Some(title) = crate::llm::name_markdown(&self.llm, &context).await {
                 info!(exec_id = %exec.id, %title, "Generated title");
                 exec.title = Some(title);
-                self.state.update_execution(exec.clone()).await?;
             }
         }
+
+        // Set output-file path based on loop type (used by template and cascade)
+        let output_file = self.get_output_file_path(&exec);
+        if let Some(ref path) = output_file {
+            exec = exec.with_context_value("output-file", path);
+            debug!(exec_id = %exec.id, %path, "spawn_loop: set output-file");
+        }
+        self.state.update_execution(exec.clone()).await?;
 
         // Wait for scheduler slot (handles rate limiting and priority queuing)
         // TODO: Extract priority from parent Spec/Plan once we wire that up
@@ -363,10 +388,19 @@ impl LoopManager {
         exec_running.set_worktree(worktree_info.path.display().to_string());
         self.state.update_execution(exec_running).await?;
 
+        // Log loop start time clearly for cascade timing analysis
+        info!(
+            "▶ {} STARTED: {} (worktree: {})",
+            exec.loop_type.to_uppercase(),
+            &exec.id,
+            worktree_info.path.display()
+        );
+
         // Build and spawn engine
         debug!(exec_id = %exec.id, "spawn_loop: building and spawning engine");
         let exec_id = exec.id.clone();
         let loop_type = exec.loop_type.clone();
+        let exec_context = exec.context.clone();
         let llm = self.llm.clone();
         let state = self.state.clone();
         let worktree_path = worktree_info.path.clone();
@@ -376,10 +410,12 @@ impl LoopManager {
 
         let handle = tokio::spawn(async move {
             debug!(exec_id = %exec_id, "spawn_loop task: starting");
-            // Build engine with coordinator and scheduler for rate limiting
+            // Build engine with coordinator, scheduler, execution context, and repo root
             let engine =
                 LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path.clone(), coord_handle)
-                    .with_scheduler(scheduler.clone());
+                    .with_scheduler(scheduler.clone())
+                    .with_execution_context(exec_context)
+                    .with_repo_root(repo_root.clone());
 
             let result = run_loop_task(engine, state, worktree_path, repo_root, type_loader, loop_type).await;
 
@@ -591,7 +627,27 @@ async fn run_loop_task(
                 .and_then(|e| e.context.get("title").and_then(|v| v.as_str()).map(String::from))
                 .unwrap_or_else(|| "Completed work".to_string());
 
-            // Merge to main before marking complete
+            // Only merge for code-producing loops (phase, ralph)
+            // Plan and Spec loops produce markdown docs, not code to merge
+            let should_merge = matches!(loop_type.as_str(), "phase" | "ralph");
+
+            if !should_merge {
+                debug!(exec_id = %exec_id, loop_type = %loop_type, "run_loop_task: skipping merge for doc loop");
+                // Skip merge - just mark complete and trigger cascade
+                if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
+                    exec.set_status(LoopExecutionStatus::Complete);
+                    exec.iteration = engine.current_iteration();
+                    exec.progress = engine.get_progress();
+                    let _ = state.update_execution(exec.clone()).await;
+
+                    // Trigger cascade: create Loop record and spawn child executions
+                    debug!(exec_id = %exec_id, "run_loop_task: triggering cascade (no merge)");
+                    trigger_cascade(&state, &type_loader, &exec, &loop_type).await;
+                }
+                return LoopTaskResult::Complete { exec_id, iterations };
+            }
+
+            // Merge to main before marking complete (for code loops)
             debug!(exec_id = %exec_id, "run_loop_task: merging to main");
             match merge_to_main(&repo_root, &worktree_path, &exec_id, &spec_title).await {
                 Ok(MergeResult::Success) => {

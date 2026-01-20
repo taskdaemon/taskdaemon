@@ -83,7 +83,11 @@ impl Scheduler {
         // Check rate limit
         if inner.request_times.len() >= self.config.max_requests_per_window as usize {
             debug!(%exec_id, "Scheduler::schedule: rate limit exceeded");
-            let oldest = inner.request_times.front().unwrap();
+            // SAFETY: We just checked that len() >= 1, so front() will always succeed
+            let oldest = inner
+                .request_times
+                .front()
+                .expect("request_times is non-empty after length check");
             let retry_after = self.config.rate_window() - (now - *oldest);
             inner.stats.total_rate_limited += 1;
             debug!(exec_id, ?retry_after, "Rate limited");

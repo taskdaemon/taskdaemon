@@ -956,6 +956,10 @@ pub struct RecordItem {
     pub children_count: usize,
     pub phases_progress: String, // e.g., "2/4"
     pub created: String,         // e.g., "2m ago"
+    /// Execution ID that created this artifact (from context.exec_id)
+    pub exec_id: Option<String>,
+    /// Output file path (e.g., "plan.md", "spec.md")
+    pub file: Option<String>,
 }
 
 /// Cached loop execution item for display
@@ -969,6 +973,12 @@ pub struct ExecutionItem {
     pub duration: String, // e.g., "2:15"
     pub parent_id: Option<String>,
     pub progress: String, // last line of progress
+    /// Associated Loop record ID (artifact created by this execution)
+    pub artifact_id: Option<String>,
+    /// Output file path of the artifact (e.g., "plan.md")
+    pub artifact_file: Option<String>,
+    /// Status of the artifact Loop record
+    pub artifact_status: Option<String>,
 }
 
 /// Log entry for the logs view

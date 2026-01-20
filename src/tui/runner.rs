@@ -19,7 +19,7 @@ use tracing::{debug, info, trace, warn};
 use crate::llm::{
     CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
 };
-use crate::state::StateManager;
+use crate::state::{StateEvent, StateManager, read_state_version};
 use crate::tools::{ToolContext, ToolExecutor};
 
 use super::Tui;
@@ -33,8 +33,8 @@ use super::state::{
 use super::views;
 use crate::daemon::DaemonManager;
 
-/// How often to refresh data from StateManager
-const DATA_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// How often to refresh data from StateManager (250ms for responsive updates)
+const DATA_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Result from the background LLM task
 #[derive(Debug)]
@@ -91,6 +91,12 @@ pub struct TuiRunner {
     plan_progress_rx: Option<mpsc::Receiver<PlanProgress>>,
     /// Handle to the background plan creation task
     plan_task: Option<JoinHandle<()>>,
+
+    // === State change notifications ===
+    /// Receiver for instant state change notifications (new executions, etc.)
+    state_event_rx: Option<tokio::sync::broadcast::Receiver<StateEvent>>,
+    /// Last known state version (for cross-process change detection)
+    last_state_version: u64,
 }
 
 /// Progress updates from plan creation background task
@@ -137,6 +143,8 @@ impl TuiRunner {
             conversation_logger: ConversationLogger::disabled(),
             plan_progress_rx: None,
             plan_task: None,
+            state_event_rx: None,
+            last_state_version: 0,
         }
     }
 
@@ -147,6 +155,9 @@ impl TuiRunner {
         debug!(?worktree, "TuiRunner::with_state_manager: worktree");
         let chat_system_prompt = Self::build_chat_system_prompt(&worktree);
         let plan_system_prompt = Self::build_plan_system_prompt(&worktree);
+
+        // Subscribe to state change events for instant updates
+        let state_event_rx = Some(state_manager.subscribe_events());
 
         Self {
             app: App::new(),
@@ -166,6 +177,8 @@ impl TuiRunner {
             conversation_logger: ConversationLogger::disabled(),
             plan_progress_rx: None,
             plan_task: None,
+            state_event_rx,
+            last_state_version: read_state_version(),
         }
     }
 
@@ -193,6 +206,9 @@ impl TuiRunner {
             ConversationLogger::disabled()
         };
 
+        // Subscribe to state change events for instant updates
+        let state_event_rx = state_manager.as_ref().map(|sm| sm.subscribe_events());
+
         Self {
             app: App::new(),
             terminal,
@@ -211,6 +227,8 @@ impl TuiRunner {
             conversation_logger,
             plan_progress_rx: None,
             plan_task: None,
+            state_event_rx,
+            last_state_version: read_state_version(),
         }
     }
 
@@ -459,7 +477,25 @@ Working directory: {}"#,
             self.execute_action(action).await;
         }
 
-        // Refresh data if interval has elapsed
+        // Check for state change events (instant refresh on new executions - same process)
+        self.process_state_events().await?;
+
+        // Check for cross-process state changes via notification file
+        let current_version = read_state_version();
+        if current_version != self.last_state_version {
+            debug!(
+                old = self.last_state_version,
+                new = current_version,
+                "TuiRunner::handle_tick: state version changed, refreshing"
+            );
+            self.last_state_version = current_version;
+            if self.state_manager.is_some() {
+                self.refresh_data().await?;
+                self.last_refresh = Instant::now();
+            }
+        }
+
+        // Refresh data if interval has elapsed (fallback polling)
         if self.state_manager.is_some() && self.last_refresh.elapsed() >= DATA_REFRESH_INTERVAL {
             debug!("TuiRunner::handle_tick: refreshing data");
             self.refresh_data().await?;
@@ -1065,6 +1101,54 @@ Working directory: {}"#,
         }
     }
 
+    /// Process state change events for instant TUI updates
+    ///
+    /// When cascade creates child executions, the TUI is notified immediately
+    /// and refreshes data without waiting for the polling interval.
+    async fn process_state_events(&mut self) -> Result<()> {
+        if let Some(rx) = &mut self.state_event_rx {
+            // Drain all pending events
+            let mut should_refresh = false;
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => match &event {
+                        StateEvent::ExecutionCreated { id, loop_type } => {
+                            debug!(
+                                %id,
+                                %loop_type,
+                                "process_state_events: new execution created"
+                            );
+                            info!("New {} execution created: {}", loop_type, id);
+                            should_refresh = true;
+                        }
+                        StateEvent::ExecutionUpdated { id } => {
+                            debug!(%id, "process_state_events: execution updated");
+                            should_refresh = true;
+                        }
+                    },
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        debug!(n, "process_state_events: lagged behind, catching up");
+                        should_refresh = true;
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        debug!("process_state_events: channel closed");
+                        self.state_event_rx = None;
+                        break;
+                    }
+                }
+            }
+
+            // Refresh immediately if we received any events
+            if should_refresh {
+                debug!("process_state_events: triggering immediate refresh");
+                self.refresh_data().await?;
+                self.last_refresh = Instant::now();
+            }
+        }
+        Ok(())
+    }
+
     /// Run plan creation (executes in background task)
     /// Uses consolidated Rule of Five prompt - LLM self-reviews in a single call
     async fn run_plan_creation(
@@ -1536,7 +1620,9 @@ Working directory: {}"#,
             }
         };
 
-        // Sync Loop records
+        // Sync Loop records and build exec_id -> artifact map
+        let mut artifacts_by_exec_id: std::collections::HashMap<String, RecordItem> = std::collections::HashMap::new();
+
         match state_manager.list_loops(None, None, None).await {
             Ok(loops) => {
                 let items: Vec<RecordItem> = loops
@@ -1549,6 +1635,9 @@ Working directory: {}"#,
                             "-".to_string()
                         };
 
+                        // Extract exec_id from context if present
+                        let exec_id = l.context.get("exec_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+
                         RecordItem {
                             id: l.id.clone(),
                             title: l.title.clone(),
@@ -1558,9 +1647,18 @@ Working directory: {}"#,
                             children_count: 0, // TODO: count children
                             phases_progress,
                             created: format_time_ago(l.created_at),
+                            exec_id,
+                            file: l.file.clone(),
                         }
                     })
                     .collect();
+
+                // Build map for linking artifacts to executions
+                for item in &items {
+                    if let Some(ref exec_id) = item.exec_id {
+                        artifacts_by_exec_id.insert(exec_id.clone(), item.clone());
+                    }
+                }
 
                 let state = self.app.state_mut();
                 state.total_records = items.len();
@@ -1571,7 +1669,7 @@ Working directory: {}"#,
             }
         }
 
-        // Sync loop executions
+        // Sync loop executions and link to artifacts
         match state_manager.list_executions(None, None).await {
             Ok(executions) => {
                 let items: Vec<ExecutionItem> = executions
@@ -1604,6 +1702,9 @@ Working directory: {}"#,
                         };
                         let name = format!("{}-{}", hash, title_part);
 
+                        // Look up associated artifact (Loop record)
+                        let artifact = artifacts_by_exec_id.get(&e.id);
+
                         ExecutionItem {
                             id: e.id.clone(),
                             name,
@@ -1613,6 +1714,9 @@ Working directory: {}"#,
                             duration,
                             parent_id: e.parent.clone(),
                             progress,
+                            artifact_id: artifact.map(|a| a.id.clone()),
+                            artifact_file: artifact.and_then(|a| a.file.clone()),
+                            artifact_status: artifact.map(|a| a.status.clone()),
                         }
                     })
                     .collect();
@@ -1849,7 +1953,7 @@ mod tests {
 
     #[test]
     fn test_data_refresh_interval() {
-        assert_eq!(DATA_REFRESH_INTERVAL, Duration::from_secs(1));
+        assert_eq!(DATA_REFRESH_INTERVAL, Duration::from_millis(250));
     }
 
     #[test]

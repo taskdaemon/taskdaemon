@@ -161,7 +161,7 @@ impl Tool for GrepTool {
         for file_path in walker {
             // Check if we've hit max results
             {
-                let count = match_count.lock().unwrap();
+                let count = match_count.lock().expect("match_count mutex poisoned");
                 if *count >= max_results {
                     debug!("GrepTool::execute: max results reached");
                     break;
@@ -184,7 +184,7 @@ impl Tool for GrepTool {
                 &matcher,
                 &file_path,
                 UTF8(|line_num, line| {
-                    let mut count = file_match_count.lock().unwrap();
+                    let mut count = file_match_count.lock().expect("match_count mutex poisoned");
                     if *count >= max {
                         return Ok(false); // Stop searching
                     }
@@ -192,7 +192,7 @@ impl Tool for GrepTool {
                     // Check if this line actually matches (not just context)
                     let is_match = matcher.is_match(line.as_bytes()).unwrap_or(false);
 
-                    let mut results = file_results.lock().unwrap();
+                    let mut results = file_results.lock().expect("results mutex poisoned");
                     results.push(MatchResult {
                         file: display_path.clone(),
                         line_num,
@@ -215,7 +215,7 @@ impl Tool for GrepTool {
         }
 
         // Format results
-        let results = results.lock().unwrap();
+        let results = results.lock().expect("results mutex poisoned");
         debug!(results_count = %results.len(), "GrepTool::execute: search complete");
 
         if results.is_empty() {

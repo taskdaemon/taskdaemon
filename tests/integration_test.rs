@@ -1377,3 +1377,213 @@ async fn test_multiple_independent_drafts() {
 
     state.shutdown().await.expect("shutdown");
 }
+
+// =============================================================================
+// Cascade Context Passing Tests - CRITICAL for nested loop hierarchy
+// =============================================================================
+
+/// Test that cascade sets parent-file in child execution context when parent Loop has a file
+#[tokio::test]
+async fn test_cascade_passes_parent_file_to_children() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (state, cascade) = create_cascade_handler(&temp_dir).await;
+
+    // Create a Plan loop that has a file
+    let mut plan = Loop::new("plan", "Test Plan With File");
+    plan.set_status(LoopStatus::Ready);
+    plan.file = Some(".taskdaemon/plans/test-plan/plan.md".to_string()); // <-- KEY: file is set
+    state.create_loop(plan.clone()).await.expect("Failed to create plan");
+
+    // Trigger cascade
+    let parent_exec_id = "parent-plan-exec-id";
+    let children = cascade
+        .on_loop_ready(&plan, parent_exec_id)
+        .await
+        .expect("Cascade failed");
+
+    // Should spawn a spec child
+    assert!(!children.is_empty(), "Should spawn spec child");
+    assert_eq!(children[0].loop_type, "spec");
+
+    // CRITICAL: Child should have parent-file in its context
+    let parent_file = children[0].context.get("parent-file").and_then(|v| v.as_str());
+    assert_eq!(
+        parent_file,
+        Some(".taskdaemon/plans/test-plan/plan.md"),
+        "Child execution MUST have parent-file set from parent Loop.file"
+    );
+
+    // Also verify parent-type is set correctly
+    let parent_type = children[0].context.get("parent-type").and_then(|v| v.as_str());
+    assert_eq!(parent_type, Some("plan"), "Child execution MUST have parent-type set");
+}
+
+/// Test that cascade sets all context values needed for child loop templates
+#[tokio::test]
+async fn test_cascade_sets_all_required_context() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (state, cascade) = create_cascade_handler(&temp_dir).await;
+
+    // Create a Spec loop with file
+    let mut spec = Loop::new("spec", "API Endpoints Spec");
+    spec.set_status(LoopStatus::Ready);
+    spec.file = Some(".taskdaemon/specs/api-spec/spec.md".to_string());
+    state.create_loop(spec.clone()).await.expect("Failed to create spec");
+
+    // Trigger cascade to create Phase
+    let parent_exec_id = "spec-exec-123";
+    let children = cascade
+        .on_loop_ready(&spec, parent_exec_id)
+        .await
+        .expect("Cascade failed");
+
+    assert_eq!(children[0].loop_type, "phase");
+
+    // Verify ALL required context values are set
+    let ctx = &children[0].context;
+
+    // parent-id: the execution ID (for tree hierarchy)
+    assert_eq!(
+        ctx.get("parent-id").and_then(|v| v.as_str()),
+        Some("spec-exec-123"),
+        "parent-id must be the execution ID"
+    );
+
+    // parent-type: the loop type of the parent
+    assert_eq!(
+        ctx.get("parent-type").and_then(|v| v.as_str()),
+        Some("spec"),
+        "parent-type must be spec"
+    );
+
+    // parent-title: the title of the parent loop
+    assert_eq!(
+        ctx.get("parent-title").and_then(|v| v.as_str()),
+        Some("API Endpoints Spec"),
+        "parent-title must be set"
+    );
+
+    // parent-file: the file path from parent Loop.file
+    assert_eq!(
+        ctx.get("parent-file").and_then(|v| v.as_str()),
+        Some(".taskdaemon/specs/api-spec/spec.md"),
+        "parent-file must be set from Loop.file"
+    );
+}
+
+/// Test that the parent execution ID (not Loop record ID) is used for tree hierarchy
+#[tokio::test]
+async fn test_cascade_uses_execution_id_for_parent_not_loop_id() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let (state, cascade) = create_cascade_handler(&temp_dir).await;
+
+    // Create a Phase loop
+    let mut phase = Loop::new("phase", "Implementation Phase");
+    phase.set_status(LoopStatus::Ready);
+    phase.file = Some(".taskdaemon/phases/impl-phase/phase.md".to_string());
+    state.create_loop(phase.clone()).await.expect("create phase");
+
+    // Use a VERY DIFFERENT execution ID to prove it's used
+    let parent_exec_id = "THIS-IS-THE-EXECUTION-ID-NOT-LOOP-ID";
+
+    let children = cascade.on_loop_ready(&phase, parent_exec_id).await.expect("cascade");
+
+    // Child should be ralph
+    assert_eq!(children[0].loop_type, "ralph");
+
+    // CRITICAL: parent field should be execution ID, NOT Loop.id
+    assert_eq!(
+        children[0].parent.as_deref(),
+        Some("THIS-IS-THE-EXECUTION-ID-NOT-LOOP-ID"),
+        "parent field MUST be the execution ID passed to on_loop_ready"
+    );
+
+    // It must NOT be the Loop record ID
+    assert_ne!(
+        children[0].parent.as_deref(),
+        Some(phase.id.as_str()),
+        "parent field MUST NOT be the Loop record ID"
+    );
+
+    // Verify context parent-id is also correct
+    assert_eq!(
+        children[0].context.get("parent-id").and_then(|v| v.as_str()),
+        Some("THIS-IS-THE-EXECUTION-ID-NOT-LOOP-ID"),
+        "context[parent-id] must match the execution ID"
+    );
+}
+
+/// Test the full cascade chain: Plan -> Spec -> Phase -> Ralph with file context
+#[tokio::test]
+async fn test_cascade_full_chain_with_files() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let (state, cascade) = create_cascade_handler(&temp_dir).await;
+
+    // Step 1: Plan completes and has a plan.md file
+    let mut plan = Loop::new("plan", "Full Chain Test Plan");
+    plan.set_status(LoopStatus::Ready);
+    plan.file = Some(".taskdaemon/plans/chain-test/plan.md".to_string());
+    state.create_loop(plan.clone()).await.expect("create plan");
+
+    let plan_exec_id = "plan-exec-001";
+    let specs = cascade.on_loop_ready(&plan, plan_exec_id).await.expect("cascade plan");
+    assert_eq!(specs.len(), 1, "Plan should spawn 1 spec");
+    assert_eq!(specs[0].loop_type, "spec");
+
+    // Verify spec has plan file as parent-file
+    assert_eq!(
+        specs[0].context.get("parent-file").and_then(|v| v.as_str()),
+        Some(".taskdaemon/plans/chain-test/plan.md"),
+        "Spec must have plan file as parent-file"
+    );
+
+    // Step 2: Spec completes (simulated) and has a spec.md file
+    let mut spec = Loop::new("spec", "Full Chain Test Spec");
+    spec.set_status(LoopStatus::Ready);
+    spec.file = Some(".taskdaemon/specs/chain-test/spec.md".to_string());
+    state.create_loop(spec.clone()).await.expect("create spec");
+
+    let spec_exec_id = "spec-exec-002";
+    let phases = cascade.on_loop_ready(&spec, spec_exec_id).await.expect("cascade spec");
+    assert_eq!(phases.len(), 1, "Spec should spawn 1 phase");
+    assert_eq!(phases[0].loop_type, "phase");
+
+    // Verify phase has spec file as parent-file
+    assert_eq!(
+        phases[0].context.get("parent-file").and_then(|v| v.as_str()),
+        Some(".taskdaemon/specs/chain-test/spec.md"),
+        "Phase must have spec file as parent-file"
+    );
+
+    // Step 3: Phase completes and has a phase.md file
+    let mut phase = Loop::new("phase", "Full Chain Test Phase");
+    phase.set_status(LoopStatus::Ready);
+    phase.file = Some(".taskdaemon/phases/chain-test/phase.md".to_string());
+    state.create_loop(phase.clone()).await.expect("create phase");
+
+    let phase_exec_id = "phase-exec-003";
+    let ralphs = cascade
+        .on_loop_ready(&phase, phase_exec_id)
+        .await
+        .expect("cascade phase");
+    assert_eq!(ralphs.len(), 1, "Phase should spawn 1 ralph");
+    assert_eq!(ralphs[0].loop_type, "ralph");
+
+    // Verify ralph has phase file as parent-file
+    assert_eq!(
+        ralphs[0].context.get("parent-file").and_then(|v| v.as_str()),
+        Some(".taskdaemon/phases/chain-test/phase.md"),
+        "Ralph must have phase file as parent-file"
+    );
+
+    // Step 4: Ralph should be a leaf (no children)
+    let mut ralph = Loop::new("ralph", "Full Chain Test Ralph");
+    ralph.set_status(LoopStatus::Ready);
+    state.create_loop(ralph.clone()).await.expect("create ralph");
+
+    let ralph_children = cascade
+        .on_loop_ready(&ralph, "ralph-exec-004")
+        .await
+        .expect("cascade ralph");
+    assert!(ralph_children.is_empty(), "Ralph must be a leaf with no children");
+}
