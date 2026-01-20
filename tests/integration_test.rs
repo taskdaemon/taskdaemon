@@ -1722,3 +1722,289 @@ async fn test_execution_pending_not_emitted_for_draft_creation() {
 
     state.shutdown().await.expect("Failed to shutdown");
 }
+
+#[tokio::test]
+async fn test_execution_pending_not_emitted_for_running_creation() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    let mut event_rx = state.subscribe_events();
+
+    // Create a Running execution (should not emit ExecutionPending)
+    let mut exec = LoopExecution::with_id("running-no-pending", "plan");
+    exec.set_status(LoopExecutionStatus::Running);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // Drain ExecutionCreated
+    let event = tokio::time::timeout(Duration::from_millis(100), event_rx.recv())
+        .await
+        .expect("Timeout")
+        .expect("Channel closed");
+
+    assert!(
+        matches!(event, StateEvent::ExecutionCreated { .. }),
+        "Should emit ExecutionCreated"
+    );
+
+    // Should NOT receive ExecutionPending
+    let result = tokio::time::timeout(Duration::from_millis(50), event_rx.recv()).await;
+    if let Ok(Ok(StateEvent::ExecutionPending { .. })) = result {
+        panic!("Should not emit ExecutionPending for Running status");
+    }
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_execution_pending_emitted_for_direct_pending_creation() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    let mut event_rx = state.subscribe_events();
+
+    // Create execution directly with Pending status
+    let mut exec = LoopExecution::with_id("direct-pending", "spec");
+    exec.set_status(LoopExecutionStatus::Pending);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // Should receive both ExecutionCreated and ExecutionPending
+    let mut found_created = false;
+    let mut found_pending = false;
+
+    for _ in 0..3 {
+        match tokio::time::timeout(Duration::from_millis(100), event_rx.recv()).await {
+            Ok(Ok(StateEvent::ExecutionCreated { id, .. })) if id == "direct-pending" => {
+                found_created = true;
+            }
+            Ok(Ok(StateEvent::ExecutionPending { id })) if id == "direct-pending" => {
+                found_pending = true;
+            }
+            _ => break,
+        }
+    }
+
+    assert!(found_created, "Should emit ExecutionCreated");
+    assert!(found_pending, "Should emit ExecutionPending for Pending status");
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_multiple_subscribers_receive_pending_events() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    // Multiple subscribers (simulating TUI + LoopManager)
+    let mut subscriber1 = state.subscribe_events();
+    let mut subscriber2 = state.subscribe_events();
+
+    // Create and activate draft
+    let mut exec = LoopExecution::with_id("multi-sub-test", "plan");
+    exec.set_status(LoopExecutionStatus::Draft);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // Drain ExecutionCreated from both
+    let _ = subscriber1.recv().await;
+    let _ = subscriber2.recv().await;
+
+    // Activate
+    state
+        .activate_draft("multi-sub-test")
+        .await
+        .expect("Failed to activate");
+
+    // Both should receive ExecutionPending
+    let event1 = tokio::time::timeout(Duration::from_millis(100), subscriber1.recv())
+        .await
+        .expect("Timeout sub1")
+        .expect("Channel closed sub1");
+
+    let event2 = tokio::time::timeout(Duration::from_millis(100), subscriber2.recv())
+        .await
+        .expect("Timeout sub2")
+        .expect("Channel closed sub2");
+
+    assert!(
+        matches!(event1, StateEvent::ExecutionPending { ref id } if id == "multi-sub-test"),
+        "Subscriber 1 should receive ExecutionPending"
+    );
+    assert!(
+        matches!(event2, StateEvent::ExecutionPending { ref id } if id == "multi-sub-test"),
+        "Subscriber 2 should receive ExecutionPending"
+    );
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_activate_draft_fails_for_nonexistent_no_event() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    let mut event_rx = state.subscribe_events();
+
+    // Try to activate nonexistent execution
+    let result = state.activate_draft("nonexistent-id").await;
+    assert!(result.is_err(), "Should fail for nonexistent execution");
+
+    // Should NOT emit any event
+    let result = tokio::time::timeout(Duration::from_millis(50), event_rx.recv()).await;
+    assert!(result.is_err(), "Should not emit any event on failure");
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_activate_draft_fails_for_already_pending_no_event() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    let mut event_rx = state.subscribe_events();
+
+    // Create already-pending execution
+    let mut exec = LoopExecution::with_id("already-pending", "plan");
+    exec.set_status(LoopExecutionStatus::Pending);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // Drain creation events
+    for _ in 0..2 {
+        let _ = tokio::time::timeout(Duration::from_millis(50), event_rx.recv()).await;
+    }
+
+    // Try to activate (should fail - not draft)
+    let result = state.activate_draft("already-pending").await;
+    assert!(result.is_err(), "Should fail for non-draft execution");
+
+    // Should NOT emit ExecutionPending again
+    let result = tokio::time::timeout(Duration::from_millis(50), event_rx.recv()).await;
+    if let Ok(Ok(StateEvent::ExecutionPending { .. })) = result {
+        panic!("Should not emit ExecutionPending on failed activate");
+    }
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_cascade_creates_pending_children_with_events() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = Arc::new(StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager"));
+
+    let mut event_rx = state.subscribe_events();
+
+    let loops_config = taskdaemon::config::LoopsConfig::default();
+    let loader = LoopLoader::new(&loops_config).expect("Failed to create loader");
+    let type_loader = Arc::new(RwLock::new(loader));
+
+    let cascade = CascadeHandler::new(state.clone(), type_loader);
+
+    // Create Spec loop (ready) - should cascade to Phase
+    let mut spec = Loop::new("spec", "Cascade Event Test Spec");
+    spec.set_status(LoopStatus::Ready);
+    state.create_loop(spec.clone()).await.expect("Failed to create spec");
+
+    // Trigger cascade
+    let children = cascade
+        .on_loop_ready(&spec, "cascade-parent-exec")
+        .await
+        .expect("Cascade failed");
+
+    assert!(!children.is_empty(), "Should create phase child");
+    assert_eq!(children[0].loop_type, "phase", "Child should be phase type");
+
+    let child_id = children[0].id.clone();
+
+    // Verify events were emitted
+    let mut found_pending = false;
+    for _ in 0..5 {
+        match tokio::time::timeout(Duration::from_millis(100), event_rx.recv()).await {
+            Ok(Ok(StateEvent::ExecutionPending { id })) if id == child_id => {
+                found_pending = true;
+                break;
+            }
+            Ok(Ok(_)) => continue,
+            _ => break,
+        }
+    }
+
+    assert!(
+        found_pending,
+        "Should emit ExecutionPending for cascade-created phase child"
+    );
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_execution_status_after_activate_draft() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    // Create draft
+    let mut exec = LoopExecution::with_id("status-check", "plan");
+    exec.set_status(LoopExecutionStatus::Draft);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // Verify draft status
+    let before = state
+        .get_execution("status-check")
+        .await
+        .expect("Failed to get")
+        .expect("Not found");
+    assert_eq!(before.status, LoopExecutionStatus::Draft);
+
+    // Activate
+    state.activate_draft("status-check").await.expect("Failed to activate");
+
+    // Verify pending status
+    let after = state
+        .get_execution("status-check")
+        .await
+        .expect("Failed to get")
+        .expect("Not found");
+    assert_eq!(
+        after.status,
+        LoopExecutionStatus::Pending,
+        "Status should be Pending after activate_draft"
+    );
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_event_order_created_before_pending() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    let mut event_rx = state.subscribe_events();
+
+    // Create execution directly with Pending status
+    let mut exec = LoopExecution::with_id("event-order-test", "plan");
+    exec.set_status(LoopExecutionStatus::Pending);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // First event should be ExecutionCreated
+    let first = tokio::time::timeout(Duration::from_millis(100), event_rx.recv())
+        .await
+        .expect("Timeout")
+        .expect("Channel closed");
+
+    assert!(
+        matches!(first, StateEvent::ExecutionCreated { ref id, .. } if id == "event-order-test"),
+        "First event should be ExecutionCreated, got {:?}",
+        first
+    );
+
+    // Second event should be ExecutionPending
+    let second = tokio::time::timeout(Duration::from_millis(100), event_rx.recv())
+        .await
+        .expect("Timeout")
+        .expect("Channel closed");
+
+    assert!(
+        matches!(second, StateEvent::ExecutionPending { ref id } if id == "event-order-test"),
+        "Second event should be ExecutionPending, got {:?}",
+        second
+    );
+
+    state.shutdown().await.expect("Failed to shutdown");
+}

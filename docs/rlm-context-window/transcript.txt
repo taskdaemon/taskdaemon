@@ -1,0 +1,102 @@
+00:00:00
+MIT basically solved unlimited context windows and you can apply this to any model. This is called recursive language models and it's just another example of how scaffolding building out infrastructure around the core intelligence of the model still has so much room to grow. Let me tell you about this paper because it is kind of incredible. We study allowing large language models to process arbitrarily long prompts through the lens of inference time scaling. And let me just show you the highle results and then I'm
+
+00:00:31
+going to give you all of the details. So over here what you're seeing is GPT5 and it's not using the technique. And what you see is that for needle in the haststack it works really well. But then for ulong and oolong pairs it rapidly declines in quality as the context length increases and basically goes to zero right around 262k. However, with our new recursive language model strategy, we can see the quality stays pretty consistent over time, even up to 1 million tokens. And when I tell
+
+00:01:06
+you the technique that they discovered, it's going to be so obvious and you're going to ask yourself, okay, how did we not think of this before? All right, let's take a step back for a moment. Modern language models have this thing called a context window. When you submit a prompt, you can't just put anything and everything into it. There is a limit on the input size. That is called the context window. And what typically happens is the more information you put into that context window, the harder
+
+00:01:33
+time the model has finding things and kind of making connections within that context window within that prompt that you just gave it. And this is called context rot. And it's a big problem. And going back up here, that's basically what we're seeing. And I'm going to explain what needle in the haststack is. I'm going to explain what ulong is. Just stick with me. And so these MIT researchers asked themselves, can we drastically increase the size of the context window without actually changing
+
+00:02:04
+the core model? Can we make the context window a million tokens? What about 10 million? This is going to be especially important for long horizon tasks, for searching over millions of documents, for giant code bases. Having a large context window is incredibly important. Now, one general and increasingly popular inference time approach in this space is context condensation or compaction. Basically, what a lot of model providers and a lot of service providers do is they look at the context window and once it starts to reach the
+
+00:02:40
+limit of what the context window can be, they start to compact it. They basically use an LLM to summarize what's in the context window, shrink it down, but that is lossy. Every time you're doing that, you're essentially compressing the information and losing bits of quality. Sometimes that doesn't matter. It's totally fine to lose a little bit of quality here and there, but oftent times it very much does matter. And so the technique of using compaction or compression isn't perfect. It's far from
+
+00:03:13
+perfect, but that is what a lot of companies are doing today. So, imagine you have this really long story and then you summarize it and then you summarize the summary and then you do that again and again. Eventually, you're just going to lose details and you're not going to have the full story anymore. Essentially, that's what happens with compaction. And now, let me tell you what they're proposing because it is so obvious in retrospect. So effectively what they're doing is they're creating
+
+00:03:39
+an environment code and they're putting a giant prompt bigger than what is allowed in the physical context limit of the model into a file like a text file and then they give the model tools to go search through that prompt. And if this sounds like rag, it kind of is, but it's within an environment. So let me just walk you through it. We have this language model sitting on the outside. We have a recursive language model framework. Then we have a Python environment. In the Python environment,
+
+00:04:12
+we save the prompt as a variable. And then we give the model tools to search through that massive prompt. And that's what you're seeing here. So part one, part two, split it up. We can have different queries and then we have the final answer. But over here is where the true magic happens. This is where the recursive piece happens. When the model finds a piece of the context that it thinks is relevant, it can actually do a query again on it and go deeper and deeper. And so it takes the let's say 10
+
+00:04:44
+million token context, the 10 million token prompt, and continues to just look through it and go deep into certain sections and then come back out and use what it found in that section and combine that with things it found in other sections. And thus it's able to basically have an infinite context window. So here we have an incredibly long story and the prompt is you're reading an extremely long book. Can you list out all which items that were made before the great catastrophe? Then the
+
+00:05:14
+entire story is placed in the prompt and it starts to query against it. And then over here when it goes into its recursive search in chapter 1, find all items. Then once it found all items, it goes even deeper. look for the items in these sections that explicitly say they were found and so on. And so it can find every single detail and there's no summarization necessary. There's no compression of the context necessary. And so the key insight is that long prompts should not be fed into the
+
+00:05:45
+neural network. And I'm seeing more and more of this where the neural network, the actual weights of the model, the core intelligence of the model is being treated almost independently and more and more scaffolding is being built around that core intelligence, allowing it to have better memory, more effective memory, allowing it to use tools. All of these things are being built around the model. And I've been saying for a while, these models are so good. They are intelligent enough for 99.9%
+
+00:06:18
+of use cases. And what we need to be doing as developers is building out more tools, more scaffolding, allowing these models to do more with the intelligence that they already have. And by the way, if you want to try out some of these techniques and then automate the rest of your workflow, you can do so on the sponsor of today's video. Super excited to tell you about Zapier. Again, they've been a fantastic partner. I've literally been using Zapier for over 10 years at this business and my previous
+
+00:06:45
+businesses. And today, let me tell you all about Zapier agents. Imagine a superpowered agent that is connected to every single tool you could possibly imagine. Zapier has been building out automation of workflows forever. And now they took their extremely large library of over 7,000 different tools and allow agents to plug right into them, specifically Zapier agents. and they have a very tight integration with Claude via MCP that has only gotten better since they launched it recently. Honestly, half my business is currently
+
+00:07:17
+running on Zapier. So, if you want the easiest AI orchestration, check out Zapier and use Zapier agents. I'm going to drop links down below to everything. They've been a fantastic partner and I am just such a big fan of their platform. Thanks again to Zapier. Now, back to the video. and so instead should be treated as part of the environment that the LLM can symbolically interact with. All right, so how did they actually test this? We talked about needle in the haststack. Shout out to Greg Cameron who invented it, but there
+
+00:07:48
+are other tests. Needle in the haststack is pretty much solved by all modern models. If we scroll back up here, you can see GPT5. So this is needle in the haststack. And as you see the quality, the percentage stays consistent through the end of the context window, the physical context window. So needle in haststack more or less solved. But some of these harder tests have not been. So they tested it against four main use cases. Deep research, information aggregation, code repository understanding, and synthetic pair-wise
+
+00:08:21
+reasoning tasks. And for that last one, even frontier models fail very badly on those tasks. We find that RLMs demonstrate extremely strong performance even at the 10 million plus token scale, dramatically outperforming all other approaches at long context processing in most cases by double-digit percentage gains while maintaining a comparable or lower cost. So, it's not only that you get this massive window. It's not only that you get incredible quality, but it's actually less expensive because
+
+00:08:56
+you're not using more tokens most of the time. I'm going to give you the exception there in a moment because all of this stuff is being done with. So, the model just has to write a little bit of code to go into the context window, which is stored in plain text, and search through it. So, it's not like it's having to load the entire context into itself every single time. And that's where the expense comes from usually. All right. So, let me talk about the actual tests. We we talked
+
+00:09:23
+about needle and hastack multiple times. I'm going to explain what that is, but let me actually just give you a little brief on these tests. The effective context window of LLMs can often be much shorter than a model's physical maximum number of tokens. So, when you hear this model can support 256k tokens, that is the physical limit. But if you're doing complex reasoning across the entire context or you have a use case where you need to compare some document at the end to some other document in the middle,
+
+00:09:52
+they start to degrade really quickly. And so although it says 256K, it's not really for a lot of use cases. And that's where RLMs really shine. All right, so first single needle in a haystack. Basically, you fill up the context window with anything, a story, a Harry Potter book, whatever it is, and you put something in the middle of it, some random string, and you say password equals 1 2 3 4. Then you pass the entire prompt into the context window, and you say, "Hey, what's the password?" And it
+
+00:10:24
+has to go find it somewhere in there. Models have basically aced this. There's not really a Frontier model that can't get this perfect all the time. But then we have more difficult ones like browse comp plus and this is a multihop question answering benchmark very similar to deep research. You have to load up a bunch of documents and you have to answer questions that require the model to look in different documents throughout the entire context window. So a little bit from the beginning, a
+
+00:10:53
+little bit from the end and so on. And only if you have the right combination of details from the different parts of the context window will you get the answer right. Then you have oolong. Ulong is a long reasoning benchmark that requires examining and transforming chunks of the input semantically then aggregating these chunks to form a final answer. And so you can kind of think of this as a more sophisticated version of browse comp. And then we have ulong pairs which is an extension of oolong specifically requiring aggregating pairs
+
+00:11:26
+of chunks to construct the final answer. Again just a more complex version of oolong. And then finally we have longbench v2 and this is for code repository understanding. So you put in a massive codebase and you ask questions against it trying to understand what different functions do and that requires looking at a bunch of different places. If you're a developer you probably know what I'm talking about. You look at a method in one place and then you have to trace calls that it's making in other
+
+00:11:53
+places in the code and it's very difficult and it really requires an understanding of the entire codebase all at the same time. So they tested all of this against two main models. We have GPT5 with medium reasoning and they used an open-source model with Quen 3 coder 480B with 35 billion active parameters and they used four different approaches. They used recursive language model with ripple. Ripple is that environment that I mentioned. We have RLM with ripple with no sub calls meaning it just did
+
+00:12:27
+one call and it didn't recursively go through and try to find additional information if it wanted to. Then we have a summary agent which is kind of the traditional method. And then finally, code act, which is kind of similar to RLM, except it doesn't offload the prompt outside of the context window, and it just provides it directly to the language model. All right, so let's talk about the results. They left off needle in a haststack because it's basically solved. It's not really a good comparison. But when we
+
+00:12:57
+look at code QA, browse comp, ulong, ulong, pairs, we can see oftent times RLM, even RLM with no sub calls did way better than the other methods. And this is Quen 3 coder and GPT5. Now RLM on GPT5 across the board did much much better. So they have a number of observations from these tests. Let me walk you through them. All right. Observation one. RLMs can scale to the 10 million plus token regime and can outperform base language models and existing task agnostic agent scaffolds on long context tasks. But that's not
+
+00:13:35
+the most impressive part. Check this out. The cost of GPT5 Mini ingesting 6 to 11 million input tokens is $150 to 275. While RLM GBT5 has an average cost of 99 and outperforms both the summarization and retrieval baselines by over 29%. Cheaper and better. That's really all you can ask for. Next observation two, the ripple environment is necessary for handling long inputs while the recursive suballing of RLMs provides strong benefits on information dense inputs. And so just offloading the long prompt outside of the context
+
+00:14:11
+window is good. But if you have really complicated or sophisticated prompts where you're going to need to touch on a lot of different parts of it, having that recursive element is just as important. Observation three, language model performance degrades as a function of input length and problem complexity while RLM performance scales better. And this is really important. It's not just the context length, but it's what you're doing with that context. And without RLM, models struggle as complexity
+
+00:14:43
+increases and as context windows increase. But with RLM, it actually scales really well. Observation four, the inference cost of RLMs remain comparable to a base model call. But, and this is a big butt, our high variance due to differences in trajectory lengths. Meaning, if you're giving the system the ability to do recursive anything, you don't know how far down into it it's going to go. And so if it goes really deep, it's going to be more expensive and it has these spikes in cost. RLMs iteratively
+
+00:15:14
+interact with their context until they find a suitable answer leading to large differences in iteration length depending on task complexity. However, compared to the summarization baseline, which ingests the entire input context, RLMs are up to three times cheaper while maintaining stronger performance across all tasks because the model is able to selectively view context. Observation five, RLMs are a model agnostic inference strategy, meaning you can plug this into basically any model, which is
+
+00:15:44
+fantastic, but different models exhibit different overall decisions on context management and sub calling. Obviously, every model's different. They have different personalities. They have different approaches to problems. They have differences in how good they are at coding. And those differences affect how this system plays out. So on browse comp plus in particular, RLM with GBT5 nearly solves all tasks while RLM Quen 3 coder struggles to solve half. So on the left chart here you can see this GPT5 and you
+
+00:16:14
+can see the cost is quite low across the board in the 25th percentile 50th percentile 75th percentile and then all of a sudden in the 95th percentile we have a massive spike in cost for the summary agent and the code act agent and we do have a spike for the RLM agent whereas the base model is very low but keep in mind this is just costs it's not factoring in quality so the base model stays very low whereas the RL RLM approach even though it maintains quality at larger contexts and complexities starts to really spike in
+
+00:16:48
+costs. Then over here we're seeing the same thing but with quen 3 coder. And so what does it actually look like? What does some of that code look like when it's actually trying to find information in that large prompt and it's trying to go recursive and look through it? Well, this is what it looks like. It's a lot of reax. Who would have thought? It's looking for specific patterns. Then it goes deep into it and it's just kind of standard reax that you probably have used in your development career. So I
+
+00:17:15
+found this paper fascinating. I am so bullish on scaffolding. I really think that we're going to continue to find all of these incredible unlocks around the core intelligence of the model. The models are getting better in parallel, but I think there's even more headroom to figure out quality improvements from just building more tooling, more scaffolding, more harnesses around the model. Let me know what you think. If you enjoyed this video, please consider giving a like and subscribe.
+
