@@ -43,11 +43,12 @@ pub struct AnthropicClient {
 impl AnthropicClient {
     /// Create a new client from configuration
     ///
-    /// Reads the API key from the environment variable specified in config.
+    /// Reads the API key from environment variable or file specified in config.
     pub fn from_config(config: &LlmConfig) -> Result<Self, LlmError> {
         debug!(?config, "from_config: called");
-        let api_key = std::env::var(&config.api_key_env)
-            .map_err(|_| LlmError::InvalidResponse(format!("Environment variable {} not set", config.api_key_env)))?;
+        let api_key = config
+            .get_api_key()
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
 
         let timeout = Duration::from_millis(config.timeout_ms);
 

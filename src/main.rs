@@ -16,7 +16,7 @@ use taskdaemon::cli::{Cli, Command, DaemonCommand, ExecCommand, OutputFormat, ge
 use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
-use taskdaemon::llm::{create_client, LlmClient};
+use taskdaemon::llm::{LlmClient, create_client};
 use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopLoader, LoopManager, LoopManagerConfig};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;

@@ -55,7 +55,7 @@ pub use domain::{
     Priority, Record, Store,
 };
 pub use llm::{
-    create_client, AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError, OpenAIClient,
+    AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError, OpenAIClient, create_client,
 };
 pub use r#loop::{
     CascadeHandler, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopLoader, LoopManager,

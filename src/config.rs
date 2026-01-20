@@ -94,14 +94,8 @@ impl Config {
     /// Call this early in startup to fail fast with clear error messages.
     pub fn validate(&self) -> Result<()> {
         debug!("Config::validate: called");
-        // Check LLM API key environment variable is set
-        if std::env::var(&self.llm.api_key_env).is_err() {
-            debug!(api_key_env = %self.llm.api_key_env, "Config::validate: API key not found");
-            return Err(eyre::eyre!(
-                "LLM API key not found. Set the {} environment variable.",
-                self.llm.api_key_env
-            ));
-        }
+        // Check LLM API key is available (from env or file)
+        self.llm.get_api_key().context("LLM API key validation failed")?;
         debug!("Config::validate: validation passed");
         Ok(())
     }
@@ -176,15 +170,20 @@ impl Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
-    /// Provider name (currently only "anthropic" supported)
+    /// Provider name ("anthropic" or "openai")
     pub provider: String,
 
     /// Model identifier
     pub model: String,
 
-    /// Environment variable containing the API key
+    /// Environment variable containing the API key (checked first)
     #[serde(rename = "api-key-env")]
     pub api_key_env: String,
+
+    /// File path containing the API key (used if env var not set)
+    /// Supports ~ for home directory
+    #[serde(rename = "api-key-file")]
+    pub api_key_file: Option<String>,
 
     /// API base URL
     #[serde(rename = "base-url")]
@@ -199,12 +198,49 @@ pub struct LlmConfig {
     pub timeout_ms: u64,
 }
 
+impl LlmConfig {
+    /// Get the API key from environment variable or file
+    pub fn get_api_key(&self) -> Result<String> {
+        // First try environment variable
+        if let Ok(key) = std::env::var(&self.api_key_env) {
+            debug!(env_var = %self.api_key_env, "get_api_key: found in environment");
+            return Ok(key);
+        }
+
+        // Then try file
+        if let Some(file_path) = &self.api_key_file {
+            let expanded = if file_path.starts_with("~/") {
+                dirs::home_dir()
+                    .map(|h| h.join(&file_path[2..]))
+                    .unwrap_or_else(|| PathBuf::from(file_path))
+            } else {
+                PathBuf::from(file_path)
+            };
+
+            if expanded.exists() {
+                let key = fs::read_to_string(&expanded)
+                    .context(format!("Failed to read API key from {}", expanded.display()))?
+                    .trim()
+                    .to_string();
+                debug!(file = %expanded.display(), "get_api_key: found in file");
+                return Ok(key);
+            }
+        }
+
+        Err(eyre::eyre!(
+            "API key not found. Set the {} environment variable or configure api-key-file in your config",
+            self.api_key_env
+        ))
+    }
+}
+
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            api_key_file: None,
             base_url: "https://api.anthropic.com".to_string(),
             max_tokens: 16384,
             timeout_ms: 300_000,

@@ -42,11 +42,12 @@ pub struct OpenAIClient {
 impl OpenAIClient {
     /// Create a new client from configuration
     ///
-    /// Reads the API key from the environment variable specified in config.
+    /// Reads the API key from environment variable or file specified in config.
     pub fn from_config(config: &LlmConfig) -> Result<Self, LlmError> {
         debug!(?config, "from_config: called");
-        let api_key = std::env::var(&config.api_key_env)
-            .map_err(|_| LlmError::InvalidResponse(format!("Environment variable {} not set", config.api_key_env)))?;
+        let api_key = config
+            .get_api_key()
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
 
         let timeout = Duration::from_millis(config.timeout_ms);
 
@@ -81,13 +82,7 @@ impl OpenAIClient {
 
         if !request.tools.is_empty() {
             debug!("build_request_body: tools not empty, adding tools");
-            body["tools"] = serde_json::json!(
-                request
-                    .tools
-                    .iter()
-                    .map(|t| t.to_openai_schema())
-                    .collect::<Vec<_>>()
-            );
+            body["tools"] = serde_json::json!(request.tools.iter().map(|t| t.to_openai_schema()).collect::<Vec<_>>());
             body["tool_choice"] = serde_json::json!("auto");
         } else {
             debug!("build_request_body: no tools");
@@ -97,89 +92,92 @@ impl OpenAIClient {
     }
 
     /// Convert internal Message types to OpenAI API format
+    ///
+    /// OpenAI requires one message per tool result, so a single internal message
+    /// with multiple tool results becomes multiple OpenAI messages.
     fn convert_messages(&self, messages: &[Message]) -> Vec<serde_json::Value> {
         debug!(message_count = %messages.len(), "convert_messages: called");
-        messages
-            .iter()
-            .map(|msg| {
-                let role = match msg.role {
-                    super::types::Role::User => "user",
-                    super::types::Role::Assistant => "assistant",
-                };
+        let mut result = Vec::new();
 
-                match &msg.content {
-                    MessageContent::Text(text) => {
-                        debug!("convert_messages: text content");
-                        serde_json::json!({
-                            "role": role,
-                            "content": text,
-                        })
-                    }
-                    MessageContent::Blocks(blocks) => {
-                        debug!(block_count = %blocks.len(), "convert_messages: blocks content");
-                        // For blocks, we need to handle tool calls and tool results specially
-                        let mut tool_calls = Vec::new();
-                        let mut tool_results = Vec::new();
-                        let mut text_content = String::new();
+        for msg in messages {
+            let role = match msg.role {
+                super::types::Role::User => "user",
+                super::types::Role::Assistant => "assistant",
+            };
 
-                        for block in blocks {
-                            match block {
-                                ContentBlock::Text { text } => {
-                                    text_content.push_str(text);
-                                }
-                                ContentBlock::ToolUse { id, name, input } => {
-                                    tool_calls.push(serde_json::json!({
-                                        "id": id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": name,
-                                            "arguments": input.to_string(),
-                                        }
-                                    }));
-                                }
-                                ContentBlock::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    ..
-                                } => {
-                                    tool_results.push((tool_use_id.clone(), content.clone()));
-                                }
+            match &msg.content {
+                MessageContent::Text(text) => {
+                    debug!("convert_messages: text content");
+                    result.push(serde_json::json!({
+                        "role": role,
+                        "content": text,
+                    }));
+                }
+                MessageContent::Blocks(blocks) => {
+                    debug!(block_count = %blocks.len(), "convert_messages: blocks content");
+                    // For blocks, we need to handle tool calls and tool results specially
+                    let mut tool_calls = Vec::new();
+                    let mut tool_results = Vec::new();
+                    let mut text_content = String::new();
+
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text } => {
+                                text_content.push_str(text);
+                            }
+                            ContentBlock::ToolUse { id, name, input } => {
+                                tool_calls.push(serde_json::json!({
+                                    "id": id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": input.to_string(),
+                                    }
+                                }));
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id, content, ..
+                            } => {
+                                tool_results.push((tool_use_id.clone(), content.clone()));
                             }
                         }
+                    }
 
-                        if !tool_results.is_empty() {
-                            // This is a tool result message
-                            // OpenAI expects one message per tool result
-                            // For now, just return the first one (we'll need to handle multiple separately)
-                            let (tool_call_id, content) = &tool_results[0];
-                            return serde_json::json!({
+                    // OpenAI requires one message per tool result
+                    if !tool_results.is_empty() {
+                        for (tool_call_id, content) in tool_results {
+                            result.push(serde_json::json!({
                                 "role": "tool",
                                 "tool_call_id": tool_call_id,
                                 "content": content,
-                            });
+                            }));
                         }
-
-                        if !tool_calls.is_empty() {
-                            // Assistant message with tool calls
-                            let mut msg = serde_json::json!({
-                                "role": "assistant",
-                                "tool_calls": tool_calls,
-                            });
-                            if !text_content.is_empty() {
-                                msg["content"] = serde_json::json!(text_content);
-                            }
-                            return msg;
-                        }
-
-                        // Plain text message
-                        serde_json::json!({
-                            "role": role,
-                            "content": text_content,
-                        })
+                        continue;
                     }
+
+                    if !tool_calls.is_empty() {
+                        // Assistant message with tool calls
+                        let mut msg = serde_json::json!({
+                            "role": "assistant",
+                            "tool_calls": tool_calls,
+                        });
+                        if !text_content.is_empty() {
+                            msg["content"] = serde_json::json!(text_content);
+                        }
+                        result.push(msg);
+                        continue;
+                    }
+
+                    // Plain text message
+                    result.push(serde_json::json!({
+                        "role": role,
+                        "content": text_content,
+                    }));
                 }
-            })
-            .collect()
+            }
+        }
+
+        result
     }
 
     /// Parse the OpenAI API response
@@ -347,64 +345,64 @@ impl LlmClient for OpenAIClient {
                     continue;
                 }
 
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if let Ok(chunk_data) = serde_json::from_str::<OpenAIStreamChunk>(data) {
-                        if let Some(choice) = chunk_data.choices.first() {
-                            // Handle content delta
-                            if let Some(content) = &choice.delta.content {
-                                full_content.push_str(content);
-                                let _ = chunk_tx.send(StreamChunk::TextDelta(content.clone())).await;
-                            }
+                if let Some(data) = line.strip_prefix("data: ")
+                    && let Ok(chunk_data) = serde_json::from_str::<OpenAIStreamChunk>(data)
+                {
+                    if let Some(choice) = chunk_data.choices.first() {
+                        // Handle content delta
+                        if let Some(content) = &choice.delta.content {
+                            full_content.push_str(content);
+                            let _ = chunk_tx.send(StreamChunk::TextDelta(content.clone())).await;
+                        }
 
-                            // Handle tool calls
-                            if let Some(tcs) = &choice.delta.tool_calls {
-                                for tc in tcs {
-                                    let entry = current_tool_calls
-                                        .entry(tc.index)
-                                        .or_insert_with(|| (String::new(), String::new(), String::new()));
+                        // Handle tool calls
+                        if let Some(tcs) = &choice.delta.tool_calls {
+                            for tc in tcs {
+                                let entry = current_tool_calls
+                                    .entry(tc.index)
+                                    .or_insert_with(|| (String::new(), String::new(), String::new()));
 
-                                    if let Some(id) = &tc.id {
-                                        entry.0 = id.clone();
+                                if let Some(id) = &tc.id {
+                                    entry.0 = id.clone();
+                                }
+                                if let Some(func) = &tc.function {
+                                    if let Some(name) = &func.name {
+                                        entry.1 = name.clone();
+                                        let _ = chunk_tx
+                                            .send(StreamChunk::ToolUseStart {
+                                                id: entry.0.clone(),
+                                                name: name.clone(),
+                                            })
+                                            .await;
                                     }
-                                    if let Some(func) = &tc.function {
-                                        if let Some(name) = &func.name {
-                                            entry.1 = name.clone();
-                                            let _ = chunk_tx
-                                                .send(StreamChunk::ToolUseStart {
-                                                    id: entry.0.clone(),
-                                                    name: name.clone(),
-                                                })
-                                                .await;
-                                        }
-                                        if let Some(args) = &func.arguments {
-                                            entry.2.push_str(args);
-                                            let _ = chunk_tx
-                                                .send(StreamChunk::ToolUseDelta {
-                                                    id: entry.0.clone(),
-                                                    json_delta: args.clone(),
-                                                })
-                                                .await;
-                                        }
+                                    if let Some(args) = &func.arguments {
+                                        entry.2.push_str(args);
+                                        let _ = chunk_tx
+                                            .send(StreamChunk::ToolUseDelta {
+                                                id: entry.0.clone(),
+                                                json_delta: args.clone(),
+                                            })
+                                            .await;
                                     }
                                 }
                             }
-
-                            // Handle finish reason
-                            if let Some(reason) = &choice.finish_reason {
-                                stop_reason = match reason.as_str() {
-                                    "stop" => StopReason::EndTurn,
-                                    "tool_calls" => StopReason::ToolUse,
-                                    "length" => StopReason::MaxTokens,
-                                    _ => StopReason::EndTurn,
-                                };
-                            }
                         }
 
-                        // Handle usage (OpenAI sends this in the final chunk with stream_options)
-                        if let Some(u) = chunk_data.usage {
-                            usage.input_tokens = u.prompt_tokens;
-                            usage.output_tokens = u.completion_tokens;
+                        // Handle finish reason
+                        if let Some(reason) = &choice.finish_reason {
+                            stop_reason = match reason.as_str() {
+                                "stop" => StopReason::EndTurn,
+                                "tool_calls" => StopReason::ToolUse,
+                                "length" => StopReason::MaxTokens,
+                                _ => StopReason::EndTurn,
+                            };
                         }
+                    }
+
+                    // Handle usage (OpenAI sends this in the final chunk with stream_options)
+                    if let Some(u) = chunk_data.usage {
+                        usage.input_tokens = u.prompt_tokens;
+                        usage.output_tokens = u.completion_tokens;
                     }
                 }
             }
@@ -413,7 +411,11 @@ impl LlmClient for OpenAIClient {
         // Finalize tool calls
         for (_, (id, name, args)) in current_tool_calls {
             let input = serde_json::from_str(&args).unwrap_or(serde_json::json!({}));
-            tool_calls.push(ToolCall { id: id.clone(), name, input });
+            tool_calls.push(ToolCall {
+                id: id.clone(),
+                name,
+                input,
+            });
             let _ = chunk_tx.send(StreamChunk::ToolUseEnd { id }).await;
         }
 

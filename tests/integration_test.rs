@@ -227,14 +227,16 @@ fn test_config_validation_missing_api_key() {
     // Create a config that requires a non-standard env var that won't be set
     let mut config = Config::default();
     config.llm.api_key_env = "NONEXISTENT_TEST_API_KEY_12345".to_string();
+    config.llm.api_key_file = None; // Ensure no file fallback
 
     let result = config.validate();
 
     assert!(result.is_err(), "Should fail without API key");
-    let err = result.unwrap_err().to_string();
+    let err = format!("{:?}", result.unwrap_err());
     assert!(
         err.contains("NONEXISTENT_TEST_API_KEY_12345"),
-        "Error should mention the env var"
+        "Error should mention the env var, got: {}",
+        err
     );
 }
 
