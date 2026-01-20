@@ -100,10 +100,7 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::load(cli.config.as_ref()).context("Failed to load configuration")?;
 
-    info!(
-        "TaskDaemon loaded config: provider={}, model={}",
-        config.llm.provider, config.llm.model
-    );
+    info!("TaskDaemon loaded config: default={}", config.llm.default);
 
     // Dispatch command
     debug!(command = ?cli.command, "main: dispatching command");
@@ -316,33 +313,37 @@ async fn cmd_tui(config: &Config) -> Result<()> {
 
     let state_manager = StateManager::spawn(&store_path).context("Failed to spawn StateManager")?;
 
-    // Create LLM client if API key is available
-    let llm_client: Option<std::sync::Arc<dyn taskdaemon::LlmClient>> =
-        if std::env::var(&config.llm.api_key_env).is_ok() {
-            debug!(api_key_env = %config.llm.api_key_env, "cmd_tui: API key found");
+    // Resolve LLM config and create client if API key is available
+    let (llm_client, max_tokens): (Option<std::sync::Arc<dyn taskdaemon::LlmClient>>, u32) = match config.llm.resolve()
+    {
+        Ok(resolved) => {
+            let max_tokens = resolved.max_tokens;
             match create_client(&config.llm) {
                 Ok(client) => {
-                    debug!("cmd_tui: LLM client created successfully");
-                    Some(client)
+                    debug!(
+                        default = %config.llm.default,
+                        max_tokens,
+                        "cmd_tui: LLM client created successfully"
+                    );
+                    (Some(client), max_tokens)
                 }
                 Err(e) => {
                     debug!(error = %e, "cmd_tui: failed to create LLM client");
-                    warn!("Failed to create LLM client: {}. REPL will be unavailable.", e);
-                    None
+                    info!("LLM client not available ({}). REPL will show an error when used.", e);
+                    (None, max_tokens)
                 }
             }
-        } else {
-            debug!(api_key_env = %config.llm.api_key_env, "cmd_tui: API key not set");
-            info!(
-                "LLM API key ({}) not set. REPL will show an error when used.",
-                config.llm.api_key_env
-            );
-            None
-        };
+        }
+        Err(e) => {
+            debug!(error = %e, "cmd_tui: failed to resolve LLM config");
+            info!("LLM config invalid ({}). REPL will show an error when used.", e);
+            (None, 16384) // Fallback default
+        }
+    };
 
     // Run TUI with LLM client
     debug!("cmd_tui: launching TUI");
-    tui::run_with_state_and_llm(state_manager, llm_client, config.debug.clone()).await
+    tui::run_with_state_and_llm(state_manager, llm_client, max_tokens, config.debug.clone()).await
 }
 
 /// Show logs
@@ -390,14 +391,12 @@ async fn cmd_logs(follow: bool, lines: usize) -> Result<()> {
 /// Run a loop to completion (batch mode)
 async fn cmd_run(config: &Config, loop_type: &str, task: &str, max_iterations: Option<u32>) -> Result<()> {
     debug!(%loop_type, %task, ?max_iterations, "cmd_run: called");
-    // Validate API key early
-    if std::env::var(&config.llm.api_key_env).is_err() {
-        debug!(api_key_env = %config.llm.api_key_env, "cmd_run: API key not found");
-        return Err(eyre::eyre!(
-            "LLM API key not found. Set the {} environment variable.",
-            config.llm.api_key_env
-        ));
-    }
+    // Validate API key early by resolving the config
+    config
+        .llm
+        .resolve()
+        .and_then(|r| r.get_api_key())
+        .context("LLM API key not found. Check api-key-env or api-key-file in your config.")?;
     debug!("cmd_run: API key found");
 
     // Load loop types
@@ -730,14 +729,12 @@ async fn run_daemon(config: &Config) -> Result<()> {
     // EARLY VALIDATION - Fail fast with clear error messages
     // ============================================================
 
-    // Validate LLM API key is set
-    if std::env::var(&config.llm.api_key_env).is_err() {
-        debug!(api_key_env = %config.llm.api_key_env, "run_daemon: API key not found");
-        return Err(eyre::eyre!(
-            "LLM API key not found. Set the {} environment variable.",
-            config.llm.api_key_env
-        ));
-    }
+    // Validate LLM API key is set by resolving the config
+    config
+        .llm
+        .resolve()
+        .and_then(|r| r.get_api_key())
+        .context("LLM API key not found. Check api-key-env or api-key-file in your config.")?;
     debug!("run_daemon: API key found");
 
     // Validate we're in a git repository
@@ -815,9 +812,9 @@ async fn run_daemon(config: &Config) -> Result<()> {
     let scheduler = Scheduler::new(scheduler_config);
     info!("Scheduler initialized");
 
-    // Create LLM client (reads API key from env var specified in config)
+    // Create LLM client (reads API key from env var or file specified in config)
     let llm_client: Arc<dyn LlmClient> = create_client(&config.llm).context("Failed to create LLM client")?;
-    info!("LLM client initialized (model: {})", config.llm.model);
+    info!("LLM client initialized ({})", config.llm.default);
 
     // Initialize LoopManager for loop orchestration
     // poll_interval_secs is 60s (fallback) since event-driven pickup handles immediate work

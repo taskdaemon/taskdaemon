@@ -87,6 +87,9 @@ impl Tool for WriteFileTool {
             return ToolResult::error(format!("Failed to write file: {}", e));
         }
 
+        // Track as read so edit_file can be used immediately after write
+        ctx.track_read(&full_path).await;
+
         debug!(bytes = %content.len(), "WriteFileTool::execute: file written successfully");
         ToolResult::success(format!("Wrote {} bytes to {}", content.len(), path))
     }

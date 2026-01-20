@@ -67,6 +67,8 @@ pub struct TuiRunner {
     // === REPL state ===
     /// LLM client for REPL interactions
     llm_client: Option<Arc<dyn LlmClient>>,
+    /// Max tokens for LLM requests (from config)
+    max_tokens: u32,
     /// Tool executor for REPL tool calls
     tool_executor: ToolExecutor,
     /// Working directory for REPL tools
@@ -132,6 +134,7 @@ impl TuiRunner {
             event_handler: EventHandler::new(Duration::from_millis(33)), // ~30 FPS
             last_refresh: Instant::now(),
             llm_client: None,
+            max_tokens: 16384, // Default fallback
             tool_executor: ToolExecutor::standard(),
             worktree,
             repl_conversation: Vec::new(),
@@ -166,6 +169,7 @@ impl TuiRunner {
             event_handler: EventHandler::new(Duration::from_millis(33)),
             last_refresh: Instant::now() - DATA_REFRESH_INTERVAL, // Force immediate refresh
             llm_client: None,
+            max_tokens: 16384, // Default fallback
             tool_executor: ToolExecutor::standard(),
             worktree,
             repl_conversation: Vec::new(),
@@ -187,11 +191,12 @@ impl TuiRunner {
         terminal: Tui,
         state_manager: Option<StateManager>,
         llm_client: Arc<dyn LlmClient>,
+        max_tokens: u32,
         log_conversations: bool,
     ) -> Self {
         debug!(
             has_state_manager = state_manager.is_some(),
-            log_conversations, "TuiRunner::with_llm_client: called"
+            max_tokens, log_conversations, "TuiRunner::with_llm_client: called"
         );
         let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         debug!(?worktree, "TuiRunner::with_llm_client: worktree");
@@ -216,6 +221,7 @@ impl TuiRunner {
             event_handler: EventHandler::new(Duration::from_millis(33)),
             last_refresh: Instant::now() - DATA_REFRESH_INTERVAL,
             llm_client: Some(llm_client),
+            max_tokens,
             tool_executor: ToolExecutor::standard(),
             worktree,
             repl_conversation: Vec::new(),
@@ -799,7 +805,7 @@ Working directory: {}"#,
             None => {
                 warn!("No LLM client configured");
                 self.app.state_mut().repl_history.push(ReplMessage::error(
-                    "No LLM client configured. Start with daemon or set ANTHROPIC_API_KEY.",
+                    "No LLM client configured. Check your config's api-key-env or api-key-file.",
                 ));
                 return;
             }
@@ -838,7 +844,7 @@ Working directory: {}"#,
             system_prompt: self.current_system_prompt().to_string(),
             messages: self.repl_conversation.clone(),
             tools: self.get_tool_definitions(),
-            max_tokens: 4096,
+            max_tokens: self.max_tokens,
         };
 
         info!("Spawning LLM request task with {} tools", request.tools.len());
@@ -905,7 +911,7 @@ Working directory: {}"#,
             system_prompt: self.current_system_prompt().to_string(),
             messages: self.repl_conversation.clone(),
             tools: self.get_tool_definitions(),
-            max_tokens: 4096,
+            max_tokens: self.max_tokens,
         };
 
         // Spawn background task with timeout
@@ -1034,10 +1040,11 @@ Working directory: {}"#,
 
         // Clone what we need for the background task
         let worktree = self.worktree.clone();
+        let max_tokens = self.max_tokens;
 
         // Spawn background task
         self.plan_task = Some(tokio::spawn(async move {
-            Self::run_plan_creation(request, llm, state_manager, worktree, progress_tx).await;
+            Self::run_plan_creation(request, llm, state_manager, worktree, max_tokens, progress_tx).await;
         }));
 
         info!("Plan creation background task spawned");
@@ -1162,6 +1169,7 @@ Working directory: {}"#,
         llm: Arc<dyn LlmClient>,
         state_manager: StateManager,
         worktree: PathBuf,
+        max_tokens: u32,
         progress_tx: mpsc::Sender<PlanProgress>,
     ) {
         debug!(
@@ -1208,7 +1216,7 @@ Working directory: {}"#,
             system_prompt: String::new(), // Instructions are in the user message
             messages: vec![Message::user(&user_message)],
             tools: vec![],
-            max_tokens: 8192,
+            max_tokens,
         };
 
         // Create channel for streaming chunks

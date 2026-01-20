@@ -226,8 +226,11 @@ fn test_loop_type_loader_builtins() {
 fn test_config_validation_missing_api_key() {
     // Create a config that requires a non-standard env var that won't be set
     let mut config = Config::default();
-    config.llm.api_key_env = "NONEXISTENT_TEST_API_KEY_12345".to_string();
-    config.llm.api_key_file = None; // Ensure no file fallback
+    // Modify the openai provider (default) to use a non-existent env var
+    if let Some(openai) = config.llm.providers.get_mut("openai") {
+        openai.api_key_env = "NONEXISTENT_TEST_API_KEY_12345".to_string();
+        openai.api_key_file = None; // Ensure no file fallback
+    }
 
     let result = config.validate();
 
@@ -244,7 +247,7 @@ fn test_config_validation_missing_api_key() {
 fn test_config_validation_with_api_key() {
     // SAFETY: We're in a single-threaded test environment
     unsafe {
-        std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+        std::env::set_var("OPENAI_API_KEY", "test-key");
     }
 
     let config = Config::default();
@@ -253,7 +256,7 @@ fn test_config_validation_with_api_key() {
     // Clean up
     // SAFETY: We're in a single-threaded test environment
     unsafe {
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
     }
 
     assert!(result.is_ok(), "Should pass with API key set");

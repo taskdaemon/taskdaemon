@@ -16,7 +16,7 @@ use super::{
     CompletionRequest, CompletionResponse, ContentBlock, LlmClient, LlmError, Message, MessageContent, StopReason,
     StreamChunk, TokenUsage, ToolCall,
 };
-use crate::config::LlmConfig;
+use crate::config::ResolvedLlmConfig;
 
 /// Maximum number of retries for transient errors
 const MAX_RETRIES: u32 = 3;
@@ -41,10 +41,10 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
-    /// Create a new client from configuration
+    /// Create a new client from resolved configuration
     ///
-    /// Reads the API key from environment variable or file specified in config.
-    pub fn from_config(config: &LlmConfig) -> Result<Self, LlmError> {
+    /// Takes a ResolvedLlmConfig which contains all necessary fields.
+    pub fn from_config(config: &ResolvedLlmConfig) -> Result<Self, LlmError> {
         debug!(?config, "from_config: called");
         let api_key = config
             .get_api_key()

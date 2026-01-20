@@ -166,16 +166,39 @@ impl Config {
     }
 }
 
-/// LLM provider configuration
+/// LLM configuration with multiple providers and models
+///
+/// Uses a hierarchical structure:
+/// ```yaml
+/// llm:
+///   default: openai/gpt-4o
+///   timeout-ms: 300000
+///   providers:
+///     openai:
+///       api-key-env: OPENAI_API_KEY
+///       base-url: https://api.openai.com
+///       models:
+///         gpt-4o:
+///           max-tokens: 16384
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct LlmConfig {
-    /// Provider name ("anthropic" or "openai")
-    pub provider: String,
+    /// Default provider/model in "provider/model" format (e.g., "openai/gpt-4o")
+    /// REQUIRED - no fallback, must be explicitly set in config
+    pub default: String,
 
-    /// Model identifier
-    pub model: String,
+    /// Request timeout in milliseconds (shared across all providers)
+    #[serde(rename = "timeout-ms", default = "default_timeout_ms")]
+    pub timeout_ms: u64,
 
+    /// Provider configurations keyed by provider name
+    #[serde(default = "default_providers")]
+    pub providers: std::collections::HashMap<String, ProviderConfig>,
+}
+
+/// Configuration for a single LLM provider (e.g., OpenAI, Anthropic)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
     /// Environment variable containing the API key (checked first)
     #[serde(rename = "api-key-env")]
     pub api_key_env: String,
@@ -189,16 +212,41 @@ pub struct LlmConfig {
     #[serde(rename = "base-url")]
     pub base_url: String,
 
+    /// Model configurations keyed by model name
+    pub models: std::collections::HashMap<String, ModelConfig>,
+}
+
+/// Configuration for a single model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
     /// Maximum tokens per response
     #[serde(rename = "max-tokens")]
     pub max_tokens: u32,
+}
 
+/// Resolved LLM configuration ready for client creation
+///
+/// This flattened struct is produced by `LlmConfig::resolve()` and contains
+/// all the information needed to create an LLM client.
+#[derive(Debug, Clone)]
+pub struct ResolvedLlmConfig {
+    /// Provider name ("anthropic" or "openai")
+    pub provider: String,
+    /// Model identifier
+    pub model: String,
+    /// Environment variable for API key
+    pub api_key_env: String,
+    /// File path for API key (optional)
+    pub api_key_file: Option<String>,
+    /// API base URL
+    pub base_url: String,
+    /// Maximum tokens per response
+    pub max_tokens: u32,
     /// Request timeout in milliseconds
-    #[serde(rename = "timeout-ms")]
     pub timeout_ms: u64,
 }
 
-impl LlmConfig {
+impl ResolvedLlmConfig {
     /// Get the API key from environment variable or file
     pub fn get_api_key(&self) -> Result<String> {
         // First try environment variable
@@ -234,16 +282,124 @@ impl LlmConfig {
     }
 }
 
-impl Default for LlmConfig {
-    fn default() -> Self {
-        Self {
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
+impl LlmConfig {
+    /// Resolve the default provider/model into a flat config ready for client creation
+    pub fn resolve(&self) -> Result<ResolvedLlmConfig> {
+        debug!(default = %self.default, "LlmConfig::resolve: called");
+
+        let parts: Vec<&str> = self.default.split('/').collect();
+        if parts.len() != 2 {
+            return Err(eyre::eyre!(
+                "Invalid default LLM format '{}'. Expected 'provider/model' (e.g., 'openai/gpt-4o')",
+                self.default
+            ));
+        }
+
+        let provider_name = parts[0];
+        let model_name = parts[1];
+
+        let provider = self.providers.get(provider_name).ok_or_else(|| {
+            eyre::eyre!(
+                "Provider '{}' not found in config. Available: {:?}",
+                provider_name,
+                self.providers.keys().collect::<Vec<_>>()
+            )
+        })?;
+
+        let model = provider.models.get(model_name).ok_or_else(|| {
+            eyre::eyre!(
+                "Model '{}' not found for provider '{}'. Available: {:?}",
+                model_name,
+                provider_name,
+                provider.models.keys().collect::<Vec<_>>()
+            )
+        })?;
+
+        debug!(
+            provider = %provider_name,
+            model = %model_name,
+            max_tokens = model.max_tokens,
+            "LlmConfig::resolve: resolved"
+        );
+
+        Ok(ResolvedLlmConfig {
+            provider: provider_name.to_string(),
+            model: model_name.to_string(),
+            api_key_env: provider.api_key_env.clone(),
+            api_key_file: provider.api_key_file.clone(),
+            base_url: provider.base_url.clone(),
+            max_tokens: model.max_tokens,
+            timeout_ms: self.timeout_ms,
+        })
+    }
+
+    /// Get the API key for the default provider (convenience method)
+    pub fn get_api_key(&self) -> Result<String> {
+        self.resolve()?.get_api_key()
+    }
+
+    /// List all available provider/model combinations
+    pub fn available_models(&self) -> Vec<String> {
+        let mut models = Vec::new();
+        for (provider_name, provider) in &self.providers {
+            for model_name in provider.models.keys() {
+                models.push(format!("{}/{}", provider_name, model_name));
+            }
+        }
+        models.sort();
+        models
+    }
+}
+
+/// Default timeout for LLM requests (5 minutes)
+fn default_timeout_ms() -> u64 {
+    300_000
+}
+
+/// Default provider configurations (OpenAI and Anthropic)
+fn default_providers() -> std::collections::HashMap<String, ProviderConfig> {
+    use std::collections::HashMap;
+
+    let mut providers = HashMap::new();
+
+    // Anthropic provider
+    let mut anthropic_models = HashMap::new();
+    anthropic_models.insert("claude-sonnet-4-20250514".to_string(), ModelConfig { max_tokens: 8192 });
+    anthropic_models.insert("claude-opus-4-20250514".to_string(), ModelConfig { max_tokens: 4096 });
+    providers.insert(
+        "anthropic".to_string(),
+        ProviderConfig {
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
             api_key_file: None,
             base_url: "https://api.anthropic.com".to_string(),
-            max_tokens: 16384,
-            timeout_ms: 300_000,
+            models: anthropic_models,
+        },
+    );
+
+    // OpenAI provider
+    let mut openai_models = HashMap::new();
+    openai_models.insert("gpt-4o".to_string(), ModelConfig { max_tokens: 16384 });
+    openai_models.insert("gpt-4o-mini".to_string(), ModelConfig { max_tokens: 16384 });
+    providers.insert(
+        "openai".to_string(),
+        ProviderConfig {
+            api_key_env: "OPENAI_API_KEY".to_string(),
+            api_key_file: None,
+            base_url: "https://api.openai.com".to_string(),
+            models: openai_models,
+        },
+    );
+
+    providers
+}
+
+impl Default for LlmConfig {
+    /// Default is only for tests - in production, `default` field MUST be in config YAML
+    fn default() -> Self {
+        Self {
+            default: "openai/gpt-4o".to_string(), // Only used in tests
+            timeout_ms: default_timeout_ms(),
+            providers: default_providers(),
         }
     }
 }
@@ -454,7 +610,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
 
-        assert_eq!(config.llm.provider, "anthropic");
+        assert!(config.llm.default.starts_with("openai/"));
         assert_eq!(config.concurrency.max_loops, 50);
         assert_eq!(config.validation.max_iterations, 100);
     }
@@ -463,22 +619,91 @@ mod tests {
     fn test_llm_config_defaults() {
         let config = LlmConfig::default();
 
-        assert_eq!(config.provider, "anthropic");
-        assert!(config.model.contains("sonnet"));
-        assert_eq!(config.api_key_env, "ANTHROPIC_API_KEY");
-        assert_eq!(config.base_url, "https://api.anthropic.com");
+        // Check default is set to openai/gpt-4o
+        assert!(config.default.contains("openai"));
+        assert!(config.default.contains("gpt-4o"));
+
+        // Check providers are set up
+        assert!(config.providers.contains_key("anthropic"));
+        assert!(config.providers.contains_key("openai"));
+
+        // Check openai provider config
+        let openai = config.providers.get("openai").unwrap();
+        assert_eq!(openai.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(openai.base_url, "https://api.openai.com");
     }
 
     #[test]
-    fn test_deserialize_config() {
+    fn test_llm_config_resolve() {
+        let config = LlmConfig::default();
+
+        // Should resolve the default successfully
+        let resolved = config.resolve().unwrap();
+        assert_eq!(resolved.provider, "openai");
+        assert!(resolved.model.contains("gpt-4o"));
+        assert_eq!(resolved.api_key_env, "OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn test_llm_config_resolve_openai() {
+        let config = LlmConfig {
+            default: "openai/gpt-4o".to_string(),
+            ..Default::default()
+        };
+
+        let resolved = config.resolve().unwrap();
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.model, "gpt-4o");
+        assert_eq!(resolved.api_key_env, "OPENAI_API_KEY");
+        assert_eq!(resolved.max_tokens, 16384);
+    }
+
+    #[test]
+    fn test_llm_config_resolve_invalid_format() {
+        let config = LlmConfig {
+            default: "invalid-no-slash".to_string(),
+            ..Default::default()
+        };
+
+        let result = config.resolve();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("provider/model"));
+    }
+
+    #[test]
+    fn test_llm_config_resolve_unknown_provider() {
+        let config = LlmConfig {
+            default: "unknown/model".to_string(),
+            ..Default::default()
+        };
+
+        let result = config.resolve();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_llm_config_available_models() {
+        let config = LlmConfig::default();
+        let models = config.available_models();
+
+        assert!(models.contains(&"anthropic/claude-sonnet-4-20250514".to_string()));
+        assert!(models.contains(&"openai/gpt-4o".to_string()));
+    }
+
+    #[test]
+    fn test_deserialize_new_config_schema() {
         let yaml = r#"
 llm:
-  provider: anthropic
-  model: claude-opus-4
-  api-key-env: MY_API_KEY
-  base-url: https://api.example.com
-  max-tokens: 8192
+  default: openai/gpt-4o
   timeout-ms: 60000
+  providers:
+    openai:
+      api-key-env: MY_OPENAI_KEY
+      base-url: https://api.openai.com
+      models:
+        gpt-4o:
+          max-tokens: 8192
 
 concurrency:
   max-loops: 25
@@ -493,9 +718,15 @@ validation:
 
         let config: Config = serde_yaml::from_str(yaml).unwrap();
 
-        assert_eq!(config.llm.model, "claude-opus-4");
-        assert_eq!(config.llm.api_key_env, "MY_API_KEY");
-        assert_eq!(config.llm.max_tokens, 8192);
+        assert_eq!(config.llm.default, "openai/gpt-4o");
+        assert_eq!(config.llm.timeout_ms, 60000);
+
+        let resolved = config.llm.resolve().unwrap();
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.model, "gpt-4o");
+        assert_eq!(resolved.api_key_env, "MY_OPENAI_KEY");
+        assert_eq!(resolved.max_tokens, 8192);
+
         assert_eq!(config.concurrency.max_loops, 25);
         assert_eq!(config.validation.command, "make test");
         assert_eq!(config.validation.max_iterations, 50);
@@ -505,17 +736,17 @@ validation:
     fn test_partial_config_uses_defaults() {
         let yaml = r#"
 llm:
-  model: claude-haiku
+  default: openai/gpt-4o
 "#;
 
         let config: Config = serde_yaml::from_str(yaml).unwrap();
 
         // Specified value
-        assert_eq!(config.llm.model, "claude-haiku");
+        assert_eq!(config.llm.default, "openai/gpt-4o");
 
-        // Defaults for unspecified
-        assert_eq!(config.llm.provider, "anthropic");
-        assert_eq!(config.llm.api_key_env, "ANTHROPIC_API_KEY");
+        // Defaults for unspecified - should have default providers
+        assert!(config.llm.providers.contains_key("anthropic"));
+        assert!(config.llm.providers.contains_key("openai"));
         assert_eq!(config.concurrency.max_loops, 50);
     }
 }

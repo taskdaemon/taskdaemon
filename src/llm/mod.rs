@@ -23,24 +23,35 @@ pub use types::{
     ToolCall, ToolDefinition,
 };
 
-use crate::config::LlmConfig;
+use crate::config::{LlmConfig, ResolvedLlmConfig};
 
 /// Create an LLM client based on the provider specified in config
 ///
+/// Resolves the default provider/model from the config and creates the appropriate client.
 /// Supports "anthropic" and "openai" providers.
 pub fn create_client(config: &LlmConfig) -> Result<Arc<dyn LlmClient>, LlmError> {
-    debug!(provider = %config.provider, model = %config.model, "create_client: called");
+    let resolved = config.resolve().map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+
+    create_client_from_resolved(&resolved)
+}
+
+/// Create an LLM client from a resolved configuration
+///
+/// This is useful when you've already resolved the config or want to use
+/// a specific provider/model combination.
+pub fn create_client_from_resolved(config: &ResolvedLlmConfig) -> Result<Arc<dyn LlmClient>, LlmError> {
+    debug!(provider = %config.provider, model = %config.model, "create_client_from_resolved: called");
     match config.provider.as_str() {
         "anthropic" => {
-            debug!("create_client: creating Anthropic client");
+            debug!("create_client_from_resolved: creating Anthropic client");
             Ok(Arc::new(AnthropicClient::from_config(config)?))
         }
         "openai" => {
-            debug!("create_client: creating OpenAI client");
+            debug!("create_client_from_resolved: creating OpenAI client");
             Ok(Arc::new(OpenAIClient::from_config(config)?))
         }
         other => {
-            debug!(provider = %other, "create_client: unknown provider");
+            debug!(provider = %other, "create_client_from_resolved: unknown provider");
             Err(LlmError::InvalidResponse(format!(
                 "Unknown LLM provider: '{}'. Supported: anthropic, openai",
                 other

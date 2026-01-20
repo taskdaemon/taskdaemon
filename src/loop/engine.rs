@@ -566,7 +566,7 @@ impl LoopEngine {
                 system_prompt: system_prompt.clone(),
                 messages: messages.clone(),
                 tools: tool_defs.to_vec(),
-                max_tokens: 16384,
+                max_tokens: self.config.max_tokens,
             };
 
             // Wait for scheduler slot (rate limiting) before making LLM call

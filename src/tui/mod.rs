@@ -72,16 +72,17 @@ pub async fn run(terminal: Tui) -> Result<()> {
 /// Run the TUI with StateManager connection for live data
 pub async fn run_with_state(state_manager: StateManager) -> Result<()> {
     debug!("run_with_state: called");
-    run_with_state_and_llm(state_manager, None, DebugConfig::default()).await
+    run_with_state_and_llm(state_manager, None, 16384, DebugConfig::default()).await
 }
 
 /// Run the TUI with StateManager and optional LLM client for REPL
 pub async fn run_with_state_and_llm(
     state_manager: StateManager,
     llm_client: Option<Arc<dyn LlmClient>>,
+    max_tokens: u32,
     debug_config: DebugConfig,
 ) -> Result<()> {
-    debug!(?debug_config, "run_with_state_and_llm: called");
+    debug!(?debug_config, max_tokens, "run_with_state_and_llm: called");
     // Session separator for easier log reading
     tracing::info!("********************************************************************************");
     tracing::info!("TUI session starting");
@@ -100,7 +101,13 @@ pub async fn run_with_state_and_llm(
 
     let mut runner = if let Some(llm) = llm_client {
         debug!("run_with_state_and_llm: using LLM client");
-        TuiRunner::with_llm_client(terminal, Some(state_manager), llm, debug_config.log_conversations)
+        TuiRunner::with_llm_client(
+            terminal,
+            Some(state_manager),
+            llm,
+            max_tokens,
+            debug_config.log_conversations,
+        )
     } else {
         debug!("run_with_state_and_llm: no LLM client");
         TuiRunner::with_state_manager(terminal, state_manager)

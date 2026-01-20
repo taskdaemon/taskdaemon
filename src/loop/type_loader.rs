@@ -543,6 +543,7 @@ impl LoopLoader {
                         max_iterations: loop_type.max_iterations,
                         max_turns_per_iteration: 50, // Default
                         iteration_timeout_ms: loop_type.iteration_timeout_ms,
+                        max_tokens: 16384, // Default
                         tools: loop_type.tools.clone(),
                         progress_max_entries: 5, // Default
                         progress_max_chars: 500, // Default
@@ -565,6 +566,7 @@ impl From<LoopType> for LoopConfig {
             max_iterations: lt.max_iterations,
             max_turns_per_iteration: 50,
             iteration_timeout_ms: lt.iteration_timeout_ms,
+            max_tokens: 16384, // Default
             tools: lt.tools,
             progress_max_entries: 5,
             progress_max_chars: 500,

@@ -31,6 +31,10 @@ pub struct LoopConfig {
     #[serde(default = "default_iteration_timeout")]
     pub iteration_timeout_ms: u64,
 
+    /// Maximum tokens per LLM response (from main config)
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+
     /// Tools available to this loop type
     #[serde(default)]
     pub tools: Vec<String>,
@@ -58,6 +62,11 @@ fn default_iteration_timeout() -> u64 {
     300_000 // 5 minutes
 }
 
+fn default_max_tokens() -> u32 {
+    debug!("default_max_tokens: called");
+    16384
+}
+
 fn default_progress_max_entries() -> usize {
     debug!("default_progress_max_entries: called");
     5
@@ -81,6 +90,7 @@ impl Default for LoopConfig {
             max_iterations: default_max_iterations(),
             max_turns_per_iteration: default_max_turns(),
             iteration_timeout_ms: default_iteration_timeout(),
+            max_tokens: default_max_tokens(),
             tools: vec![
                 "read".to_string(),
                 "write".to_string(),

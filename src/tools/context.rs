@@ -31,7 +31,13 @@ pub struct ToolContext {
 
     /// Optional coordinator handle for inter-loop communication
     pub coordinator: Option<CoordinatorHandle>,
+
+    /// Max tokens for LLM requests (used by tools that call LLM)
+    pub max_tokens: u32,
 }
+
+/// Default max tokens when not specified
+const DEFAULT_MAX_TOKENS: u32 = 16384;
 
 impl ToolContext {
     /// Create a new tool context
@@ -43,6 +49,20 @@ impl ToolContext {
             read_files: Arc::new(Mutex::new(HashSet::new())),
             sandbox_enabled: true,
             coordinator: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        }
+    }
+
+    /// Create a new tool context with max_tokens
+    pub fn with_max_tokens(worktree: PathBuf, exec_id: String, max_tokens: u32) -> Self {
+        debug!(?worktree, %exec_id, max_tokens, "ToolContext::with_max_tokens: called");
+        Self {
+            worktree,
+            exec_id,
+            read_files: Arc::new(Mutex::new(HashSet::new())),
+            sandbox_enabled: true,
+            coordinator: None,
+            max_tokens,
         }
     }
 
@@ -55,6 +75,7 @@ impl ToolContext {
             read_files: Arc::new(Mutex::new(HashSet::new())),
             sandbox_enabled: false,
             coordinator: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
 
@@ -67,6 +88,25 @@ impl ToolContext {
             read_files: Arc::new(Mutex::new(HashSet::new())),
             sandbox_enabled: true,
             coordinator: Some(coordinator),
+            max_tokens: DEFAULT_MAX_TOKENS,
+        }
+    }
+
+    /// Create a context with coordinator handle and max_tokens
+    pub fn with_coordinator_and_max_tokens(
+        worktree: PathBuf,
+        exec_id: String,
+        coordinator: CoordinatorHandle,
+        max_tokens: u32,
+    ) -> Self {
+        debug!(?worktree, %exec_id, max_tokens, "ToolContext::with_coordinator_and_max_tokens: called");
+        Self {
+            worktree,
+            exec_id,
+            read_files: Arc::new(Mutex::new(HashSet::new())),
+            sandbox_enabled: true,
+            coordinator: Some(coordinator),
+            max_tokens,
         }
     }
 

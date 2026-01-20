@@ -15,7 +15,7 @@ use super::{
     CompletionRequest, CompletionResponse, ContentBlock, LlmClient, LlmError, Message, MessageContent, StopReason,
     StreamChunk, TokenUsage, ToolCall,
 };
-use crate::config::LlmConfig;
+use crate::config::ResolvedLlmConfig;
 
 /// Maximum number of retries for transient errors
 const MAX_RETRIES: u32 = 3;
@@ -40,10 +40,10 @@ pub struct OpenAIClient {
 }
 
 impl OpenAIClient {
-    /// Create a new client from configuration
+    /// Create a new client from resolved configuration
     ///
-    /// Reads the API key from environment variable or file specified in config.
-    pub fn from_config(config: &LlmConfig) -> Result<Self, LlmError> {
+    /// Takes a ResolvedLlmConfig which contains all necessary fields.
+    pub fn from_config(config: &ResolvedLlmConfig) -> Result<Self, LlmError> {
         debug!(?config, "from_config: called");
         let api_key = config
             .get_api_key()
@@ -74,11 +74,22 @@ impl OpenAIClient {
 
         messages.extend(self.convert_messages(&request.messages));
 
+        let max_tokens = request.max_tokens.min(self.max_tokens);
+
+        // GPT-5.x and o1/o3 models use max_completion_tokens instead of max_tokens
+        let uses_completion_tokens =
+            self.model.starts_with("gpt-5") || self.model.starts_with("o1") || self.model.starts_with("o3");
+
         let mut body = serde_json::json!({
             "model": self.model,
-            "max_tokens": request.max_tokens.min(self.max_tokens),
             "messages": messages,
         });
+
+        if uses_completion_tokens {
+            body["max_completion_tokens"] = serde_json::json!(max_tokens);
+        } else {
+            body["max_tokens"] = serde_json::json!(max_tokens);
+        }
 
         if !request.tools.is_empty() {
             debug!("build_request_body: tools not empty, adding tools");

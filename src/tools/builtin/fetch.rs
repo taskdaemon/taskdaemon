@@ -161,7 +161,9 @@ impl Tool for FetchTool {
         // If prompt provided and we have an LLM client, summarize
         if let (Some(prompt_text), Some(llm)) = (prompt, &self.llm_client) {
             debug!("FetchTool::execute: summarizing with LLM");
-            return self.summarize_with_llm(llm, &content, prompt_text, url).await;
+            return self
+                .summarize_with_llm(llm, &content, prompt_text, url, _ctx.max_tokens)
+                .await;
         }
 
         // Truncate if too long (no LLM summarization)
@@ -184,8 +186,15 @@ impl Tool for FetchTool {
 
 impl FetchTool {
     /// Summarize content using LLM
-    async fn summarize_with_llm(&self, llm: &Arc<dyn LlmClient>, content: &str, prompt: &str, url: &str) -> ToolResult {
-        debug!(%url, content_len = %content.len(), "FetchTool::summarize_with_llm: called");
+    async fn summarize_with_llm(
+        &self,
+        llm: &Arc<dyn LlmClient>,
+        content: &str,
+        prompt: &str,
+        url: &str,
+        max_tokens: u32,
+    ) -> ToolResult {
+        debug!(%url, content_len = %content.len(), max_tokens, "FetchTool::summarize_with_llm: called");
         // Truncate content for LLM context (leave room for prompt and response)
         let max_content = 100_000; // ~25k tokens roughly
         let truncated_content = if content.len() > max_content {
@@ -218,7 +227,7 @@ impl FetchTool {
             system_prompt,
             messages: vec![Message::user(user_message)],
             tools: vec![], // No tools needed for summarization
-            max_tokens: 4096,
+            max_tokens,
         };
 
         debug!("FetchTool::summarize_with_llm: sending LLM request");
