@@ -1587,3 +1587,138 @@ async fn test_cascade_full_chain_with_files() {
         .expect("cascade ralph");
     assert!(ralph_children.is_empty(), "Ralph must be a leaf with no children");
 }
+
+// =============================================================================
+// Event-Driven Work Pickup Tests
+// =============================================================================
+
+use taskdaemon::state::StateEvent;
+
+#[tokio::test]
+async fn test_execution_pending_event_emitted_on_activate_draft() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    // Subscribe to events before creating execution
+    let mut event_rx = state.subscribe_events();
+
+    // Create a draft execution
+    let mut exec = LoopExecution::with_id("event-test-draft", "plan");
+    exec.set_status(LoopExecutionStatus::Draft);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // Drain the ExecutionCreated event
+    let _ = event_rx.recv().await;
+
+    // Activate the draft
+    state
+        .activate_draft("event-test-draft")
+        .await
+        .expect("Failed to activate draft");
+
+    // Should receive ExecutionPending event
+    let event = tokio::time::timeout(Duration::from_millis(100), event_rx.recv())
+        .await
+        .expect("Timeout waiting for event")
+        .expect("Channel closed");
+
+    match event {
+        StateEvent::ExecutionPending { id } => {
+            assert_eq!(id, "event-test-draft", "Event should contain correct execution ID");
+        }
+        other => panic!("Expected ExecutionPending event, got {:?}", other),
+    }
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_execution_pending_event_emitted_on_cascade_creation() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = Arc::new(StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager"));
+
+    // Subscribe to events
+    let mut event_rx = state.subscribe_events();
+
+    let loops_config = taskdaemon::config::LoopsConfig::default();
+    let loader = LoopLoader::new(&loops_config).expect("Failed to create loader");
+    let type_loader = Arc::new(RwLock::new(loader));
+
+    let cascade = CascadeHandler::new(state.clone(), type_loader);
+
+    // Create a Plan loop that is ready (this triggers cascade to create Spec child)
+    let mut plan = Loop::new("plan", "Event Test Plan");
+    plan.set_status(LoopStatus::Ready);
+    state.create_loop(plan.clone()).await.expect("Failed to create plan");
+
+    // Trigger cascade - this creates a Spec child execution in Pending status
+    let children = cascade
+        .on_loop_ready(&plan, "event-test-parent")
+        .await
+        .expect("Cascade failed");
+
+    assert!(!children.is_empty(), "Should create child execution");
+    let child_id = children[0].id.clone();
+
+    // Collect events - we should see ExecutionCreated and ExecutionPending
+    let mut found_created = false;
+    let mut found_pending = false;
+
+    for _ in 0..5 {
+        match tokio::time::timeout(Duration::from_millis(100), event_rx.recv()).await {
+            Ok(Ok(StateEvent::ExecutionCreated { id, .. })) if id == child_id => {
+                found_created = true;
+            }
+            Ok(Ok(StateEvent::ExecutionPending { id })) if id == child_id => {
+                found_pending = true;
+            }
+            Ok(Ok(_)) => continue, // Other events
+            Ok(Err(_)) => break,   // Channel closed
+            Err(_) => break,       // Timeout
+        }
+    }
+
+    assert!(found_created, "Should emit ExecutionCreated event for cascade child");
+    assert!(found_pending, "Should emit ExecutionPending event for cascade child");
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
+
+#[tokio::test]
+async fn test_execution_pending_not_emitted_for_draft_creation() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let state = StateManager::spawn(temp_dir.path()).expect("Failed to spawn state manager");
+
+    // Subscribe to events
+    let mut event_rx = state.subscribe_events();
+
+    // Create a draft execution (not pending)
+    let mut exec = LoopExecution::with_id("draft-no-pending-event", "plan");
+    exec.set_status(LoopExecutionStatus::Draft);
+    state.create_execution(exec).await.expect("Failed to create execution");
+
+    // Should receive ExecutionCreated but NOT ExecutionPending
+    let event = tokio::time::timeout(Duration::from_millis(100), event_rx.recv())
+        .await
+        .expect("Timeout waiting for event")
+        .expect("Channel closed");
+
+    match event {
+        StateEvent::ExecutionCreated { id, .. } => {
+            assert_eq!(id, "draft-no-pending-event");
+        }
+        StateEvent::ExecutionPending { .. } => {
+            panic!("Should not emit ExecutionPending for Draft status");
+        }
+        _ => {}
+    }
+
+    // Verify no ExecutionPending event follows
+    let result = tokio::time::timeout(Duration::from_millis(50), event_rx.recv()).await;
+    if let Ok(Ok(StateEvent::ExecutionPending { .. })) = result {
+        panic!("Should not emit ExecutionPending for Draft status");
+    }
+    // Timeout or other event is fine
+
+    state.shutdown().await.expect("Failed to shutdown");
+}
