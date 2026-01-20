@@ -22,7 +22,7 @@ use crate::domain::{Loop, LoopExecution, LoopExecutionStatus, LoopStatus};
 use crate::llm::LlmClient;
 use crate::r#loop::{CascadeHandler, LoopConfig, LoopEngine, LoopLoader};
 use crate::scheduler::Scheduler;
-use crate::state::StateManager;
+use crate::state::{StateEvent, StateManager};
 use crate::worktree::{MergeResult, WorktreeConfig, WorktreeManager, merge_to_main};
 
 /// Configuration for the LoopManager
@@ -175,9 +175,14 @@ impl LoopManager {
     /// Run the manager's main loop
     ///
     /// This polls for ready loops and spawns them, handling shutdown gracefully.
+    /// Also subscribes to state events for immediate work pickup when executions
+    /// become pending (instead of waiting for the next poll interval).
     pub async fn run(&mut self, mut shutdown_rx: mpsc::Receiver<()>) -> Result<()> {
         debug!("run: called");
         info!("LoopManager starting");
+
+        // Subscribe to state events for immediate work pickup
+        let mut state_events = self.state.subscribe_events();
 
         // Run recovery first
         debug!("run: starting recovery");
@@ -192,6 +197,41 @@ impl LoopManager {
 
         loop {
             tokio::select! {
+                // Handle state events for immediate work pickup
+                event = state_events.recv() => {
+                    match event {
+                        Ok(StateEvent::ExecutionPending { id }) => {
+                            debug!(%id, "run: received ExecutionPending event");
+                            // Immediately try to spawn this execution
+                            if let Ok(Some(exec)) = self.state.get_execution(&id).await {
+                                if self.loop_deps_satisfied(&exec).await.unwrap_or(false) {
+                                    debug!(%id, "run: deps satisfied, spawning immediately");
+                                    if let Err(e) = self.spawn_loop(&exec).await {
+                                        warn!(%id, error = %e, "run: failed to spawn loop from event");
+                                    }
+                                } else {
+                                    debug!(%id, "run: deps not satisfied, will pick up on next poll");
+                                }
+                            }
+                        }
+                        Ok(_) => {
+                            // Ignore other events (ExecutionCreated, ExecutionUpdated)
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            warn!("run: state event channel closed, falling back to polling only");
+                            // Channel closed, continue with polling only
+                            // We can't break here, just stop listening to events
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            debug!(n, "run: lagged behind on state events, doing full poll");
+                            // We missed some events, do a full poll to catch up
+                            if !self.shutdown_requested {
+                                self.poll_and_spawn().await?;
+                            }
+                        }
+                    }
+                }
+                // Fallback polling for edge cases and orphan recovery
                 _ = interval.tick() => {
                     debug!("run: tick");
                     if !self.shutdown_requested {
