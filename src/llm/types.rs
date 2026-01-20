@@ -275,6 +275,19 @@ impl ToolDefinition {
             "input_schema": self.input_schema,
         })
     }
+
+    /// Convert to OpenAI API schema format (function calling)
+    pub fn to_openai_schema(&self) -> serde_json::Value {
+        debug!(%self.name, "ToolDefinition::to_openai_schema: called");
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            }
+        })
+    }
 }
 
 /// Streaming chunk for real-time TUI updates

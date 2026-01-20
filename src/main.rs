@@ -16,7 +16,7 @@ use taskdaemon::cli::{Cli, Command, DaemonCommand, ExecCommand, OutputFormat, ge
 use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
-use taskdaemon::llm::{AnthropicClient, LlmClient};
+use taskdaemon::llm::{create_client, LlmClient};
 use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopLoader, LoopManager, LoopManagerConfig};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;
@@ -320,10 +320,10 @@ async fn cmd_tui(config: &Config) -> Result<()> {
     let llm_client: Option<std::sync::Arc<dyn taskdaemon::LlmClient>> =
         if std::env::var(&config.llm.api_key_env).is_ok() {
             debug!(api_key_env = %config.llm.api_key_env, "cmd_tui: API key found");
-            match taskdaemon::AnthropicClient::from_config(&config.llm) {
+            match create_client(&config.llm) {
                 Ok(client) => {
                     debug!("cmd_tui: LLM client created successfully");
-                    Some(std::sync::Arc::new(client))
+                    Some(client)
                 }
                 Err(e) => {
                     debug!(error = %e, "cmd_tui: failed to create LLM client");
@@ -433,8 +433,7 @@ async fn cmd_run(config: &Config, loop_type: &str, task: &str, max_iterations: O
     debug!(?worktree, "cmd_run: using current directory as worktree");
 
     // Create LLM client
-    let llm: Arc<dyn LlmClient> =
-        Arc::new(AnthropicClient::from_config(&config.llm).context("Failed to create LLM client")?);
+    let llm: Arc<dyn LlmClient> = create_client(&config.llm).context("Failed to create LLM client")?;
     debug!("cmd_run: LLM client created");
 
     // Create and run engine (no coordinator for REPL mode)
@@ -817,8 +816,7 @@ async fn run_daemon(config: &Config) -> Result<()> {
     info!("Scheduler initialized");
 
     // Create LLM client (reads API key from env var specified in config)
-    let llm_client: Arc<dyn LlmClient> =
-        Arc::new(AnthropicClient::from_config(&config.llm).context("Failed to create LLM client")?);
+    let llm_client: Arc<dyn LlmClient> = create_client(&config.llm).context("Failed to create LLM client")?;
     info!("LLM client initialized (model: {})", config.llm.model);
 
     // Initialize LoopManager for loop orchestration

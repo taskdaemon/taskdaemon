@@ -54,7 +54,9 @@ pub use domain::{
     DomainId, Filter, FilterOp, IndexValue, Loop, LoopExecution, LoopExecutionStatus, LoopStatus, Phase, PhaseStatus,
     Priority, Record, Store,
 };
-pub use llm::{AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError};
+pub use llm::{
+    create_client, AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError, OpenAIClient,
+};
 pub use r#loop::{
     CascadeHandler, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopLoader, LoopManager,
     LoopManagerConfig, LoopMetrics, LoopStats, LoopTaskResult, LoopType, TypeMetrics, topological_sort,
