@@ -187,13 +187,12 @@ tasks:
   # Fast install - sequential to avoid lock contention, shared build cache
   install2:
     help: "Install all workspace binaries (fast - sequential, shared cache)"
+    foreach:
+      items: [ts, cs, td]
+      as: pkg
+      parallel: false
     bash: |
-      echo "Installing ts..."
-      cargo install --path ts --locked
-      echo "Installing cs..."
-      cargo install --path cs --locked
-      echo "Installing td..."
-      cargo install --path td --locked
-      echo "✅ Installed: td, ts, cs"
+      echo "Installing ${pkg}..."
+      cd "${pkg}" && cargo install --path . --locked
 
 

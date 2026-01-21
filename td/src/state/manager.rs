@@ -6,7 +6,7 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
-use crate::domain::{Filter, FilterOp, IndexValue, Loop, LoopExecution, LoopExecutionStatus, Store};
+use crate::domain::{Filter, FilterOp, IndexValue, IterationLog, Loop, LoopExecution, LoopExecutionStatus, Store};
 
 use super::messages::{StateCommand, StateError, StateResponse};
 
@@ -42,6 +42,12 @@ pub enum StateEvent {
     ExecutionUpdated { id: String },
     /// An execution is now pending and ready for pickup by LoopManager
     ExecutionPending { id: String },
+    /// A new iteration log was created
+    IterationLogCreated {
+        execution_id: String,
+        iteration: u32,
+        exit_code: i32,
+    },
 }
 
 /// Path to the state change notification file
@@ -95,9 +101,10 @@ impl StateManager {
         // This ensures status-based queries work correctly
         let loop_count = store.rebuild_indexes::<Loop>()?;
         let exec_count = store.rebuild_indexes::<LoopExecution>()?;
+        let iter_log_count = store.rebuild_indexes::<IterationLog>()?;
         info!(
             loop_count,
-            exec_count, "Rebuilt indexes for Loop and LoopExecution records"
+            exec_count, iter_log_count, "Rebuilt indexes for Loop, LoopExecution, and IterationLog records"
         );
 
         let (tx, rx) = mpsc::channel(256);
@@ -311,13 +318,84 @@ impl StateManager {
         reply_rx.await.map_err(|_| StateError::ChannelError)?
     }
 
-    /// Delete a LoopExecution by ID
+    /// Delete a LoopExecution by ID (also deletes associated IterationLogs)
     pub async fn delete_execution(&self, id: &str) -> StateResponse<()> {
         debug!(%id, "delete_execution: called");
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StateCommand::DeleteExecution {
                 id: id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| StateError::ChannelError)?;
+        reply_rx.await.map_err(|_| StateError::ChannelError)?
+    }
+
+    // === IterationLog operations ===
+
+    /// Create a new IterationLog
+    pub async fn create_iteration_log(&self, log: IterationLog) -> StateResponse<String> {
+        debug!(log_id = %log.id, execution_id = %log.execution_id, iteration = log.iteration, "create_iteration_log: called");
+        let execution_id = log.execution_id.clone();
+        let iteration = log.iteration;
+        let exit_code = log.exit_code;
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StateCommand::CreateIterationLog { log, reply: reply_tx })
+            .await
+            .map_err(|_| StateError::ChannelError)?;
+        let result = reply_rx.await.map_err(|_| StateError::ChannelError)?;
+
+        // Broadcast event so TUI can update immediately
+        if result.is_ok() {
+            let _ = self.event_tx.send(StateEvent::IterationLogCreated {
+                execution_id,
+                iteration,
+                exit_code,
+            });
+            notify_state_change();
+        }
+
+        result
+    }
+
+    /// List IterationLogs for a given execution (ordered by iteration number)
+    pub async fn list_iteration_logs(&self, execution_id: &str) -> StateResponse<Vec<IterationLog>> {
+        debug!(%execution_id, "list_iteration_logs: called");
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StateCommand::ListIterationLogs {
+                execution_id: execution_id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| StateError::ChannelError)?;
+        reply_rx.await.map_err(|_| StateError::ChannelError)?
+    }
+
+    /// Get a specific IterationLog by ID
+    pub async fn get_iteration_log(&self, id: &str) -> StateResponse<Option<IterationLog>> {
+        debug!(%id, "get_iteration_log: called");
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StateCommand::GetIterationLog {
+                id: id.to_string(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| StateError::ChannelError)?;
+        reply_rx.await.map_err(|_| StateError::ChannelError)?
+    }
+
+    /// Delete all IterationLogs for a given execution
+    pub async fn delete_iteration_logs(&self, execution_id: &str) -> StateResponse<usize> {
+        debug!(%execution_id, "delete_iteration_logs: called");
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StateCommand::DeleteIterationLogs {
+                execution_id: execution_id.to_string(),
                 reply: reply_tx,
             })
             .await
@@ -655,6 +733,12 @@ async fn actor_loop(mut store: Store, mut rx: mpsc::Receiver<StateCommand>) {
 
             StateCommand::DeleteExecution { id, reply } => {
                 debug!(%id, "actor_loop: DeleteExecution command");
+                // Cascade delete: first delete all associated IterationLogs
+                if let Ok(count) = store.delete_by_index::<IterationLog>("execution_id", IndexValue::String(id.clone()))
+                {
+                    debug!(count, %id, "actor_loop: DeleteExecution cascade deleted IterationLogs");
+                }
+                // Then delete the execution itself
                 let result = store
                     .delete::<LoopExecution>(&id)
                     .map_err(|e| StateError::StoreError(e.to_string()));
@@ -669,6 +753,45 @@ async fn actor_loop(mut store: Store, mut rx: mpsc::Receiver<StateCommand>) {
                 debug!("actor_loop: GetGeneric command (not implemented)");
                 // Generic get is not implemented for now
                 let _ = reply.send(Err(StateError::StoreError("Generic get not implemented".to_string())));
+            }
+
+            // IterationLog operations
+            StateCommand::CreateIterationLog { log, reply } => {
+                debug!(log_id = %log.id, "actor_loop: CreateIterationLog command");
+                let result = store.create(log).map_err(|e| StateError::StoreError(e.to_string()));
+                let _ = reply.send(result);
+            }
+
+            StateCommand::ListIterationLogs { execution_id, reply } => {
+                debug!(%execution_id, "actor_loop: ListIterationLogs command");
+                let filters = vec![Filter {
+                    field: "execution_id".to_string(),
+                    op: FilterOp::Eq,
+                    value: IndexValue::String(execution_id),
+                }];
+                let result: StateResponse<Vec<IterationLog>> =
+                    store.list(&filters).map_err(|e| StateError::StoreError(e.to_string()));
+                // Sort by iteration number (ascending)
+                let result = result.map(|mut logs| {
+                    logs.sort_by_key(|l| l.iteration);
+                    logs
+                });
+                let _ = reply.send(result);
+            }
+
+            StateCommand::GetIterationLog { id, reply } => {
+                debug!(%id, "actor_loop: GetIterationLog command");
+                let result: StateResponse<Option<IterationLog>> =
+                    store.get(&id).map_err(|e| StateError::StoreError(e.to_string()));
+                let _ = reply.send(result);
+            }
+
+            StateCommand::DeleteIterationLogs { execution_id, reply } => {
+                debug!(%execution_id, "actor_loop: DeleteIterationLogs command");
+                let result = store
+                    .delete_by_index::<IterationLog>("execution_id", IndexValue::String(execution_id))
+                    .map_err(|e| StateError::StoreError(e.to_string()));
+                let _ = reply.send(result);
             }
 
             StateCommand::Sync { reply } => {
@@ -686,6 +809,10 @@ async fn actor_loop(mut store: Store, mut rx: mpsc::Receiver<StateCommand>) {
                 }
                 if let Ok(c) = store.rebuild_indexes::<LoopExecution>() {
                     debug!(count = c, "actor_loop: RebuildIndexes LoopExecution indexes rebuilt");
+                    count += c;
+                }
+                if let Ok(c) = store.rebuild_indexes::<IterationLog>() {
+                    debug!(count = c, "actor_loop: RebuildIndexes IterationLog indexes rebuilt");
                     count += c;
                 }
                 let _ = reply.send(Ok(count));
@@ -963,6 +1090,160 @@ mod tests {
         // Try to start again (should fail - no longer draft)
         let result = manager.start_draft("draft-idem").await;
         assert!(result.is_err());
+
+        manager.shutdown().await.unwrap();
+    }
+
+    // === IterationLog tests ===
+
+    #[tokio::test]
+    async fn test_iteration_log_crud() {
+        let temp = tempdir().unwrap();
+        let manager = StateManager::spawn(temp.path()).unwrap();
+
+        // Create an execution first
+        let exec = LoopExecution::with_id("test-exec", "ralph");
+        manager.create_execution(exec).await.unwrap();
+
+        // Create an iteration log
+        let log = IterationLog::new("test-exec", 1)
+            .with_validation_command("otto ci")
+            .with_exit_code(0)
+            .with_stdout("All tests passed")
+            .with_duration_ms(5000);
+
+        let id = manager.create_iteration_log(log).await.unwrap();
+        assert_eq!(id, "test-exec-iter-1");
+
+        // Get the log
+        let retrieved = manager.get_iteration_log("test-exec-iter-1").await.unwrap();
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.execution_id, "test-exec");
+        assert_eq!(retrieved.iteration, 1);
+        assert_eq!(retrieved.exit_code, 0);
+        assert_eq!(retrieved.stdout, "All tests passed");
+
+        manager.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_list_iteration_logs() {
+        let temp = tempdir().unwrap();
+        let manager = StateManager::spawn(temp.path()).unwrap();
+
+        // Create an execution
+        let exec = LoopExecution::with_id("list-test-exec", "ralph");
+        manager.create_execution(exec).await.unwrap();
+
+        // Create multiple iteration logs (out of order)
+        let log3 = IterationLog::new("list-test-exec", 3).with_exit_code(0);
+        let log1 = IterationLog::new("list-test-exec", 1).with_exit_code(1);
+        let log2 = IterationLog::new("list-test-exec", 2).with_exit_code(1);
+
+        manager.create_iteration_log(log3).await.unwrap();
+        manager.create_iteration_log(log1).await.unwrap();
+        manager.create_iteration_log(log2).await.unwrap();
+
+        // List should return in iteration order (ascending)
+        let logs = manager.list_iteration_logs("list-test-exec").await.unwrap();
+        assert_eq!(logs.len(), 3);
+        assert_eq!(logs[0].iteration, 1);
+        assert_eq!(logs[1].iteration, 2);
+        assert_eq!(logs[2].iteration, 3);
+
+        manager.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_iteration_logs() {
+        let temp = tempdir().unwrap();
+        let manager = StateManager::spawn(temp.path()).unwrap();
+
+        // Create an execution
+        let exec = LoopExecution::with_id("delete-test-exec", "ralph");
+        manager.create_execution(exec).await.unwrap();
+
+        // Create iteration logs
+        let log1 = IterationLog::new("delete-test-exec", 1);
+        let log2 = IterationLog::new("delete-test-exec", 2);
+        manager.create_iteration_log(log1).await.unwrap();
+        manager.create_iteration_log(log2).await.unwrap();
+
+        // Verify they exist
+        let logs = manager.list_iteration_logs("delete-test-exec").await.unwrap();
+        assert_eq!(logs.len(), 2);
+
+        // Delete all iteration logs
+        let deleted = manager.delete_iteration_logs("delete-test-exec").await.unwrap();
+        assert_eq!(deleted, 2);
+
+        // Verify they're gone
+        let logs = manager.list_iteration_logs("delete-test-exec").await.unwrap();
+        assert!(logs.is_empty());
+
+        manager.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cascade_delete_execution_deletes_logs() {
+        let temp = tempdir().unwrap();
+        let manager = StateManager::spawn(temp.path()).unwrap();
+
+        // Create an execution
+        let exec = LoopExecution::with_id("cascade-test-exec", "ralph");
+        manager.create_execution(exec).await.unwrap();
+
+        // Create iteration logs
+        let log1 = IterationLog::new("cascade-test-exec", 1);
+        let log2 = IterationLog::new("cascade-test-exec", 2);
+        manager.create_iteration_log(log1).await.unwrap();
+        manager.create_iteration_log(log2).await.unwrap();
+
+        // Delete the execution (should cascade delete logs)
+        manager.delete_execution("cascade-test-exec").await.unwrap();
+
+        // Verify logs are gone
+        let logs = manager.list_iteration_logs("cascade-test-exec").await.unwrap();
+        assert!(logs.is_empty());
+
+        // Also verify the individual logs return None
+        let log = manager.get_iteration_log("cascade-test-exec-iter-1").await.unwrap();
+        assert!(log.is_none());
+
+        manager.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_iteration_log_created_event() {
+        let temp = tempdir().unwrap();
+        let manager = StateManager::spawn(temp.path()).unwrap();
+        let mut event_rx = manager.subscribe_events();
+
+        // Create an execution
+        let exec = LoopExecution::with_id("event-test-exec", "ralph");
+        manager.create_execution(exec).await.unwrap();
+        // Drain the ExecutionCreated and possibly ExecutionPending events
+        while event_rx.try_recv().is_ok() {}
+
+        // Create an iteration log
+        let log = IterationLog::new("event-test-exec", 1).with_exit_code(0);
+        manager.create_iteration_log(log).await.unwrap();
+
+        // Should receive IterationLogCreated event
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            StateEvent::IterationLogCreated {
+                execution_id,
+                iteration,
+                exit_code,
+            } => {
+                assert_eq!(execution_id, "event-test-exec");
+                assert_eq!(iteration, 1);
+                assert_eq!(exit_code, 0);
+            }
+            _ => panic!("Expected IterationLogCreated event, got {:?}", event),
+        }
 
         manager.shutdown().await.unwrap();
     }

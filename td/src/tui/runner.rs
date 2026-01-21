@@ -1138,6 +1138,20 @@ Working directory: {}"#,
                             // but we refresh to show the status change
                             should_refresh = true;
                         }
+                        StateEvent::IterationLogCreated {
+                            execution_id,
+                            iteration,
+                            exit_code,
+                        } => {
+                            debug!(
+                                %execution_id,
+                                iteration,
+                                exit_code,
+                                "process_state_events: iteration log created"
+                            );
+                            // Refresh to update Output/Logs views if this execution is selected
+                            should_refresh = true;
+                        }
                     },
                     Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {

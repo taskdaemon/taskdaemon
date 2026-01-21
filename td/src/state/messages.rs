@@ -6,7 +6,7 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::oneshot;
 
-use crate::domain::{Loop, LoopExecution};
+use crate::domain::{IterationLog, Loop, LoopExecution};
 
 /// Errors from state operations
 #[derive(Debug, Error)]
@@ -84,6 +84,24 @@ pub enum StateCommand {
         collection: String,
         id: String,
         reply: oneshot::Sender<StateResponse<Option<Value>>>,
+    },
+
+    // IterationLog operations
+    CreateIterationLog {
+        log: IterationLog,
+        reply: oneshot::Sender<StateResponse<String>>,
+    },
+    ListIterationLogs {
+        execution_id: String,
+        reply: oneshot::Sender<StateResponse<Vec<IterationLog>>>,
+    },
+    GetIterationLog {
+        id: String,
+        reply: oneshot::Sender<StateResponse<Option<IterationLog>>>,
+    },
+    DeleteIterationLogs {
+        execution_id: String,
+        reply: oneshot::Sender<StateResponse<usize>>,
     },
 
     // Sync operations

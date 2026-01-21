@@ -1,6 +1,6 @@
 // Generic store implementation using JSONL + SQLite
 
-use crate::filter::Filter;
+use crate::filter::{Filter, FilterOp};
 use crate::jsonl;
 use crate::record::{IndexValue, Record};
 use eyre::{Context, Result, eyre};
@@ -263,6 +263,26 @@ impl Store {
         )?;
 
         Ok(())
+    }
+
+    /// Delete all records matching an indexed field value.
+    /// Returns the number of records deleted.
+    pub fn delete_by_index<T: Record>(&mut self, field: &str, value: IndexValue) -> Result<usize> {
+        // First list the matching records
+        let filters = vec![Filter {
+            field: field.to_string(),
+            op: FilterOp::Eq,
+            value,
+        }];
+        let records: Vec<T> = self.list(&filters)?;
+
+        // Delete each one
+        let count = records.len();
+        for record in records {
+            self.delete::<T>(record.id())?;
+        }
+
+        Ok(count)
     }
 
     /// List records with optional filtering
