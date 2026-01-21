@@ -12,7 +12,8 @@ use crate::coordinator::{CoordMessage, CoordinatorHandle};
 use crate::domain::{IterationLog, Priority, ToolCallSummary};
 use crate::events::{EventEmitter, IterationOutcome as EventIterationOutcome};
 use crate::llm::{
-    CompletionRequest, CompletionResponse, ContentBlock, LlmClient, Message, StopReason, TokenUsage, ToolDefinition,
+    CompletionRequest, CompletionResponse, ContentBlock, LlmClient, Message, StopReason, StreamChunk, TokenUsage,
+    ToolDefinition,
 };
 use crate::progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 use crate::scheduler::Scheduler;
@@ -715,54 +716,171 @@ impl LoopEngine {
                 debug!(exec_id = %self.exec_id, "run_agentic_loop: no scheduler, skipping rate limit");
             }
 
+            // Emit prompt sent event
+            if let Some(ref emitter) = self.event_emitter {
+                let prompt_summary = truncate_str(initial_prompt, 200);
+                emitter.prompt_sent(self.iteration, &prompt_summary, 0);
+            }
+
             debug!(exec_id = %self.exec_id, turn, "run_agentic_loop: calling LLM");
-            let response = match self.llm.complete(request).await {
-                Ok(r) => {
-                    debug!(exec_id = %self.exec_id, turn, stop_reason = ?r.stop_reason, "run_agentic_loop: LLM response received");
-                    // Mark scheduler slot as complete after successful call
-                    if let Some(scheduler) = &self.scheduler {
-                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
-                        scheduler.complete(&turn_id).await;
+
+            // Use streaming if we have an event emitter, otherwise use complete()
+            let response = if self.event_emitter.is_some() {
+                // Create channel for streaming chunks
+                let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<StreamChunk>(100);
+
+                // Clone emitter for the streaming task
+                let emitter = self.event_emitter.clone();
+                let iteration = self.iteration;
+                let exec_id = self.exec_id.clone();
+
+                // Spawn task to forward chunks to event bus
+                let stream_handle = tokio::spawn(async move {
+                    let mut response_text = String::new();
+                    while let Some(chunk) = chunk_rx.recv().await {
+                        match chunk {
+                            StreamChunk::TextDelta(text) => {
+                                if let Some(ref e) = emitter {
+                                    e.token_received(iteration, &text);
+                                }
+                                response_text.push_str(&text);
+                            }
+                            StreamChunk::MessageStart { input_tokens } => {
+                                debug!(%exec_id, input_tokens, "stream: message started");
+                            }
+                            StreamChunk::ToolUseStart { id, name } => {
+                                debug!(%exec_id, %id, %name, "stream: tool use started");
+                            }
+                            StreamChunk::ToolUseDelta { .. } => {
+                                // Tool JSON fragments - just accumulate
+                            }
+                            StreamChunk::ToolUseEnd { .. } => {
+                                // Tool complete
+                            }
+                            StreamChunk::MessageDone { .. } => {
+                                debug!(%exec_id, "stream: message done");
+                            }
+                            StreamChunk::Error(e) => {
+                                warn!(%exec_id, error = %e, "stream: error");
+                            }
+                        }
                     }
-                    // Accumulate token usage for this iteration
-                    self.iteration_token_usage.input_tokens += r.usage.input_tokens;
-                    self.iteration_token_usage.output_tokens += r.usage.output_tokens;
-                    r
+                    response_text
+                });
+
+                // Make the streaming LLM call
+                match self.llm.stream(request, chunk_tx).await {
+                    Ok(r) => {
+                        // Wait for stream processing to complete
+                        let _ = stream_handle.await;
+
+                        debug!(exec_id = %self.exec_id, turn, stop_reason = ?r.stop_reason, "run_agentic_loop: LLM response received");
+                        // Mark scheduler slot as complete after successful call
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+
+                        // Emit response completed event
+                        if let Some(ref emitter) = self.event_emitter {
+                            let summary = r.content.as_ref().map(|s| truncate_str(s, 200)).unwrap_or_default();
+                            emitter.response_completed(
+                                self.iteration,
+                                &summary,
+                                r.usage.input_tokens,
+                                r.usage.output_tokens,
+                                !r.tool_calls.is_empty(),
+                            );
+                        }
+
+                        // Accumulate token usage for this iteration
+                        self.iteration_token_usage.input_tokens += r.usage.input_tokens;
+                        self.iteration_token_usage.output_tokens += r.usage.output_tokens;
+                        r
+                    }
+                    Err(e) if e.is_rate_limit() => {
+                        debug!(exec_id = %self.exec_id, turn, "run_agentic_loop: LLM rate limited");
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+                        return Ok(AgenticLoopResult::RateLimited {
+                            retry_after: e.retry_after().unwrap_or(Duration::from_secs(60)),
+                        });
+                    }
+                    Err(e) if e.is_retryable() => {
+                        debug!(exec_id = %self.exec_id, turn, error = %e, "run_agentic_loop: LLM retryable error");
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+                        return Ok(AgenticLoopResult::Error {
+                            message: e.to_string(),
+                            recoverable: true,
+                        });
+                    }
+                    Err(e) => {
+                        debug!(exec_id = %self.exec_id, turn, error = %e, "run_agentic_loop: LLM non-retryable error");
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+                        return Ok(AgenticLoopResult::Error {
+                            message: e.to_string(),
+                            recoverable: false,
+                        });
+                    }
                 }
-                Err(e) if e.is_rate_limit() => {
-                    debug!(exec_id = %self.exec_id, turn, "run_agentic_loop: LLM rate limited");
-                    // Mark slot complete even on rate limit
-                    if let Some(scheduler) = &self.scheduler {
-                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
-                        scheduler.complete(&turn_id).await;
+            } else {
+                // No event emitter - use non-streaming complete()
+                match self.llm.complete(request).await {
+                    Ok(r) => {
+                        debug!(exec_id = %self.exec_id, turn, stop_reason = ?r.stop_reason, "run_agentic_loop: LLM response received");
+                        // Mark scheduler slot as complete after successful call
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+                        // Accumulate token usage for this iteration
+                        self.iteration_token_usage.input_tokens += r.usage.input_tokens;
+                        self.iteration_token_usage.output_tokens += r.usage.output_tokens;
+                        r
                     }
-                    return Ok(AgenticLoopResult::RateLimited {
-                        retry_after: e.retry_after().unwrap_or(Duration::from_secs(60)),
-                    });
-                }
-                Err(e) if e.is_retryable() => {
-                    debug!(exec_id = %self.exec_id, turn, error = %e, "run_agentic_loop: LLM retryable error");
-                    // Mark slot complete on retryable error
-                    if let Some(scheduler) = &self.scheduler {
-                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
-                        scheduler.complete(&turn_id).await;
+                    Err(e) if e.is_rate_limit() => {
+                        debug!(exec_id = %self.exec_id, turn, "run_agentic_loop: LLM rate limited");
+                        // Mark slot complete even on rate limit
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+                        return Ok(AgenticLoopResult::RateLimited {
+                            retry_after: e.retry_after().unwrap_or(Duration::from_secs(60)),
+                        });
                     }
-                    return Ok(AgenticLoopResult::Error {
-                        message: e.to_string(),
-                        recoverable: true,
-                    });
-                }
-                Err(e) => {
-                    debug!(exec_id = %self.exec_id, turn, error = %e, "run_agentic_loop: LLM non-retryable error");
-                    // Mark slot complete on non-retryable error
-                    if let Some(scheduler) = &self.scheduler {
-                        let turn_id = format!("{}-turn-{}", self.exec_id, turn);
-                        scheduler.complete(&turn_id).await;
+                    Err(e) if e.is_retryable() => {
+                        debug!(exec_id = %self.exec_id, turn, error = %e, "run_agentic_loop: LLM retryable error");
+                        // Mark slot complete on retryable error
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+                        return Ok(AgenticLoopResult::Error {
+                            message: e.to_string(),
+                            recoverable: true,
+                        });
                     }
-                    return Ok(AgenticLoopResult::Error {
-                        message: e.to_string(),
-                        recoverable: false,
-                    });
+                    Err(e) => {
+                        debug!(exec_id = %self.exec_id, turn, error = %e, "run_agentic_loop: LLM non-retryable error");
+                        // Mark slot complete on non-retryable error
+                        if let Some(scheduler) = &self.scheduler {
+                            let turn_id = format!("{}-turn-{}", self.exec_id, turn);
+                            scheduler.complete(&turn_id).await;
+                        }
+                        return Ok(AgenticLoopResult::Error {
+                            message: e.to_string(),
+                            recoverable: false,
+                        });
+                    }
                 }
             };
 
