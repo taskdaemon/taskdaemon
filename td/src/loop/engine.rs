@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::coordinator::{CoordMessage, CoordinatorHandle};
 use crate::domain::{IterationLog, Priority, ToolCallSummary};
+use crate::events::{EventEmitter, IterationOutcome as EventIterationOutcome};
 use crate::llm::{
     CompletionRequest, CompletionResponse, ContentBlock, LlmClient, Message, StopReason, TokenUsage, ToolDefinition,
 };
@@ -20,6 +21,15 @@ use crate::tools::{ToolContext, ToolExecutor, ToolResult};
 
 use super::LoopConfig;
 use super::validation::run_validation;
+
+/// Truncate a string to a maximum length, adding "..." if truncated
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
 
 /// Status of a loop execution
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +108,9 @@ pub struct LoopEngine {
 
     /// Token usage accumulated in the current iteration
     iteration_token_usage: TokenUsage,
+
+    /// Event emitter for observability (optional)
+    event_emitter: Option<EventEmitter>,
 }
 
 impl LoopEngine {
@@ -126,6 +139,7 @@ impl LoopEngine {
             state: None,
             tool_call_buffer: Vec::new(),
             iteration_token_usage: TokenUsage::default(),
+            event_emitter: None,
         }
     }
 
@@ -160,6 +174,7 @@ impl LoopEngine {
             state: None,
             tool_call_buffer: Vec::new(),
             iteration_token_usage: TokenUsage::default(),
+            event_emitter: None,
         }
     }
 
@@ -188,6 +203,13 @@ impl LoopEngine {
     pub fn with_state(mut self, state: StateManager) -> Self {
         debug!(exec_id = %self.exec_id, "with_state: called");
         self.state = Some(state);
+        self
+    }
+
+    /// Set the event emitter for observability
+    pub fn with_event_emitter(mut self, emitter: EventEmitter) -> Self {
+        debug!(exec_id = %self.exec_id, "with_event_emitter: called");
+        self.event_emitter = Some(emitter);
         self
     }
 
@@ -224,6 +246,17 @@ impl LoopEngine {
             debug!(exec_id = %self.exec_id, "run: no coordinator handle, skipping subscription");
         }
 
+        // Emit loop started event
+        if let Some(ref emitter) = self.event_emitter {
+            // Get task description from execution context or use loop type
+            let task_desc = self
+                .execution_context
+                .get("task")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&self.config.loop_type);
+            emitter.loop_started(&self.config.loop_type, task_desc);
+        }
+
         while self.iteration < self.config.max_iterations {
             debug!(exec_id = %self.exec_id, iteration = self.iteration, max = self.config.max_iterations, "run: loop iteration start");
             // Check for coordinator messages before each iteration
@@ -238,16 +271,31 @@ impl LoopEngine {
                 self.exec_id, self.iteration, self.config.max_iterations
             );
 
+            // Emit iteration started event
+            if let Some(ref emitter) = self.event_emitter {
+                emitter.iteration_started(self.iteration);
+            }
+
             let result = self.run_iteration().await?;
 
             match result {
                 IterationResult::Complete { .. } => {
                     debug!(exec_id = %self.exec_id, "run: iteration complete, loop finished");
+                    // Emit iteration completed with validation passed
+                    if let Some(ref emitter) = self.event_emitter {
+                        emitter.iteration_completed(self.iteration, EventIterationOutcome::ValidationPassed);
+                        emitter.loop_completed(true, self.iteration);
+                    }
                     self.status = LoopStatus::Complete;
                     return Ok(result);
                 }
-                IterationResult::Continue { .. } => {
+                IterationResult::Continue { exit_code, .. } => {
                     debug!(exec_id = %self.exec_id, "run: iteration continue, sleeping before next");
+                    // Emit iteration completed with validation failed
+                    if let Some(ref emitter) = self.event_emitter {
+                        emitter
+                            .iteration_completed(self.iteration, EventIterationOutcome::ValidationFailed { exit_code });
+                    }
                     // Continue to next iteration
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
@@ -259,12 +307,24 @@ impl LoopEngine {
                 }
                 IterationResult::Interrupted { reason } => {
                     debug!(exec_id = %self.exec_id, %reason, "run: interrupted");
+                    // Emit loop completed (not successful)
+                    if let Some(ref emitter) = self.event_emitter {
+                        emitter.loop_completed(false, self.iteration);
+                    }
                     self.status = LoopStatus::Stopped;
                     return Ok(IterationResult::Interrupted { reason });
                 }
                 IterationResult::Error { message, recoverable } => {
                     if !recoverable {
                         debug!(exec_id = %self.exec_id, %message, "run: non-recoverable error");
+                        // Emit iteration completed with LLM error
+                        if let Some(ref emitter) = self.event_emitter {
+                            emitter.iteration_completed(
+                                self.iteration,
+                                EventIterationOutcome::LlmError { error: message.clone() },
+                            );
+                            emitter.loop_completed(false, self.iteration);
+                        }
                         self.status = LoopStatus::Failed {
                             reason: message.clone(),
                         };
@@ -277,6 +337,11 @@ impl LoopEngine {
         }
 
         debug!(exec_id = %self.exec_id, max_iterations = self.config.max_iterations, "run: max iterations exceeded");
+        // Emit loop completed (max iterations exceeded)
+        if let Some(ref emitter) = self.event_emitter {
+            emitter.iteration_completed(self.iteration, EventIterationOutcome::MaxTurnsReached);
+            emitter.loop_completed(false, self.iteration);
+        }
         self.status = LoopStatus::Failed {
             reason: "Max iterations exceeded".to_string(),
         };
@@ -713,15 +778,38 @@ impl LoopEngine {
                 }
                 StopReason::ToolUse => {
                     debug!(exec_id = %self.exec_id, turn, tool_count = response.tool_calls.len(), "run_agentic_loop: LLM requested tool use");
+
+                    // Emit tool call started events
+                    if let Some(ref emitter) = self.event_emitter {
+                        for call in &response.tool_calls {
+                            let args_summary = truncate_str(&call.input.to_string(), 200);
+                            emitter.tool_call_started(self.iteration, &call.name, &args_summary);
+                        }
+                    }
+
                     // Execute tools and continue
+                    let start_time = std::time::Instant::now();
                     let tool_results = self.execute_tools(&response.tool_calls, tool_ctx).await;
+                    let duration_ms = start_time.elapsed().as_millis() as u64;
                     debug!(exec_id = %self.exec_id, turn, results_count = tool_results.len(), "run_agentic_loop: tools executed");
 
-                    // Record tool call summaries for iteration log
+                    // Record tool call summaries for iteration log and emit events
                     for (call, (_, result)) in response.tool_calls.iter().zip(tool_results.iter()) {
                         let args_summary = call.input.to_string();
                         let summary = ToolCallSummary::new(&call.name, &args_summary, &result.content, result.is_error);
                         self.tool_call_buffer.push(summary);
+
+                        // Emit tool call completed event
+                        if let Some(ref emitter) = self.event_emitter {
+                            let result_summary = truncate_str(&result.content, 200);
+                            emitter.tool_call_completed(
+                                self.iteration,
+                                &call.name,
+                                !result.is_error,
+                                &result_summary,
+                                duration_ms,
+                            );
+                        }
                     }
 
                     // Build user message with tool results
