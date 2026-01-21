@@ -9,10 +9,13 @@ use handlebars::Handlebars;
 use tracing::{debug, info, warn};
 
 use crate::coordinator::{CoordMessage, CoordinatorHandle};
-use crate::domain::Priority;
-use crate::llm::{CompletionRequest, CompletionResponse, ContentBlock, LlmClient, Message, StopReason, ToolDefinition};
+use crate::domain::{IterationLog, Priority, ToolCallSummary};
+use crate::llm::{
+    CompletionRequest, CompletionResponse, ContentBlock, LlmClient, Message, StopReason, TokenUsage, ToolDefinition,
+};
 use crate::progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 use crate::scheduler::Scheduler;
+use crate::state::StateManager;
 use crate::tools::{ToolContext, ToolExecutor, ToolResult};
 
 use super::LoopConfig;
@@ -86,6 +89,15 @@ pub struct LoopEngine {
 
     /// Main repo root (for reading parent files)
     repo_root: PathBuf,
+
+    /// State manager for persisting iteration logs
+    state: Option<StateManager>,
+
+    /// Tool call buffer for the current iteration
+    tool_call_buffer: Vec<ToolCallSummary>,
+
+    /// Token usage accumulated in the current iteration
+    iteration_token_usage: TokenUsage,
 }
 
 impl LoopEngine {
@@ -111,6 +123,9 @@ impl LoopEngine {
             scheduler: None,
             execution_context: serde_json::json!({}),
             repo_root: worktree,
+            state: None,
+            tool_call_buffer: Vec::new(),
+            iteration_token_usage: TokenUsage::default(),
         }
     }
 
@@ -142,6 +157,9 @@ impl LoopEngine {
             scheduler: None,
             execution_context: serde_json::json!({}),
             repo_root: worktree,
+            state: None,
+            tool_call_buffer: Vec::new(),
+            iteration_token_usage: TokenUsage::default(),
         }
     }
 
@@ -163,6 +181,13 @@ impl LoopEngine {
     pub fn with_scheduler(mut self, scheduler: Arc<Scheduler>) -> Self {
         debug!(exec_id = %self.exec_id, "with_scheduler: called");
         self.scheduler = Some(scheduler);
+        self
+    }
+
+    /// Set the state manager for persisting iteration logs
+    pub fn with_state(mut self, state: StateManager) -> Self {
+        debug!(exec_id = %self.exec_id, "with_state: called");
+        self.state = Some(state);
         self
     }
 
@@ -438,6 +463,11 @@ impl LoopEngine {
     /// Run a single iteration
     async fn run_iteration(&mut self) -> eyre::Result<IterationResult> {
         debug!(exec_id = %self.exec_id, iteration = self.iteration, "run_iteration: called");
+
+        // Clear iteration-level tracking
+        self.tool_call_buffer.clear();
+        self.iteration_token_usage = TokenUsage::default();
+
         // Build context for template
         let context = self.build_template_context().await?;
         debug!(exec_id = %self.exec_id, "run_iteration: built template context");
@@ -498,9 +528,31 @@ impl LoopEngine {
             &validation.stdout,
             &validation.stderr,
             validation.duration_ms,
-            files_changed,
+            files_changed.clone(),
         );
         self.progress.record(&iter_ctx);
+
+        // Persist iteration log with FULL validation output (before truncation)
+        if let Some(ref state) = self.state {
+            let log = IterationLog::new(&self.exec_id, self.iteration)
+                .with_validation_command(&self.config.validation_command)
+                .with_exit_code(validation.exit_code)
+                .with_stdout(&validation.stdout)
+                .with_stderr(&validation.stderr)
+                .with_duration_ms(validation.duration_ms)
+                .with_files_changed(files_changed)
+                .with_llm_tokens(
+                    Some(self.iteration_token_usage.input_tokens),
+                    Some(self.iteration_token_usage.output_tokens),
+                )
+                .with_tool_calls(std::mem::take(&mut self.tool_call_buffer));
+
+            if let Err(e) = state.create_iteration_log(log).await {
+                warn!(exec_id = %self.exec_id, iteration = self.iteration, error = %e, "Failed to persist iteration log");
+            } else {
+                debug!(exec_id = %self.exec_id, iteration = self.iteration, "run_iteration: persisted iteration log");
+            }
+        }
 
         // Check if validation passed
         if validation.passed(self.config.success_exit_code) {
@@ -532,7 +584,7 @@ impl LoopEngine {
 
     /// Run the agentic tool loop within an iteration
     async fn run_agentic_loop(
-        &self,
+        &mut self,
         initial_prompt: &str,
         tool_ctx: &ToolContext,
         tool_defs: &[ToolDefinition],
@@ -595,6 +647,9 @@ impl LoopEngine {
                         let turn_id = format!("{}-turn-{}", self.exec_id, turn);
                         scheduler.complete(&turn_id).await;
                     }
+                    // Accumulate token usage for this iteration
+                    self.iteration_token_usage.input_tokens += r.usage.input_tokens;
+                    self.iteration_token_usage.output_tokens += r.usage.output_tokens;
                     r
                 }
                 Err(e) if e.is_rate_limit() => {
@@ -649,6 +704,13 @@ impl LoopEngine {
                     // Execute tools and continue
                     let tool_results = self.execute_tools(&response.tool_calls, tool_ctx).await;
                     debug!(exec_id = %self.exec_id, turn, results_count = tool_results.len(), "run_agentic_loop: tools executed");
+
+                    // Record tool call summaries for iteration log
+                    for (call, (_, result)) in response.tool_calls.iter().zip(tool_results.iter()) {
+                        let args_summary = call.input.to_string();
+                        let summary = ToolCallSummary::new(&call.name, &args_summary, &result.content, result.is_error);
+                        self.tool_call_buffer.push(summary);
+                    }
 
                     // Build user message with tool results
                     let tool_result_message = self.build_tool_result_message(&tool_results);

@@ -452,12 +452,13 @@ impl LoopManager {
 
         let handle = tokio::spawn(async move {
             debug!(exec_id = %exec_id, "spawn_loop task: starting");
-            // Build engine with coordinator, scheduler, execution context, and repo root
+            // Build engine with coordinator, scheduler, execution context, repo root, and state
             let engine =
                 LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path.clone(), coord_handle)
                     .with_scheduler(scheduler.clone())
                     .with_execution_context(exec_context)
-                    .with_repo_root(repo_root.clone());
+                    .with_repo_root(repo_root.clone())
+                    .with_state(state.clone());
 
             let result = run_loop_task(engine, state, worktree_path, repo_root, type_loader, loop_type).await;
 
