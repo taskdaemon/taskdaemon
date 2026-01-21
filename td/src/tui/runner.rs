@@ -1800,8 +1800,57 @@ Working directory: {}"#,
         match view {
             View::Logs { ref target_id } => {
                 debug!(%target_id, "TuiRunner::load_view_data: loading logs");
-                // Load logs for the target (try execution first, then loop record)
-                if let Ok(Some(exec)) = state_manager.get_execution(target_id).await {
+                // Load IterationLogs for the execution
+                if let Ok(iteration_logs) = state_manager.list_iteration_logs(target_id).await {
+                    let mut entries: Vec<LogEntry> = Vec::new();
+
+                    for log in iteration_logs {
+                        // Add stdout lines
+                        if !log.stdout.is_empty() {
+                            for line in log.stdout.lines() {
+                                entries.push(LogEntry {
+                                    iteration: log.iteration,
+                                    text: line.to_string(),
+                                    is_error: false,
+                                    is_stdout: true,
+                                });
+                            }
+                        }
+
+                        // Add stderr lines (marked as errors if exit_code != 0)
+                        if !log.stderr.is_empty() {
+                            for line in log.stderr.lines() {
+                                entries.push(LogEntry {
+                                    iteration: log.iteration,
+                                    text: line.to_string(),
+                                    is_error: log.exit_code != 0,
+                                    is_stdout: false,
+                                });
+                            }
+                        }
+
+                        // Add a summary line if neither stdout nor stderr
+                        if log.stdout.is_empty() && log.stderr.is_empty() {
+                            let summary = if log.exit_code == 0 {
+                                format!("Validation passed ({}ms)", log.duration_ms)
+                            } else {
+                                format!(
+                                    "Validation failed with exit code {} ({}ms)",
+                                    log.exit_code, log.duration_ms
+                                )
+                            };
+                            entries.push(LogEntry {
+                                iteration: log.iteration,
+                                text: summary,
+                                is_error: log.exit_code != 0,
+                                is_stdout: false,
+                            });
+                        }
+                    }
+
+                    self.app.state_mut().logs = entries;
+                } else if let Ok(Some(exec)) = state_manager.get_execution(target_id).await {
+                    // Fallback: parse progress string if no IterationLogs exist
                     let entries: Vec<LogEntry> = exec
                         .progress
                         .lines()
@@ -1841,7 +1890,10 @@ Working directory: {}"#,
                     Some(DescribeData {
                         id: exec.id.clone(),
                         loop_type: exec.loop_type.clone(),
-                        title: format!("{} execution", exec.loop_type),
+                        title: exec
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| format!("{} execution", exec.loop_type)),
                         status: exec.status.to_string(),
                         parent_id: exec.parent.clone(),
                         created: format_timestamp(exec.created_at),
@@ -1860,6 +1912,11 @@ Working directory: {}"#,
                         }),
                         plan_content,
                         output: if exec.progress.is_empty() { None } else { Some(exec.progress.clone()) },
+                        artifact_path: exec.artifact_path.clone(),
+                        artifact_status: exec.artifact_status.clone(),
+                        total_input_tokens: exec.total_input_tokens,
+                        total_output_tokens: exec.total_output_tokens,
+                        total_duration_ms: exec.total_duration_ms,
                     })
                 } else if let Ok(Some(record)) = state_manager.get_loop(target_id).await {
                     // It's a Loop record
@@ -1879,6 +1936,11 @@ Working directory: {}"#,
                         execution: None,
                         plan_content: None, // Loop records don't have plan content
                         output: None,       // Loop records don't have output
+                        artifact_path: None,
+                        artifact_status: None,
+                        total_input_tokens: 0,
+                        total_output_tokens: 0,
+                        total_duration_ms: 0,
                     })
                 } else {
                     None

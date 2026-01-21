@@ -1010,6 +1010,16 @@ pub struct DescribeData {
     pub plan_content: Option<String>,
     /// Execution output (stdout/progress)
     pub output: Option<String>,
+    /// Path to primary artifact (e.g., plan.md)
+    pub artifact_path: Option<String>,
+    /// Artifact validation status: "draft" | "complete" | "failed"
+    pub artifact_status: Option<String>,
+    /// Total LLM input tokens consumed
+    pub total_input_tokens: u64,
+    /// Total LLM output tokens generated
+    pub total_output_tokens: u64,
+    /// Total validation duration in milliseconds
+    pub total_duration_ms: u64,
 }
 
 /// Execution info for describe view

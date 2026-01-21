@@ -1069,6 +1069,63 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
         }
     }
 
+    // Artifact section
+    if data.artifact_path.is_some() || data.artifact_status.is_some() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Artifact:",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )]));
+        if let Some(ref path) = data.artifact_path {
+            // Extract just the filename from the path
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path);
+            lines.push(Line::from(vec![
+                Span::raw("  Path:   "),
+                Span::styled(filename, Style::default().fg(Color::Cyan)),
+            ]));
+        }
+        if let Some(ref status) = data.artifact_status {
+            lines.push(Line::from(vec![
+                Span::raw("  Status: "),
+                Span::styled(
+                    format!("{} {}", status_icon(status), status),
+                    Style::default().fg(status_color(status)),
+                ),
+            ]));
+        }
+    }
+
+    // Aggregate Metrics section (only show if there's activity)
+    if data.total_input_tokens > 0 || data.total_output_tokens > 0 || data.total_duration_ms > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Metrics:",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )]));
+        let total_tokens = data.total_input_tokens + data.total_output_tokens;
+        lines.push(Line::from(vec![
+            Span::raw("  Tokens:   "),
+            Span::styled(
+                format_tokens(data.total_input_tokens),
+                Style::default().fg(Color::Green),
+            ),
+            Span::raw(" in / "),
+            Span::styled(format_tokens(data.total_output_tokens), Style::default().fg(Color::Red)),
+            Span::raw(" out ("),
+            Span::raw(format_tokens(total_tokens)),
+            Span::raw(" total)"),
+        ]));
+        if data.total_duration_ms > 0 {
+            lines.push(Line::from(vec![
+                Span::raw("  Duration: "),
+                Span::raw(format_duration_ms(data.total_duration_ms)),
+            ]));
+        }
+    }
+
     // Show output or plan content based on toggle state
     if state.describe_show_output {
         // Output section
@@ -1453,5 +1510,23 @@ fn format_streaming_duration(d: std::time::Duration) -> String {
         format!("{}m {}s", secs / 60, secs % 60)
     } else {
         format!("{}s", secs)
+    }
+}
+
+/// Format duration from milliseconds for display (e.g., "45s", "1m 15s", "2h 30m")
+fn format_duration_ms(ms: u64) -> String {
+    trace!(ms, "format_duration_ms: called");
+    let secs = ms / 1000;
+    let mins = secs / 60;
+    let hours = mins / 60;
+
+    if hours > 0 {
+        format!("{}h {}m", hours, mins % 60)
+    } else if mins > 0 {
+        format!("{}m {}s", mins, secs % 60)
+    } else if secs > 0 {
+        format!("{}s", secs)
+    } else {
+        format!("{}ms", ms)
     }
 }

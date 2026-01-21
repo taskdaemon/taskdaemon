@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "contextstore"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -3492,7 +3492,7 @@ dependencies = [
 
 [[package]]
 name = "taskdaemon"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "taskstore"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "assert_cmd",
  "chrono",
