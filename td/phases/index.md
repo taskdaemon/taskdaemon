@@ -1,81 +1,17 @@
-# Pipeline Configuration Phases
+# TaskDaemon Phases Index
 
-This directory contains the implementation phases for the Pipeline Configuration spec (019-pipeline-config).
+This directory contains implementation phases (atomic implementation units) produced from specs.
 
 ## Phase Overview
 
-1. **[001-pipeline-model](./001-pipeline-model.md)** - Core pipeline types and definitions
-   - Status: Ready
-   - Dependencies: None
-   - Implements basic pipeline model, types, and default pipeline
-
-2. **[002-pipeline-execution-engine](./002-pipeline-execution-engine.md)** - Pipeline execution and state management
-   - Status: Ready
-   - Dependencies: [001-pipeline-model]
-   - Implements execution engine, state tracking, and error handling
-
-3. **[003-advanced-triggers](./003-advanced-triggers.md)** - Sophisticated trigger mechanisms
-   - Status: Ready
-   - Dependencies: [001-pipeline-model, 002-pipeline-execution-engine]
-   - Implements conditional triggers, event system, and manual approvals
-
-4. **[004-pipeline-monitoring](./004-pipeline-monitoring.md)** - Observability and debugging
-   - Status: Ready
-   - Dependencies: [001-pipeline-model, 002-pipeline-execution-engine, 003-advanced-triggers]
-   - Implements visualization, metrics, tracking, and debug tools
-
-## Implementation Order
-
-The phases should be implemented in numerical order due to their dependencies:
-
-```
-001-pipeline-model
-    ↓
-002-pipeline-execution-engine
-    ↓
-003-advanced-triggers
-    ↓
-004-pipeline-monitoring
-```
-
-## Module Structure
-
-The implementation will create the following module structure:
-
-```
-src/pipeline/
-├── mod.rs                 # Module exports
-├── definition.rs          # Pipeline definitions (Phase 1)
-├── triggers.rs           # Basic triggers (Phase 1)
-├── flow.rs              # Data flow types (Phase 1)
-├── engine.rs            # Execution engine (Phase 2)
-├── state.rs             # State management (Phase 2)
-├── executor.rs          # Stage executor (Phase 2)
-├── triggers/
-│   ├── evaluator.rs     # Expression evaluation (Phase 3)
-│   ├── event_handler.rs # Event handling (Phase 3)
-│   ├── manual.rs        # Manual approvals (Phase 3)
-│   └── cascade.rs       # Complex cascades (Phase 3)
-├── monitor.rs           # Core monitoring (Phase 4)
-├── visualization.rs     # Pipeline visualization (Phase 4)
-├── tracking.rs          # Execution tracking (Phase 4)
-├── metrics.rs           # Performance metrics (Phase 4)
-└── debug.rs             # Debug tools (Phase 4)
-```
-
-## Testing Strategy
-
-Each phase includes comprehensive test coverage:
-
-- Unit tests for individual components
-- Integration tests for phase functionality
-- Performance benchmarks where applicable
-- Example code demonstrating usage
-
-## Validation
-
-Each phase includes validation scripts that:
-- Run all relevant tests
-- Check code quality with clippy
-- Verify proper integration
-- Test example usage
+| ID | Name | Spec | Dependencies | Status |
+|----|------|------|--------------|--------|
+| 001-pipeline-model | [Pipeline Model](./001-pipeline-model.md) | 019-pipeline-config | None | Ready |
+| 002-pipeline-execution-engine | [Pipeline Execution Engine](./002-pipeline-execution-engine.md) | 019-pipeline-config | 001-pipeline-model | Ready |
+| 003-advanced-triggers | [Advanced Triggers](./003-advanced-triggers.md) | 019-pipeline-config | 001-pipeline-model, 002-pipeline-execution-engine | Ready |
+| 004-pipeline-monitoring | [Pipeline Monitoring](./004-pipeline-monitoring.md) | 019-pipeline-config | 001-pipeline-model, 002-pipeline-execution-engine, 003-advanced-triggers | Ready |
+| 005-howdy-project-setup | [Howdy project setup (Cargo + deps + layout)](./005-howdy-project-setup.md) | 019bd8-loop-spec-028-project-setup | None | Ready |
+| 006-howdy-library-print-greeting | [Implement howdy::print_greeting (colored + error handling)](./006-howdy-library-print-greeting.md) | 019bd8-loop-spec-029-library-implementation | 005-howdy-project-setup | Ready |
+| 007-howdy-cli-wireup | [Implement howdy CLI (clap args + error handling)](./007-howdy-cli-wireup.md) | 019bd8-loop-spec-030-cli-implementation | 005-howdy-project-setup, 006-howdy-library-print-greeting | Ready |
+| 008-howdy-build-install | [Build release binary and install to ~/tmp/howdy](./008-howdy-build-install.md) | 019bd8-loop-spec-031-build-installation | 007-howdy-cli-wireup | Ready |
+| 009-howdy-e2e-validation | [End-to-end validation scripts for howdy](./009-howdy-e2e-validation.md) | 019bd8-loop-spec-032-testing-validation | 008-howdy-build-install | Ready |
