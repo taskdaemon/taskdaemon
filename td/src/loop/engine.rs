@@ -552,6 +552,18 @@ impl LoopEngine {
             } else {
                 debug!(exec_id = %self.exec_id, iteration = self.iteration, "run_iteration: persisted iteration log");
             }
+
+            // Update aggregate metrics on the LoopExecution
+            if let Ok(Some(mut exec)) = state.get_execution(&self.exec_id).await {
+                exec.add_iteration_metrics(
+                    self.iteration_token_usage.input_tokens,
+                    self.iteration_token_usage.output_tokens,
+                    validation.duration_ms,
+                );
+                if let Err(e) = state.update_execution(exec).await {
+                    warn!(exec_id = %self.exec_id, error = %e, "Failed to update execution metrics");
+                }
+            }
         }
 
         // Check if validation passed

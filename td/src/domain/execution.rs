@@ -116,6 +116,26 @@ pub struct LoopExecution {
     /// Last error message (if any)
     pub last_error: Option<String>,
 
+    /// Path to primary artifact (e.g., ".taskdaemon/plans/{id}/plan.md")
+    #[serde(default)]
+    pub artifact_path: Option<String>,
+
+    /// Artifact validation status: "draft" | "complete" | "failed"
+    #[serde(default)]
+    pub artifact_status: Option<String>,
+
+    /// Total LLM input tokens consumed across all iterations
+    #[serde(default)]
+    pub total_input_tokens: u64,
+
+    /// Total LLM output tokens generated across all iterations
+    #[serde(default)]
+    pub total_output_tokens: u64,
+
+    /// Total validation execution time in milliseconds
+    #[serde(default)]
+    pub total_duration_ms: u64,
+
     /// Creation timestamp (Unix milliseconds)
     pub created_at: i64,
 
@@ -143,6 +163,11 @@ impl LoopExecution {
             progress: String::new(),
             context: Value::Null,
             last_error: None,
+            artifact_path: None,
+            artifact_status: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_duration_ms: 0,
             created_at: now,
             updated_at: now,
         }
@@ -166,6 +191,11 @@ impl LoopExecution {
             progress: String::new(),
             context: Value::Null,
             last_error: None,
+            artifact_path: None,
+            artifact_status: None,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_duration_ms: 0,
             created_at: now,
             updated_at: now,
         }
@@ -185,6 +215,52 @@ impl LoopExecution {
         debug!(%self.id, %title, "LoopExecution::with_title: called");
         self.title = Some(title);
         self
+    }
+
+    /// Set the artifact path and mark status as draft
+    pub fn set_artifact(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        debug!(%self.id, %path, "LoopExecution::set_artifact: called");
+        self.artifact_path = Some(path);
+        self.artifact_status = Some("draft".to_string());
+        self.updated_at = now_ms();
+    }
+
+    /// Builder method to set artifact path and status
+    pub fn with_artifact(mut self, path: impl Into<String>) -> Self {
+        let path = path.into();
+        debug!(%self.id, %path, "LoopExecution::with_artifact: called");
+        self.artifact_path = Some(path);
+        self.artifact_status = Some("draft".to_string());
+        self
+    }
+
+    /// Update artifact status
+    pub fn set_artifact_status(&mut self, status: impl Into<String>) {
+        let status = status.into();
+        debug!(%self.id, %status, "LoopExecution::set_artifact_status: called");
+        self.artifact_status = Some(status);
+        self.updated_at = now_ms();
+    }
+
+    /// Add tokens and duration from a completed iteration
+    pub fn add_iteration_metrics(&mut self, input_tokens: u64, output_tokens: u64, duration_ms: u64) {
+        debug!(
+            %self.id,
+            input_tokens,
+            output_tokens,
+            duration_ms,
+            "LoopExecution::add_iteration_metrics: called"
+        );
+        self.total_input_tokens += input_tokens;
+        self.total_output_tokens += output_tokens;
+        self.total_duration_ms += duration_ms;
+        self.updated_at = now_ms();
+    }
+
+    /// Get total tokens consumed
+    pub fn total_tokens(&self) -> u64 {
+        self.total_input_tokens + self.total_output_tokens
     }
 
     /// Set the parent record

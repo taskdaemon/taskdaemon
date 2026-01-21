@@ -390,7 +390,9 @@ impl LoopManager {
         let output_file = self.get_output_file_path(&exec);
         if let Some(ref path) = output_file {
             exec = exec.with_context_value("output-file", path);
-            debug!(exec_id = %exec.id, %path, "spawn_loop: set output-file");
+            // Also set artifact tracking fields
+            exec.set_artifact(path);
+            debug!(exec_id = %exec.id, %path, "spawn_loop: set output-file and artifact path");
         }
         self.state.update_execution(exec.clone()).await?;
 
@@ -679,6 +681,7 @@ async fn run_loop_task(
                 // Skip merge - just mark complete and trigger cascade
                 if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                     exec.set_status(LoopExecutionStatus::Complete);
+                    exec.set_artifact_status("complete");
                     exec.iteration = engine.current_iteration();
                     exec.progress = engine.get_progress();
                     let _ = state.update_execution(exec.clone()).await;
@@ -699,6 +702,7 @@ async fn run_loop_task(
                     // Update state to complete with progress
                     if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                         exec.set_status(LoopExecutionStatus::Complete);
+                        exec.set_artifact_status("complete");
                         exec.iteration = engine.current_iteration();
                         exec.progress = engine.get_progress();
                         let _ = state.update_execution(exec.clone()).await;
@@ -715,6 +719,7 @@ async fn run_loop_task(
                     // Mark as blocked - needs manual intervention
                     if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                         exec.set_status(LoopExecutionStatus::Blocked);
+                        exec.set_artifact_status("failed");
                         exec.set_error(format!("Merge conflict: {}", message));
                         exec.iteration = engine.current_iteration();
                         exec.progress = engine.get_progress();
@@ -731,6 +736,7 @@ async fn run_loop_task(
                     // Mark as failed - push issue
                     if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                         exec.set_status(LoopExecutionStatus::Failed);
+                        exec.set_artifact_status("failed");
                         exec.set_error(format!("Push failed: {}", message));
                         exec.iteration = engine.current_iteration();
                         exec.progress = engine.get_progress();
@@ -746,6 +752,7 @@ async fn run_loop_task(
                     error!(exec_id = %exec_id, "Merge error: {}", e);
                     if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                         exec.set_status(LoopExecutionStatus::Failed);
+                        exec.set_artifact_status("failed");
                         exec.set_error(format!("Merge error: {}", e));
                         exec.iteration = engine.current_iteration();
                         exec.progress = engine.get_progress();
@@ -760,7 +767,7 @@ async fn run_loop_task(
         }
         Ok(crate::r#loop::IterationResult::Interrupted { reason: _ }) => {
             debug!(exec_id = %exec_id, "run_loop_task: loop interrupted");
-            // Update state to stopped with progress
+            // Update state to stopped with progress (artifact status stays draft)
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Stopped);
                 exec.iteration = engine.current_iteration();
@@ -774,6 +781,7 @@ async fn run_loop_task(
             // Update state to failed with progress
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Failed);
+                exec.set_artifact_status("failed");
                 exec.set_error(&message);
                 exec.iteration = engine.current_iteration();
                 exec.progress = engine.get_progress();
@@ -789,6 +797,7 @@ async fn run_loop_task(
             // Other results treated as failure
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Failed);
+                exec.set_artifact_status("failed");
                 exec.set_error("Unexpected loop result");
                 exec.iteration = engine.current_iteration();
                 exec.progress = engine.get_progress();
@@ -804,6 +813,7 @@ async fn run_loop_task(
             // Update state to failed with progress
             if let Ok(Some(mut exec)) = state.get_execution(&exec_id).await {
                 exec.set_status(LoopExecutionStatus::Failed);
+                exec.set_artifact_status("failed");
                 exec.set_error(e.to_string());
                 exec.iteration = engine.current_iteration();
                 exec.progress = engine.get_progress();
