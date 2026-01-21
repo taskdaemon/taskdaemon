@@ -1,7 +1,10 @@
 //! Rule of Five validation methodology
 //!
-//! The Rule of Five is a structured approach to plan refinement through 5 focused
-//! review passes, each examining the plan from a different perspective.
+//! Jeffrey Emanuel's Rule of Five: agents produce best output when forced to review
+//! their work 4-5 times until convergence. Each pass examines the plan from a
+//! different perspective.
+//!
+//! Task size guidelines: Small features: 2-3 passes. Large/critical: 4-5 passes.
 
 use std::path::PathBuf;
 use tracing::debug;
@@ -9,17 +12,17 @@ use tracing::debug;
 /// Rule of Five pass definitions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ReviewPass {
-    /// Pass 1: Are all sections filled? Any gaps?
+    /// Pass 1: Breadth over depth. Get the shape right.
     #[default]
-    Completeness = 1,
-    /// Pass 2: Logical errors? Wrong assumptions?
+    Draft = 1,
+    /// Pass 2: Fix errors, bugs, invalid assumptions. Is the logic sound?
     Correctness = 2,
-    /// Pass 3: Error handling? Failure modes?
-    EdgeCases = 3,
-    /// Pass 4: Fits larger system? Scalability?
-    Architecture = 4,
-    /// Pass 5: Understandable? Implementable?
-    Clarity = 5,
+    /// Pass 3: Can someone else understand and implement this?
+    Clarity = 3,
+    /// Pass 4: What could go wrong? What's missing? Are we solving the right problem?
+    EdgeCases = 4,
+    /// Pass 5: Is this something you'd be proud to ship?
+    Excellence = 5,
 }
 
 impl ReviewPass {
@@ -27,25 +30,25 @@ impl ReviewPass {
     pub fn description(&self) -> &'static str {
         debug!(?self, "ReviewPass::description: called");
         match self {
-            Self::Completeness => {
-                debug!("ReviewPass::description: Completeness branch");
-                "Check all sections filled, no gaps"
+            Self::Draft => {
+                debug!("ReviewPass::description: Draft branch");
+                "Breadth over depth, get the shape right"
             }
             Self::Correctness => {
                 debug!("ReviewPass::description: Correctness branch");
-                "Check for logical errors and wrong assumptions"
-            }
-            Self::EdgeCases => {
-                debug!("ReviewPass::description: EdgeCases branch");
-                "Check error handling and failure modes"
-            }
-            Self::Architecture => {
-                debug!("ReviewPass::description: Architecture branch");
-                "Check system fit and scalability"
+                "Fix errors, bugs, invalid assumptions"
             }
             Self::Clarity => {
                 debug!("ReviewPass::description: Clarity branch");
-                "Check understandability and implementability"
+                "Can someone else understand and implement this?"
+            }
+            Self::EdgeCases => {
+                debug!("ReviewPass::description: EdgeCases branch");
+                "What could go wrong? What's missing?"
+            }
+            Self::Excellence => {
+                debug!("ReviewPass::description: Excellence branch");
+                "Is this something you'd be proud to ship?"
             }
         }
     }
@@ -54,50 +57,50 @@ impl ReviewPass {
     pub fn instructions(&self) -> &'static str {
         debug!(?self, "ReviewPass::instructions: called");
         match self {
-            Self::Completeness => {
-                debug!("ReviewPass::instructions: Completeness branch");
-                "Review the plan for completeness:\n\
-                 - Are all required sections present and filled in?\n\
-                 - Are there any TODOs, placeholders, or TBD markers?\n\
-                 - Does every decision have a rationale?\n\
-                 - Are dependencies and prerequisites listed?\n\
-                 - Is the scope clearly bounded?"
+            Self::Draft => {
+                debug!("ReviewPass::instructions: Draft branch");
+                "Create the initial draft:\n\
+                 - Focus on breadth over depth\n\
+                 - Get the shape right using the template\n\
+                 - Start with the problem, not the solution\n\
+                 - Be explicit about non-goals\n\
+                 - Include alternatives considered"
             }
             Self::Correctness => {
                 debug!("ReviewPass::instructions: Correctness branch");
-                "Review the plan for correctness:\n\
-                 - Are there any logical errors or contradictions?\n\
+                "Review with 'fresh eyes' for correctness:\n\
+                 - Are there logical errors or contradictions?\n\
                  - Are assumptions stated and validated?\n\
-                 - Does the technical approach make sense?\n\
-                 - Are there any obvious bugs in the proposed design?\n\
-                 - Do the numbers and estimates add up?"
-            }
-            Self::EdgeCases => {
-                debug!("ReviewPass::instructions: EdgeCases branch");
-                "Review the plan for edge cases and failure handling:\n\
-                 - What happens when things go wrong?\n\
-                 - Are error scenarios documented?\n\
-                 - How does the system recover from failures?\n\
-                 - Are there race conditions or timing issues?\n\
-                 - What are the boundary conditions?"
-            }
-            Self::Architecture => {
-                debug!("ReviewPass::instructions: Architecture branch");
-                "Review the plan for architectural fit:\n\
-                 - Does this fit with the larger system design?\n\
-                 - Are there scalability concerns?\n\
-                 - Will this cause technical debt?\n\
-                 - Is the approach consistent with existing patterns?\n\
-                 - Are there better alternative approaches?"
+                 - Are there technical inaccuracies?\n\
+                 - Is the logic sound?\n\
+                 - Fix what you find."
             }
             Self::Clarity => {
                 debug!("ReviewPass::instructions: Clarity branch");
-                "Review the plan for clarity and implementability:\n\
-                 - Can an engineer implement this without asking questions?\n\
+                "Review as a new team member who must implement this:\n\
+                 - Can someone else understand and implement this?\n\
+                 - What's confusing? Simplify.\n\
                  - Are the steps concrete and actionable?\n\
                  - Is the language precise and unambiguous?\n\
-                 - Are code examples provided where helpful?\n\
-                 - Is the plan properly organized?"
+                 - Are code examples provided where helpful?"
+            }
+            Self::EdgeCases => {
+                debug!("ReviewPass::instructions: EdgeCases branch");
+                "Review for edge cases and completeness:\n\
+                 - What are the weakest parts?\n\
+                 - What could go wrong?\n\
+                 - What's missing?\n\
+                 - Are we solving the right problem?\n\
+                 - Are error scenarios documented?"
+            }
+            Self::Excellence => {
+                debug!("ReviewPass::instructions: Excellence branch");
+                "Final pass - make it shine:\n\
+                 - Is this something you'd be proud to ship?\n\
+                 - Does it fit the larger system?\n\
+                 - Is the approach consistent with existing patterns?\n\
+                 - Are there better alternative approaches?\n\
+                 - Polish and refine."
             }
         }
     }
@@ -106,24 +109,24 @@ impl ReviewPass {
     pub fn validation_command(&self) -> &'static str {
         debug!(?self, "ReviewPass::validation_command: called");
         match self {
-            Self::Completeness => {
-                debug!("ReviewPass::validation_command: Completeness branch");
+            Self::Draft => {
+                debug!("ReviewPass::validation_command: Draft branch");
                 "plan-pass-1.sh"
             }
             Self::Correctness => {
                 debug!("ReviewPass::validation_command: Correctness branch");
                 "plan-pass-2.sh"
             }
-            Self::EdgeCases => {
-                debug!("ReviewPass::validation_command: EdgeCases branch");
-                "plan-pass-3.sh"
-            }
-            Self::Architecture => {
-                debug!("ReviewPass::validation_command: Architecture branch");
-                "plan-pass-4.sh"
-            }
             Self::Clarity => {
                 debug!("ReviewPass::validation_command: Clarity branch");
+                "plan-pass-3.sh"
+            }
+            Self::EdgeCases => {
+                debug!("ReviewPass::validation_command: EdgeCases branch");
+                "plan-pass-4.sh"
+            }
+            Self::Excellence => {
+                debug!("ReviewPass::validation_command: Excellence branch");
                 "plan-pass-5.sh"
             }
         }
@@ -140,24 +143,24 @@ impl ReviewPass {
         debug!(%n, "ReviewPass::from_number: called");
         match n {
             1 => {
-                debug!("ReviewPass::from_number: n=1 Completeness branch");
-                Some(Self::Completeness)
+                debug!("ReviewPass::from_number: n=1 Draft branch");
+                Some(Self::Draft)
             }
             2 => {
                 debug!("ReviewPass::from_number: n=2 Correctness branch");
                 Some(Self::Correctness)
             }
             3 => {
-                debug!("ReviewPass::from_number: n=3 EdgeCases branch");
-                Some(Self::EdgeCases)
+                debug!("ReviewPass::from_number: n=3 Clarity branch");
+                Some(Self::Clarity)
             }
             4 => {
-                debug!("ReviewPass::from_number: n=4 Architecture branch");
-                Some(Self::Architecture)
+                debug!("ReviewPass::from_number: n=4 EdgeCases branch");
+                Some(Self::EdgeCases)
             }
             5 => {
-                debug!("ReviewPass::from_number: n=5 Clarity branch");
-                Some(Self::Clarity)
+                debug!("ReviewPass::from_number: n=5 Excellence branch");
+                Some(Self::Excellence)
             }
             _ => {
                 debug!("ReviewPass::from_number: invalid number branch");
@@ -175,7 +178,7 @@ impl ReviewPass {
     /// Check if this is the final pass
     pub fn is_final(&self) -> bool {
         debug!(?self, "ReviewPass::is_final: called");
-        *self == Self::Clarity
+        *self == Self::Excellence
     }
 }
 
@@ -187,25 +190,25 @@ impl std::fmt::Display for ReviewPass {
             "Pass {} ({})",
             self.number(),
             match self {
-                Self::Completeness => {
-                    debug!("ReviewPass::fmt: Completeness branch");
-                    "Completeness"
+                Self::Draft => {
+                    debug!("ReviewPass::fmt: Draft branch");
+                    "Draft"
                 }
                 Self::Correctness => {
                     debug!("ReviewPass::fmt: Correctness branch");
                     "Correctness"
                 }
+                Self::Clarity => {
+                    debug!("ReviewPass::fmt: Clarity branch");
+                    "Clarity"
+                }
                 Self::EdgeCases => {
                     debug!("ReviewPass::fmt: EdgeCases branch");
                     "Edge Cases"
                 }
-                Self::Architecture => {
-                    debug!("ReviewPass::fmt: Architecture branch");
-                    "Architecture"
-                }
-                Self::Clarity => {
-                    debug!("ReviewPass::fmt: Clarity branch");
-                    "Clarity"
+                Self::Excellence => {
+                    debug!("ReviewPass::fmt: Excellence branch");
+                    "Excellence"
                 }
             }
         )
@@ -367,28 +370,28 @@ mod tests {
 
     #[test]
     fn test_review_pass_progression() {
-        let mut pass = ReviewPass::Completeness;
+        let mut pass = ReviewPass::Draft;
         assert_eq!(pass.number(), 1);
 
         pass = pass.next().unwrap();
         assert_eq!(pass, ReviewPass::Correctness);
 
         pass = pass.next().unwrap();
+        assert_eq!(pass, ReviewPass::Clarity);
+
+        pass = pass.next().unwrap();
         assert_eq!(pass, ReviewPass::EdgeCases);
 
         pass = pass.next().unwrap();
-        assert_eq!(pass, ReviewPass::Architecture);
-
-        pass = pass.next().unwrap();
-        assert_eq!(pass, ReviewPass::Clarity);
+        assert_eq!(pass, ReviewPass::Excellence);
         assert!(pass.is_final());
         assert!(pass.next().is_none());
     }
 
     #[test]
     fn test_review_pass_from_number() {
-        assert_eq!(ReviewPass::from_number(1), Some(ReviewPass::Completeness));
-        assert_eq!(ReviewPass::from_number(5), Some(ReviewPass::Clarity));
+        assert_eq!(ReviewPass::from_number(1), Some(ReviewPass::Draft));
+        assert_eq!(ReviewPass::from_number(5), Some(ReviewPass::Excellence));
         assert_eq!(ReviewPass::from_number(0), None);
         assert_eq!(ReviewPass::from_number(6), None);
     }
@@ -398,7 +401,7 @@ mod tests {
         let mut ctx = PlanRefinementContext::new("plan-1", "/tmp/plan.md");
 
         // Not complete with just one pass
-        ctx.record_result(PassResult::converged(ReviewPass::Completeness));
+        ctx.record_result(PassResult::converged(ReviewPass::Draft));
         assert!(!ctx.is_complete());
 
         // Complete with two consecutive converged
@@ -409,23 +412,23 @@ mod tests {
     #[test]
     fn test_context_completion_pass_five() {
         let mut ctx = PlanRefinementContext::new("plan-1", "/tmp/plan.md");
-        ctx.current_pass = ReviewPass::Clarity;
+        ctx.current_pass = ReviewPass::Excellence;
 
         // Not complete if pass 5 didn't converge
         ctx.record_result(PassResult::with_issues(
-            ReviewPass::Clarity,
+            ReviewPass::Excellence,
             vec!["issue".into()],
             vec![],
         ));
         ctx.record_result(PassResult::with_issues(
-            ReviewPass::Clarity,
+            ReviewPass::Excellence,
             vec!["issue".into()],
             vec![],
         ));
         assert!(!ctx.is_complete());
 
         // Complete when pass 5 converges
-        ctx.record_result(PassResult::converged(ReviewPass::Clarity));
+        ctx.record_result(PassResult::converged(ReviewPass::Excellence));
         assert!(ctx.is_complete());
     }
 
@@ -436,7 +439,7 @@ mod tests {
 
         let mut ctx2 = PlanRefinementContext::new("plan-1", "/tmp/plan.md");
         ctx2.record_result(PassResult::with_issues(
-            ReviewPass::Completeness,
+            ReviewPass::Draft,
             vec!["missing section".into()],
             vec!["added section".into()],
         ));
@@ -445,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_pass_result_construction() {
-        let converged = PassResult::converged(ReviewPass::Completeness);
+        let converged = PassResult::converged(ReviewPass::Draft);
         assert!(converged.converged);
         assert!(converged.issues_found.is_empty());
 
