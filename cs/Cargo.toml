@@ -1,0 +1,43 @@
+[package]
+name = "contextstore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "RLM-style external context store for unlimited context windows"
+
+[lib]
+name = "contextstore"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cs"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { workspace = true }
+clap = { workspace = true }
+colored = { workspace = true }
+dirs = { workspace = true }
+env_logger = { workspace = true }
+eyre = { workspace = true }
+glob = { workspace = true }
+grep-matcher = { workspace = true }
+grep-regex = { workspace = true }
+grep-searcher = { workspace = true }
+log = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+criterion = { workspace = true }
+predicates = { workspace = true }
+proptest = { workspace = true }
+serial_test = { workspace = true }
+tempfile = { workspace = true }

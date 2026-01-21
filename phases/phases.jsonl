@@ -1,4 +1,0 @@
-{"id":"001-pipeline-model","name":"Pipeline Model","spec":"019-pipeline-config","deps":[],"status":"ready","description":"Core pipeline types and definitions"}
-{"id":"002-pipeline-execution-engine","name":"Pipeline Execution Engine","spec":"019-pipeline-config","deps":["001-pipeline-model"],"status":"ready","description":"Pipeline execution and state management"}
-{"id":"003-advanced-triggers","name":"Advanced Triggers","spec":"019-pipeline-config","deps":["001-pipeline-model","002-pipeline-execution-engine"],"status":"ready","description":"Sophisticated trigger mechanisms"}
-{"id":"004-pipeline-monitoring","name":"Pipeline Monitoring","spec":"019-pipeline-config","deps":["001-pipeline-model","002-pipeline-execution-engine","003-advanced-triggers"],"status":"ready","description":"Observability and debugging"}
