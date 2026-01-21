@@ -177,14 +177,11 @@ tasks:
   # Install workspace binaries locally
   install:
     help: "Install all workspace binaries locally via cargo"
+    foreach:
+      items: [td, ts, cs]
+      as: pkg
     bash: |
-      for manifest in */Cargo.toml; do
-        if [ -f "$manifest" ]; then
-          dir=$(dirname "$manifest")
-          echo "Installing from $dir..."
-          cargo install --path "$dir" || echo "⚠️  Could not install $dir (might be a library)"
-        fi
-      done
-      echo "✅ Workspace binaries installed to ~/.cargo/bin"
+      echo "Installing ${pkg}..."
+      cd "${pkg}" && cargo install --path . --locked
 
 
