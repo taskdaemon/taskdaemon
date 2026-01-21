@@ -134,8 +134,8 @@ async fn main() -> Result<()> {
             debug!("main: matched RunDaemon command");
             cmd_run_daemon(&config).await
         }
-        Some(Command::ListLoops) => {
-            debug!("main: matched ListLoops command");
+        Some(Command::Loops) => {
+            debug!("main: matched Loops command");
             cmd_list_loops(&config).await
         }
         Some(Command::Metrics { loop_type, format }) => {

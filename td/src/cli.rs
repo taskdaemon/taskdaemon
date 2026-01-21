@@ -58,7 +58,7 @@ pub enum Command {
     RunDaemon,
 
     /// List available loop types
-    ListLoops,
+    Loops,
 
     /// Show metrics and statistics
     Metrics {

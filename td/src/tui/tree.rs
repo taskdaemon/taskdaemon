@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tracing::debug;
+use tracing::{debug, trace};
 
 use super::state::ExecutionItem;
 
@@ -29,7 +29,7 @@ pub struct TreeNode {
 impl TreeNode {
     /// Create a new tree node from an execution item
     pub fn new(item: ExecutionItem, depth: usize) -> Self {
-        debug!(id = %item.id, depth, "TreeNode::new: called");
+        trace!(id = %item.id, depth, "TreeNode::new: called");
         Self {
             item,
             children: Vec::new(),
@@ -43,13 +43,13 @@ impl TreeNode {
     /// Check if this node has children
     pub fn has_children(&self) -> bool {
         let result = !self.children.is_empty();
-        debug!(id = %self.item.id, result, "TreeNode::has_children: called");
+        trace!(id = %self.item.id, result, "TreeNode::has_children: called");
         result
     }
 
     /// Get progress string for display (e.g., "[2/5]" or "[-]" for no children)
     pub fn progress_string(&self) -> String {
-        debug!(id = %self.item.id, total_children = self.total_children, "TreeNode::progress_string: called");
+        trace!(id = %self.item.id, total_children = self.total_children, "TreeNode::progress_string: called");
         if self.total_children == 0 {
             "[-]".to_string()
         } else {
@@ -60,7 +60,7 @@ impl TreeNode {
     /// Check if this is a draft (Plan in draft state with no children)
     pub fn is_draft(&self) -> bool {
         let result = self.item.status == "draft";
-        debug!(id = %self.item.id, result, "TreeNode::is_draft: called");
+        trace!(id = %self.item.id, result, "TreeNode::is_draft: called");
         result
     }
 }
@@ -83,7 +83,7 @@ pub struct LoopTree {
 impl LoopTree {
     /// Create a new empty tree
     pub fn new() -> Self {
-        debug!("LoopTree::new: called");
+        trace!("LoopTree::new: called");
         Self::default()
     }
 
@@ -244,31 +244,31 @@ impl LoopTree {
 
     /// Get the list of visible nodes in display order
     pub fn visible_nodes(&self) -> &[String] {
-        debug!(count = self.visible_nodes.len(), "LoopTree::visible_nodes: called");
+        trace!(count = self.visible_nodes.len(), "LoopTree::visible_nodes: called");
         &self.visible_nodes
     }
 
     /// Get a node by ID
     pub fn get(&self, id: &str) -> Option<&TreeNode> {
-        debug!(%id, "LoopTree::get: called");
+        trace!(%id, "LoopTree::get: called");
         self.nodes.get(id)
     }
 
     /// Get the currently selected node ID
     pub fn selected_id(&self) -> Option<&String> {
-        debug!(?self.selected_id, "LoopTree::selected_id: called");
+        trace!(?self.selected_id, "LoopTree::selected_id: called");
         self.selected_id.as_ref()
     }
 
     /// Get the currently selected node
     pub fn selected_node(&self) -> Option<&TreeNode> {
-        debug!("LoopTree::selected_node: called");
+        trace!("LoopTree::selected_node: called");
         self.selected_id.as_ref().and_then(|id| self.nodes.get(id))
     }
 
     /// Get the index of the selected node in visible_nodes
     pub fn selected_index(&self) -> Option<usize> {
-        debug!("LoopTree::selected_index: called");
+        trace!("LoopTree::selected_index: called");
         self.selected_id
             .as_ref()
             .and_then(|id| self.visible_nodes.iter().position(|n| n == id))
@@ -382,27 +382,27 @@ impl LoopTree {
     /// Check if the tree is empty
     pub fn is_empty(&self) -> bool {
         let result = self.nodes.is_empty();
-        debug!(result, "LoopTree::is_empty: called");
+        trace!(result, "LoopTree::is_empty: called");
         result
     }
 
     /// Get total number of nodes
     pub fn len(&self) -> usize {
         let len = self.nodes.len();
-        debug!(len, "LoopTree::len: called");
+        trace!(len, "LoopTree::len: called");
         len
     }
 
     /// Get number of visible nodes
     pub fn visible_len(&self) -> usize {
         let len = self.visible_nodes.len();
-        debug!(len, "LoopTree::visible_len: called");
+        trace!(len, "LoopTree::visible_len: called");
         len
     }
 
     /// Check if a node is the last child of its parent
     pub fn is_last_child(&self, id: &str) -> bool {
-        debug!(%id, "LoopTree::is_last_child: called");
+        trace!(%id, "LoopTree::is_last_child: called");
         if let Some(node) = self.nodes.get(id)
             && let Some(ref parent_id) = node.item.parent_id
             && let Some(parent) = self.nodes.get(parent_id)
@@ -415,7 +415,7 @@ impl LoopTree {
 
     /// Get the parent chain for a node (for rendering tree lines)
     pub fn get_ancestor_chain(&self, id: &str) -> Vec<(String, bool)> {
-        debug!(%id, "LoopTree::get_ancestor_chain: called");
+        trace!(%id, "LoopTree::get_ancestor_chain: called");
         let mut chain = Vec::new();
         let mut current_id = id.to_string();
 

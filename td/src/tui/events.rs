@@ -7,7 +7,7 @@ use std::time::Duration;
 use crossterm::event::{self, KeyEvent, MouseEvent};
 use eyre::Result;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Terminal events
 #[derive(Debug)]
@@ -82,10 +82,10 @@ impl EventHandler {
 
     /// Get the next event (async)
     pub async fn next(&mut self) -> Result<Event> {
-        debug!("EventHandler::next: called");
+        trace!("EventHandler::next: called");
         let event = self.rx.recv().await.ok_or_else(|| eyre::eyre!("Event channel closed"));
         if let Ok(ref e) = event {
-            debug!(?e, "EventHandler::next: received event");
+            trace!(?e, "EventHandler::next: received event");
         } else {
             debug!("EventHandler::next: channel closed");
         }

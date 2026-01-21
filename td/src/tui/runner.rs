@@ -440,7 +440,7 @@ Working directory: {}"#,
 
     /// Handle tick event - periodic updates
     async fn handle_tick(&mut self) -> Result<()> {
-        debug!("TuiRunner::handle_tick: called");
+        trace!("TuiRunner::handle_tick: called");
         self.app.state_mut().tick();
 
         // Check for pending REPL submit - spawn background task
@@ -513,7 +513,7 @@ Working directory: {}"#,
 
     /// Process pending stream chunks from LLM (non-blocking)
     fn process_stream_chunks(&mut self) {
-        debug!("TuiRunner::process_stream_chunks: called");
+        trace!("TuiRunner::process_stream_chunks: called");
         if let Some(rx) = &mut self.stream_rx {
             // Collect all chunks first to avoid borrow issues
             let chunks: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
@@ -553,7 +553,7 @@ Working directory: {}"#,
 
     /// Process LLM task results (non-blocking check)
     async fn process_llm_results(&mut self) {
-        debug!("TuiRunner::process_llm_results: called");
+        trace!("TuiRunner::process_llm_results: called");
         // Collect results first to avoid borrow conflicts
         let results: Vec<LlmTaskResult> = if let Some(rx) = &mut self.llm_result_rx {
             let mut collected = Vec::new();
@@ -1052,7 +1052,7 @@ Working directory: {}"#,
 
     /// Process plan creation progress messages (non-blocking)
     async fn process_plan_progress(&mut self) {
-        debug!("TuiRunner::process_plan_progress: called");
+        trace!("TuiRunner::process_plan_progress: called");
         let progress_messages: Vec<PlanProgress> = if let Some(rx) = &mut self.plan_progress_rx {
             let mut collected = Vec::new();
             while let Ok(msg) = rx.try_recv() {
@@ -1608,7 +1608,7 @@ Working directory: {}"#,
 
     /// Refresh data from StateManager
     async fn refresh_data(&mut self) -> Result<()> {
-        debug!("TuiRunner::refresh_data: called");
+        trace!("TuiRunner::refresh_data: called");
 
         // Check daemon status
         let daemon = DaemonManager::new();
@@ -1768,7 +1768,7 @@ Working directory: {}"#,
 
     /// Load data specific to the current view
     async fn load_view_data(&mut self) -> Result<()> {
-        debug!("TuiRunner::load_view_data: called");
+        trace!("TuiRunner::load_view_data: called");
         let state_manager = match &self.state_manager {
             Some(sm) => {
                 debug!("TuiRunner::load_view_data: state manager found");

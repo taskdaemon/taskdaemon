@@ -4,7 +4,7 @@
 //! It does not do any rendering - that's delegated to the views module.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::state::{
     AppState, ConfirmAction, ConfirmDialog, InteractionMode, PendingAction, PlanCreateRequest, ReplMessage, ReplMode,
@@ -33,13 +33,13 @@ impl App {
 
     /// Get reference to state
     pub fn state(&self) -> &AppState {
-        debug!("App::state: called");
+        trace!("App::state: called");
         &self.state
     }
 
     /// Get mutable reference to state
     pub fn state_mut(&mut self) -> &mut AppState {
-        debug!("App::state_mut: called");
+        trace!("App::state_mut: called");
         &mut self.state
     }
 
