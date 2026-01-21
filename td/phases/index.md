@@ -15,3 +15,7 @@ This directory contains implementation phases (atomic implementation units) prod
 | 007-howdy-cli-wireup | [Implement howdy CLI (clap args + error handling)](./007-howdy-cli-wireup.md) | 019bd8-loop-spec-030-cli-implementation | 005-howdy-project-setup, 006-howdy-library-print-greeting | Ready |
 | 008-howdy-build-install | [Build release binary and install to ~/tmp/howdy](./008-howdy-build-install.md) | 019bd8-loop-spec-031-build-installation | 007-howdy-cli-wireup | Ready |
 | 009-howdy-e2e-validation | [End-to-end validation scripts for howdy](./009-howdy-e2e-validation.md) | 019bd8-loop-spec-032-testing-validation | 008-howdy-build-install | Ready |
+| 010-template-engine-core | [Template Engine Core (load + render + context)](./010-template-engine-core.md) | 020-template-rendering | 018-loop-type-definitions | Ready |
+| 011-template-helpers | [Template Helpers (built-in + custom registration)](./011-template-helpers.md) | 020-template-rendering | 010-template-engine-core | Ready |
+| 012-template-partials-caching | [Template Partials + Caching](./012-template-partials-caching.md) | 020-template-rendering | 010-template-engine-core | Ready |
+| 013-template-dev-tools | [Template Dev Tools (validation + preview + diagnostics)](./013-template-dev-tools.md) | 020-template-rendering | 010-template-engine-core, 011-template-helpers | Ready |
