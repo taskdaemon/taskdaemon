@@ -77,8 +77,11 @@ impl Tool for TreeTool {
 
         // Walk directory tree
         let root_for_filter = full_path.clone();
+        // WalkDir depth semantics: root is depth=0. If the caller asks for depth=1,
+        // they expect to see only the root. Therefore, we add 1 to include the root
+        // plus `depth` levels below it.
         let walker = WalkDir::new(&full_path)
-            .max_depth(depth)
+            .max_depth(depth.saturating_add(1))
             .sort_by_file_name()
             .into_iter()
             .filter_entry(move |e| {
