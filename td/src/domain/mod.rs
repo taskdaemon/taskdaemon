@@ -1,6 +1,6 @@
 //! Domain types for TaskDaemon
 //!
-//! Core domain types: Loop, LoopExecution
+//! Core domain types: Loop, LoopExecution, IterationLog
 //! All implement the Record trait for TaskStore persistence.
 //!
 //! The generic Loop type works with any loop type defined in YAML configuration.
@@ -11,11 +11,13 @@ use tracing::debug;
 
 mod execution;
 mod id;
+mod iteration_log;
 mod priority;
 mod record;
 
 pub use execution::{LoopExecution, LoopExecutionStatus};
 pub use id::{DomainId, IdResolver};
+pub use iteration_log::{IterationLog, ToolCallSummary};
 pub use priority::Priority;
 pub use record::{Loop, LoopStatus, Phase, PhaseStatus};
 
