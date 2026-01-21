@@ -111,22 +111,23 @@ pub fn render(state: &mut AppState, frame: &mut Frame) {
 /// Render header with view tabs and metrics
 fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
     trace!("render_header: called");
-    // Build left side: TaskDaemon + daemon status indicator + view tabs
-    let mut left_spans = vec![Span::styled(
-        " TaskDaemon",
-        Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
-    )];
-
-    // Daemon status indicator (colored dot right after TaskDaemon)
+    // Daemon status indicator (colored dot before TaskDaemon)
     let (indicator, indicator_color) = match state.daemon_status {
         DaemonStatus::Connected => ("●", Color::Green),
         DaemonStatus::VersionMismatch => ("●", Color::Yellow),
         DaemonStatus::Disconnected => ("●", Color::Red),
     };
-    left_spans.push(Span::styled(indicator, Style::default().fg(indicator_color)));
-    left_spans.push(Span::raw(" "));
 
-    left_spans.push(Span::raw("│ "));
+    // Build left side: indicator + TaskDaemon + view tabs
+    let mut left_spans = vec![
+        Span::raw(" "),
+        Span::styled(indicator, Style::default().fg(indicator_color)),
+        Span::styled(
+            " TaskDaemon",
+            Style::default().fg(colors::HEADER).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" │ "),
+    ];
 
     // First view tab: Chat|Plan (special handling)
     let is_repl_view = matches!(state.current_view, View::Repl);
@@ -172,7 +173,7 @@ fn render_header(state: &AppState, frame: &mut Frame, area: Rect) {
 
     // Add filter indicator if active
     if !state.filter_text.is_empty() {
-        left_spans.push(Span::raw(" │ "));
+        left_spans.push(Span::styled(" │ ", Style::default().fg(colors::DIM)));
         left_spans.push(Span::styled(
             format!("/{}", &state.filter_text),
             Style::default().fg(Color::Magenta),
@@ -842,8 +843,7 @@ fn render_loops_tree(state: &AppState, frame: &mut Frame, area: Rect) {
                 };
 
                 spans.push(Span::styled(" → ", Style::default().fg(colors::DIM)));
-                spans.push(Span::styled(filename.to_string(), Style::default().fg(Color::Cyan)));
-                spans.push(Span::raw(" "));
+                spans.push(Span::styled(format!("{} ", filename), Style::default().fg(Color::Cyan)));
                 spans.push(Span::styled(artifact_icon, Style::default().fg(artifact_color)));
             }
 
