@@ -32,8 +32,12 @@ prompt-template: |
   - Define phases for implementation
   - Specify dependencies on other Specs (if any)
 
-  Write Specs to the specs output directory.
-  Update the specs index with metadata including deps field.
+  **IMPORTANT: Write all output to the specified directory:**
+  - Output directory: `{{output-dir}}`
+
+  Create the directory if needed. Write all Spec markdown files to `{{output-dir}}/`.
+  Also create an `index.md` in that directory listing all specs.
+  Do NOT write to any other location (like td/docs/specs/ or docs/specs/).
 
   When all Plan functionality is covered by Specs, validation will succeed.
 

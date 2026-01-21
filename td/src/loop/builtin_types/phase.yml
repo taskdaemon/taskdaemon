@@ -34,8 +34,12 @@ prompt-template: |
   - Define dependencies on other Phases (if any)
   - Include specific test cases to validate completion
 
-  Write Phase documents to the phases output directory.
-  Update the phases index with metadata including deps field.
+  **IMPORTANT: Write all output to the specified directory:**
+  - Output directory: `{{output-dir}}`
+
+  Create the directory if needed. Write all Phase markdown files to `{{output-dir}}/`.
+  Also create an `index.md` and `phases.jsonl` in that directory.
+  Do NOT write to any other location (like td/phases/ or phases/).
 
   When all Spec functionality is covered by Phases, validation will succeed.
 

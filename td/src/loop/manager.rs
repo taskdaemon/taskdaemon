@@ -348,22 +348,34 @@ impl LoopManager {
         parts.join("\n")
     }
 
-    /// Get the output file path for a loop execution based on its type
+    /// Get the output paths for a loop execution based on its type
     ///
-    /// Returns the path relative to repo root where this loop should write its output:
-    /// - plan: `.taskdaemon/plans/{exec_id}/plan.md`
-    /// - spec: `.taskdaemon/specs/{exec_id}/spec.md`
-    /// - phase: `.taskdaemon/phases/{exec_id}/phase.md`
+    /// Returns (output_file, output_dir) relative to repo root:
+    /// - plan: single file at `.taskdaemon/artifacts/plans/{exec_id}/plan.md`
+    /// - spec: directory at `.taskdaemon/artifacts/specs/{exec_id}/` (multiple spec files)
+    /// - phase: directory at `.taskdaemon/artifacts/phases/{exec_id}/` (multiple phase files)
     /// - ralph: None (produces code, not markdown)
-    fn get_output_file_path(&self, exec: &LoopExecution) -> Option<String> {
-        let path = match exec.loop_type.as_str() {
-            "plan" => format!(".taskdaemon/plans/{}/plan.md", exec.id),
-            "spec" => format!(".taskdaemon/specs/{}/spec.md", exec.id),
-            "phase" => format!(".taskdaemon/phases/{}/phase.md", exec.id),
-            _ => return None, // ralph and other types don't produce markdown artifacts
+    fn get_output_paths(&self, exec: &LoopExecution) -> (Option<String>, Option<String>) {
+        let (file, dir) = match exec.loop_type.as_str() {
+            "plan" => {
+                let dir = format!(".taskdaemon/artifacts/plans/{}", exec.id);
+                let file = format!("{}/plan.md", dir);
+                (Some(file), Some(dir))
+            }
+            "spec" => {
+                // Spec loops produce multiple spec files in a directory
+                let dir = format!(".taskdaemon/artifacts/specs/{}", exec.id);
+                (None, Some(dir))
+            }
+            "phase" => {
+                // Phase loops produce multiple phase files in a directory
+                let dir = format!(".taskdaemon/artifacts/phases/{}", exec.id);
+                (None, Some(dir))
+            }
+            _ => return (None, None), // ralph and other types don't produce markdown artifacts
         };
-        debug!(exec_id = %exec.id, loop_type = %exec.loop_type, %path, "get_output_file_path");
-        Some(path)
+        debug!(exec_id = %exec.id, loop_type = %exec.loop_type, ?file, ?dir, "get_output_paths");
+        (file, dir)
     }
 
     /// Spawn a loop execution as a tokio task
@@ -386,13 +398,21 @@ impl LoopManager {
             }
         }
 
-        // Set output-file path based on loop type (used by template and cascade)
-        let output_file = self.get_output_file_path(&exec);
+        // Set output paths based on loop type (used by template and cascade)
+        let (output_file, output_dir) = self.get_output_paths(&exec);
         if let Some(ref path) = output_file {
             exec = exec.with_context_value("output-file", path);
             // Also set artifact tracking fields
             exec.set_artifact(path);
             debug!(exec_id = %exec.id, %path, "spawn_loop: set output-file and artifact path");
+        }
+        if let Some(ref dir) = output_dir {
+            exec = exec.with_context_value("output-dir", dir);
+            // If no output-file, use dir as artifact path
+            if output_file.is_none() {
+                exec.set_artifact(dir);
+            }
+            debug!(exec_id = %exec.id, %dir, "spawn_loop: set output-dir");
         }
         self.state.update_execution(exec.clone()).await?;
 

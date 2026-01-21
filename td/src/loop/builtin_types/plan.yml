@@ -30,8 +30,14 @@ prompt-template: |
   {{/if}}
 
   ## Instructions
-  Review and improve the Plan. Write the complete updated Plan to:
-  {{output-file}}
+  Review and improve the Plan.
+
+  **IMPORTANT: Write all output to the specified path:**
+  - Output file: `{{output-file}}`
+  - Output directory: `{{output-dir}}`
+
+  Create the directory if needed, then write the complete Plan document to `{{output-file}}`.
+  Do NOT write to any other location (like td/docs/ or docs/).
 
   When the Plan is complete and passes all 5 review passes, ensure validation succeeds.
 
