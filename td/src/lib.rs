@@ -29,6 +29,7 @@ pub mod config;
 pub mod coordinator;
 pub mod daemon;
 pub mod domain;
+pub mod events;
 pub mod llm;
 pub mod progress;
 pub mod prompts;
@@ -70,3 +71,9 @@ pub use tools::{Tool, ToolContext, ToolError, ToolExecutor, ToolResult};
 pub use validation::{PassResult, PlanRefinementContext, ReviewPass};
 pub use watcher::{MainWatcher, WatcherConfig};
 pub use worktree::{MergeResult, WorktreeConfig, WorktreeError, WorktreeInfo, WorktreeManager, merge_to_main};
+
+// Events module re-exports
+pub use events::{
+    EventBus, EventEmitter, EventLogEntry, EventLogger, IterationOutcome as EventIterationOutcome, TdEvent,
+    create_event_bus, read_execution_events, spawn_event_logger,
+};
