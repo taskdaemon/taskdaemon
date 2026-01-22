@@ -74,6 +74,6 @@ pub use worktree::{MergeResult, WorktreeConfig, WorktreeError, WorktreeInfo, Wor
 
 // Events module re-exports
 pub use events::{
-    EventBus, EventEmitter, EventLogEntry, EventLogger, IterationOutcome as EventIterationOutcome, TdEvent,
+    Event, EventBus, EventEmitter, EventLogEntry, EventLogger, IterationOutcome as EventIterationOutcome,
     create_event_bus, read_execution_events, replay_execution_events, spawn_event_logger,
 };

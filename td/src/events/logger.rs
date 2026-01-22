@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
 use super::bus::EventBus;
-use super::types::{EventLogEntry, TdEvent};
+use super::types::{Event, EventLogEntry};
 
 /// Event logger that writes events to JSONL files
 ///
@@ -45,7 +45,7 @@ impl EventLogger {
     }
 
     /// Write an event to its execution's log file
-    pub fn write_event(&mut self, event: &TdEvent) -> eyre::Result<()> {
+    pub fn write_event(&mut self, event: &Event) -> eyre::Result<()> {
         let execution_id = event.execution_id();
         debug!(%execution_id, event_type = event.event_type(), "EventLogger::write_event");
 
@@ -95,7 +95,7 @@ impl EventLogger {
                 Ok(event) => {
                     // Close writer if loop completed
                     let execution_id = event.execution_id().to_string();
-                    let is_loop_completed = matches!(event, TdEvent::LoopCompleted { .. });
+                    let is_loop_completed = matches!(event, Event::LoopCompleted { .. });
 
                     if let Err(e) = self.write_event(&event) {
                         error!(%execution_id, error = %e, "EventLogger: failed to write event");
@@ -164,7 +164,7 @@ pub fn spawn_event_logger(event_bus: Arc<EventBus>) -> eyre::Result<tokio::task:
 ///
 /// Returns all events for the given execution ID, sorted by timestamp.
 /// Returns an empty Vec if the execution has no logged events.
-pub fn replay_execution_events(execution_id: &str) -> eyre::Result<Vec<TdEvent>> {
+pub fn replay_execution_events(execution_id: &str) -> eyre::Result<Vec<Event>> {
     let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("Could not determine home directory"))?;
     let runs_dir = home.join(".taskdaemon").join("runs");
     let entries = read_execution_events(&runs_dir, execution_id)?;
@@ -188,7 +188,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let mut logger = EventLogger::new(temp.path());
 
-        let event = TdEvent::LoopStarted {
+        let event = Event::LoopStarted {
             execution_id: "test-123".to_string(),
             loop_type: "plan".to_string(),
             task_description: "Test task".to_string(),
@@ -211,16 +211,16 @@ mod tests {
         let temp = tempdir().unwrap();
         let mut logger = EventLogger::new(temp.path());
 
-        let event1 = TdEvent::LoopStarted {
+        let event1 = Event::LoopStarted {
             execution_id: "test-123".to_string(),
             loop_type: "plan".to_string(),
             task_description: "Test task".to_string(),
         };
-        let event2 = TdEvent::IterationStarted {
+        let event2 = Event::IterationStarted {
             execution_id: "test-123".to_string(),
             iteration: 1,
         };
-        let event3 = TdEvent::IterationCompleted {
+        let event3 = Event::IterationCompleted {
             execution_id: "test-123".to_string(),
             iteration: 1,
             outcome: super::super::types::IterationOutcome::ValidationPassed,
@@ -241,12 +241,12 @@ mod tests {
         let temp = tempdir().unwrap();
         let mut logger = EventLogger::new(temp.path());
 
-        let event1 = TdEvent::LoopStarted {
+        let event1 = Event::LoopStarted {
             execution_id: "exec-1".to_string(),
             loop_type: "plan".to_string(),
             task_description: "Task 1".to_string(),
         };
-        let event2 = TdEvent::LoopStarted {
+        let event2 = Event::LoopStarted {
             execution_id: "exec-2".to_string(),
             loop_type: "spec".to_string(),
             task_description: "Task 2".to_string(),
@@ -267,14 +267,14 @@ mod tests {
 
         // Write some events
         logger
-            .write_event(&TdEvent::LoopStarted {
+            .write_event(&Event::LoopStarted {
                 execution_id: "test-read".to_string(),
                 loop_type: "plan".to_string(),
                 task_description: "Test".to_string(),
             })
             .unwrap();
         logger
-            .write_event(&TdEvent::IterationStarted {
+            .write_event(&Event::IterationStarted {
                 execution_id: "test-read".to_string(),
                 iteration: 1,
             })
@@ -300,7 +300,7 @@ mod tests {
         let mut logger = EventLogger::new(temp.path());
 
         logger
-            .write_event(&TdEvent::LoopStarted {
+            .write_event(&Event::LoopStarted {
                 execution_id: "test-close".to_string(),
                 loop_type: "plan".to_string(),
                 task_description: "Test".to_string(),
@@ -319,27 +319,27 @@ mod tests {
 
         // Write events in order
         logger
-            .write_event(&TdEvent::LoopStarted {
+            .write_event(&Event::LoopStarted {
                 execution_id: "test-replay".to_string(),
                 loop_type: "plan".to_string(),
                 task_description: "Test".to_string(),
             })
             .unwrap();
         logger
-            .write_event(&TdEvent::IterationStarted {
+            .write_event(&Event::IterationStarted {
                 execution_id: "test-replay".to_string(),
                 iteration: 1,
             })
             .unwrap();
         logger
-            .write_event(&TdEvent::ValidationStarted {
+            .write_event(&Event::ValidationStarted {
                 execution_id: "test-replay".to_string(),
                 iteration: 1,
                 command: "echo test".to_string(),
             })
             .unwrap();
         logger
-            .write_event(&TdEvent::LoopCompleted {
+            .write_event(&Event::LoopCompleted {
                 execution_id: "test-replay".to_string(),
                 success: true,
                 total_iterations: 1,
@@ -355,5 +355,162 @@ mod tests {
         assert_eq!(entries[1].event.event_type(), "IterationStarted");
         assert_eq!(entries[2].event.event_type(), "ValidationStarted");
         assert_eq!(entries[3].event.event_type(), "LoopCompleted");
+    }
+
+    #[test]
+    fn test_close_execution_idempotent() {
+        let temp = tempdir().unwrap();
+        let mut logger = EventLogger::new(temp.path());
+
+        logger
+            .write_event(&Event::LoopStarted {
+                execution_id: "idem-test".to_string(),
+                loop_type: "plan".to_string(),
+                task_description: "Test".to_string(),
+            })
+            .unwrap();
+
+        // Close multiple times - should not panic
+        logger.close_execution("idem-test");
+        logger.close_execution("idem-test");
+        logger.close_execution("idem-test");
+
+        // Writer should be removed
+        assert!(!logger.writers.contains_key("idem-test"));
+    }
+
+    #[test]
+    fn test_close_nonexistent_execution() {
+        let temp = tempdir().unwrap();
+        let mut logger = EventLogger::new(temp.path());
+
+        // Close an execution that was never opened - should not panic
+        logger.close_execution("never-existed");
+    }
+
+    #[test]
+    fn test_executions_are_isolated() {
+        let temp = tempdir().unwrap();
+        let mut logger = EventLogger::new(temp.path());
+
+        // Write to two different executions
+        logger
+            .write_event(&Event::LoopStarted {
+                execution_id: "iso-1".to_string(),
+                loop_type: "plan".to_string(),
+                task_description: "Task 1".to_string(),
+            })
+            .unwrap();
+        logger
+            .write_event(&Event::LoopStarted {
+                execution_id: "iso-2".to_string(),
+                loop_type: "spec".to_string(),
+                task_description: "Task 2".to_string(),
+            })
+            .unwrap();
+
+        // Add more events to iso-1
+        logger
+            .write_event(&Event::IterationStarted {
+                execution_id: "iso-1".to_string(),
+                iteration: 1,
+            })
+            .unwrap();
+
+        // Read back - each execution should only have its own events
+        let entries_1 = read_execution_events(temp.path(), "iso-1").unwrap();
+        let entries_2 = read_execution_events(temp.path(), "iso-2").unwrap();
+
+        assert_eq!(entries_1.len(), 2);
+        assert_eq!(entries_2.len(), 1);
+
+        // Verify correct content
+        assert!(entries_1.iter().all(|e| e.event.execution_id() == "iso-1"));
+        assert!(entries_2.iter().all(|e| e.event.execution_id() == "iso-2"));
+    }
+
+    #[test]
+    fn test_events_persisted_immediately() {
+        let temp = tempdir().unwrap();
+        let mut logger = EventLogger::new(temp.path());
+
+        // Write an event
+        logger
+            .write_event(&Event::LoopStarted {
+                execution_id: "persist-test".to_string(),
+                loop_type: "plan".to_string(),
+                task_description: "Test".to_string(),
+            })
+            .unwrap();
+
+        // Don't close - just read from disk immediately
+        let log_path = temp.path().join("persist-test").join("events.jsonl");
+        let content = std::fs::read_to_string(&log_path).unwrap();
+
+        // Should be readable without closing
+        assert!(content.contains("LoopStarted"));
+        assert!(content.contains("persist-test"));
+    }
+
+    #[test]
+    fn test_event_log_file_is_jsonl() {
+        let temp = tempdir().unwrap();
+        let mut logger = EventLogger::new(temp.path());
+
+        // Write multiple events
+        for i in 0..5 {
+            logger
+                .write_event(&Event::IterationStarted {
+                    execution_id: "jsonl-test".to_string(),
+                    iteration: i,
+                })
+                .unwrap();
+        }
+
+        // Read raw file - each line should be valid JSON
+        let log_path = temp.path().join("jsonl-test").join("events.jsonl");
+        let content = std::fs::read_to_string(&log_path).unwrap();
+
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 5);
+
+        for line in lines {
+            // Each line should parse as JSON
+            let parsed: serde_json::Value = serde_json::from_str(line).expect("Each line should be valid JSON");
+            assert!(parsed.get("ts").is_some(), "Should have timestamp");
+            assert!(parsed.get("event").is_some(), "Should have event");
+        }
+    }
+
+    #[test]
+    fn test_reopen_after_close() {
+        let temp = tempdir().unwrap();
+        let mut logger = EventLogger::new(temp.path());
+
+        // Write, close, write again
+        logger
+            .write_event(&Event::LoopStarted {
+                execution_id: "reopen-test".to_string(),
+                loop_type: "plan".to_string(),
+                task_description: "First".to_string(),
+            })
+            .unwrap();
+
+        logger.close_execution("reopen-test");
+
+        // Write to same execution again (should reopen/append)
+        logger
+            .write_event(&Event::LoopCompleted {
+                execution_id: "reopen-test".to_string(),
+                success: true,
+                total_iterations: 1,
+            })
+            .unwrap();
+
+        // Both events should be in the file
+        let entries = read_execution_events(temp.path(), "reopen-test").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].event.event_type(), "LoopStarted");
+        assert_eq!(entries[1].event.event_type(), "LoopCompleted");
     }
 }

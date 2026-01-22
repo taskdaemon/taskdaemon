@@ -100,7 +100,7 @@ The EventBus doesn't replace existing systems - it adds a new dimension: **real-
 ```rust
 /// Core event enum - the vocabulary of TD's activity
 #[derive(Clone, Debug, Serialize)]
-pub enum TdEvent {
+pub enum Event {
     // === Loop Lifecycle ===
     LoopStarted {
         execution_id: String,
@@ -214,7 +214,7 @@ use tokio::sync::broadcast;
 use std::sync::Arc;
 
 pub struct EventBus {
-    tx: broadcast::Sender<TdEvent>,
+    tx: broadcast::Sender<Event>,
     // Configuration
     channel_capacity: usize,
 }
@@ -226,13 +226,13 @@ impl EventBus {
     }
 
     /// Emit an event to all subscribers
-    pub fn emit(&self, event: TdEvent) {
+    pub fn emit(&self, event: Event) {
         // Ignore send errors (no subscribers is OK)
         let _ = self.tx.send(event);
     }
 
     /// Subscribe to receive events
-    pub fn subscribe(&self) -> broadcast::Receiver<TdEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.tx.subscribe()
     }
 }
@@ -240,18 +240,18 @@ impl EventBus {
 /// Handle for components to emit events without owning the bus
 #[derive(Clone)]
 pub struct EventEmitter {
-    tx: broadcast::Sender<TdEvent>,
+    tx: broadcast::Sender<Event>,
     execution_id: String,
 }
 
 impl EventEmitter {
-    pub fn emit(&self, event: TdEvent) {
+    pub fn emit(&self, event: Event) {
         let _ = self.tx.send(event);
     }
 
     // Convenience methods
     pub fn prompt_sent(&self, iteration: u32, summary: &str, tokens: u64) {
-        self.emit(TdEvent::PromptSent {
+        self.emit(Event::PromptSent {
             execution_id: self.execution_id.clone(),
             iteration,
             prompt_summary: summary.to_string(),
@@ -260,7 +260,7 @@ impl EventEmitter {
     }
 
     pub fn token_received(&self, iteration: u32, token: &str) {
-        self.emit(TdEvent::TokenReceived {
+        self.emit(Event::TokenReceived {
             execution_id: self.execution_id.clone(),
             iteration,
             token: token.to_string(),
@@ -278,14 +278,14 @@ impl EventEmitter {
 ```rust
 impl LoopEngine {
     pub async fn run(&mut self, emitter: EventEmitter) -> Result<LoopOutcome> {
-        emitter.emit(TdEvent::LoopStarted {
+        emitter.emit(Event::LoopStarted {
             execution_id: self.exec_id.clone(),
             loop_type: self.loop_type,
             task_description: self.task.clone(),
         });
 
         for (phase_idx, phase) in self.phases.iter().enumerate() {
-            emitter.emit(TdEvent::PhaseStarted {
+            emitter.emit(Event::PhaseStarted {
                 execution_id: self.exec_id.clone(),
                 phase_index: phase_idx,
                 phase_name: phase.name.clone(),
@@ -299,7 +299,7 @@ impl LoopEngine {
     }
 
     async fn run_agentic_loop(&mut self, emitter: &EventEmitter) -> Result<()> {
-        emitter.emit(TdEvent::IterationStarted {
+        emitter.emit(Event::IterationStarted {
             execution_id: self.exec_id.clone(),
             iteration: self.iteration,
         });
@@ -332,7 +332,7 @@ async fn run_agentic_loop(
 
     loop {
         // Emit prompt sent event
-        emitter.emit(TdEvent::PromptSent {
+        emitter.emit(Event::PromptSent {
             execution_id: self.exec_id.clone(),
             iteration: self.iteration,
             prompt_summary: truncate(&messages.last().unwrap().content_text(), 200),
@@ -348,7 +348,7 @@ async fn run_agentic_loop(
         tokio::spawn(async move {
             while let Some(chunk) = chunk_rx.recv().await {
                 if let StreamChunk::TextDelta(text) = &chunk {
-                    emitter.emit(TdEvent::TokenReceived {
+                    emitter.emit(Event::TokenReceived {
                         execution_id: self.exec_id.clone(),
                         iteration: self.iteration,
                         token: text.clone(),
@@ -359,7 +359,7 @@ async fn run_agentic_loop(
 
         let response = stream_task.await?;
 
-        emitter.emit(TdEvent::ResponseCompleted {
+        emitter.emit(Event::ResponseCompleted {
             execution_id: self.exec_id.clone(),
             iteration: self.iteration,
             response_summary: truncate(&full_text, 200),
@@ -383,7 +383,7 @@ pub async fn run_validation_streaming(
     emitter: &EventEmitter,
     iteration: u32,
 ) -> Result<ValidationResult> {
-    emitter.emit(TdEvent::ValidationStarted {
+    emitter.emit(Event::ValidationStarted {
         execution_id: emitter.execution_id.clone(),
         iteration,
         command: command.to_string(),
@@ -406,7 +406,7 @@ pub async fn run_validation_streaming(
         let mut lines = reader.lines();
         let mut output = String::new();
         while let Ok(Some(line)) = lines.next_line().await {
-            stdout_emitter.emit(TdEvent::ValidationOutput {
+            stdout_emitter.emit(Event::ValidationOutput {
                 execution_id: stdout_emitter.execution_id.clone(),
                 iteration,
                 line: line.clone(),
@@ -424,7 +424,7 @@ pub async fn run_validation_streaming(
     let stdout_output = stdout_task.await?;
     let stderr_output = stderr_task.await?;
 
-    emitter.emit(TdEvent::ValidationCompleted {
+    emitter.emit(Event::ValidationCompleted {
         execution_id: emitter.execution_id.clone(),
         iteration,
         exit_code: status.code().unwrap_or(-1),
@@ -469,21 +469,21 @@ impl TuiRunner {
         }
     }
 
-    async fn handle_td_event(&mut self, event: TdEvent) -> Result<()> {
+    async fn handle_td_event(&mut self, event: Event) -> Result<()> {
         match event {
-            TdEvent::TokenReceived { execution_id, token, .. } => {
+            Event::TokenReceived { execution_id, token, .. } => {
                 // Append token to live output buffer
                 if self.is_viewing_execution(&execution_id) {
                     self.state.append_live_output(&token);
                 }
             }
-            TdEvent::ValidationOutput { execution_id, line, is_stderr, .. } => {
+            Event::ValidationOutput { execution_id, line, is_stderr, .. } => {
                 // Append validation line to logs
                 if self.is_viewing_execution(&execution_id) {
                     self.state.append_log_line(&line, is_stderr);
                 }
             }
-            TdEvent::IterationCompleted { execution_id, iteration, outcome, .. } => {
+            Event::IterationCompleted { execution_id, iteration, outcome, .. } => {
                 // Update iteration status display
                 self.state.update_iteration_status(&execution_id, iteration, &outcome);
             }
@@ -579,7 +579,7 @@ let filtered = event_bus.subscribe_filtered(|e| e.execution_id() == "execution-1
 #### Phase 1: Core Event Infrastructure
 **Files to create:**
 - `td/src/events/mod.rs` - Module root
-- `td/src/events/types.rs` - `TdEvent` enum definition
+- `td/src/events/types.rs` - `Event` enum definition
 - `td/src/events/bus.rs` - `EventBus` and `EventEmitter` implementation
 - `td/src/events/logger.rs` - `EventLogger` for file persistence
 
@@ -606,7 +606,7 @@ let filtered = event_bus.subscribe_filtered(|e| e.execution_id() == "execution-1
 
 **Key changes:**
 - Line 654: `self.llm.complete(request)` → streaming equivalent
-- Spawn task to forward `StreamChunk::TextDelta` to `TdEvent::TokenReceived`
+- Spawn task to forward `StreamChunk::TextDelta` to `Event::TokenReceived`
 - Collect full response while streaming
 
 **Deliverable:** LLM responses stream token-by-token to event bus.
@@ -630,7 +630,7 @@ let filtered = event_bus.subscribe_filtered(|e| e.execution_id() == "execution-1
 - `td/src/tui/views.rs` - Update `[o]` and `[l]` views to show streaming content
 
 **Key changes:**
-- Add `event_rx: broadcast::Receiver<TdEvent>` to TuiRunner
+- Add `event_rx: broadcast::Receiver<Event>` to TuiRunner
 - Add `handle_td_event()` method
 - `[o] Output` shows `state.live_output` when execution is active
 - `[l] Logs` appends lines from `ValidationOutput` events

@@ -67,4 +67,4 @@ mod types;
 
 pub use bus::{DEFAULT_CHANNEL_CAPACITY, EventBus, EventEmitter, create_event_bus};
 pub use logger::{EventLogger, read_execution_events, replay_execution_events, spawn_event_logger};
-pub use types::{EventLogEntry, IterationOutcome, TdEvent};
+pub use types::{Event, EventLogEntry, IterationOutcome};

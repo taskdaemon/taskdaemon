@@ -271,7 +271,7 @@ mod tests {
         // Check we received stderr output event
         let mut has_stderr_event = false;
         while let Ok(event) = rx.try_recv() {
-            if let crate::events::TdEvent::ValidationOutput { is_stderr: true, .. } = event {
+            if let crate::events::Event::ValidationOutput { is_stderr: true, .. } = event {
                 has_stderr_event = true;
             }
         }

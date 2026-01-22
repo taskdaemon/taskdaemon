@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
-use crate::events::{EventBus, TdEvent};
+use crate::events::{Event as LoopEvent, EventBus};
 use crate::llm::{
     CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
 };
@@ -105,7 +105,7 @@ pub struct TuiRunner {
     /// Event bus for observability events
     event_bus: Option<Arc<EventBus>>,
     /// Receiver for event bus events
-    event_bus_rx: Option<tokio::sync::broadcast::Receiver<TdEvent>>,
+    event_bus_rx: Option<tokio::sync::broadcast::Receiver<LoopEvent>>,
 }
 
 /// Progress updates from plan creation background task
@@ -561,21 +561,21 @@ Working directory: {}"#,
                             // Convert event to log entry for display
                             let log_entry = LogEntry {
                                 iteration: match &event {
-                                    TdEvent::IterationStarted { iteration, .. }
-                                    | TdEvent::IterationCompleted { iteration, .. }
-                                    | TdEvent::PromptSent { iteration, .. }
-                                    | TdEvent::TokenReceived { iteration, .. }
-                                    | TdEvent::ResponseCompleted { iteration, .. }
-                                    | TdEvent::ToolCallStarted { iteration, .. }
-                                    | TdEvent::ToolCallCompleted { iteration, .. }
-                                    | TdEvent::ValidationStarted { iteration, .. }
-                                    | TdEvent::ValidationOutput { iteration, .. }
-                                    | TdEvent::ValidationCompleted { iteration, .. } => *iteration,
+                                    LoopEvent::IterationStarted { iteration, .. }
+                                    | LoopEvent::IterationCompleted { iteration, .. }
+                                    | LoopEvent::PromptSent { iteration, .. }
+                                    | LoopEvent::TokenReceived { iteration, .. }
+                                    | LoopEvent::ResponseCompleted { iteration, .. }
+                                    | LoopEvent::ToolCallStarted { iteration, .. }
+                                    | LoopEvent::ToolCallCompleted { iteration, .. }
+                                    | LoopEvent::ValidationStarted { iteration, .. }
+                                    | LoopEvent::ValidationOutput { iteration, .. }
+                                    | LoopEvent::ValidationCompleted { iteration, .. } => *iteration,
                                     _ => 0,
                                 },
                                 text: format_event_for_display(&event),
-                                is_error: matches!(event, TdEvent::Error { .. }),
-                                is_stdout: matches!(event, TdEvent::ValidationOutput { is_stderr: false, .. }),
+                                is_error: matches!(event, LoopEvent::Error { .. }),
+                                is_stdout: matches!(event, LoopEvent::ValidationOutput { is_stderr: false, .. }),
                             };
                             self.app.state_mut().logs.push(log_entry);
                         }
@@ -2120,25 +2120,25 @@ fn clean_title(raw: &str) -> String {
     words.join(" ")
 }
 
-/// Format a TdEvent for display in the Logs view
-fn format_event_for_display(event: &TdEvent) -> String {
+/// Format a LoopEvent for display in the Logs view
+fn format_event_for_display(event: &LoopEvent) -> String {
     match event {
-        TdEvent::LoopStarted {
+        LoopEvent::LoopStarted {
             loop_type,
             task_description,
             ..
         } => format!("Loop started: {} - {}", loop_type, task_description),
-        TdEvent::PhaseStarted {
+        LoopEvent::PhaseStarted {
             phase_index,
             phase_name,
             total_phases,
             ..
         } => format!("Phase {}/{} started: {}", phase_index + 1, total_phases, phase_name),
-        TdEvent::IterationStarted { iteration, .. } => format!("Iteration {} started", iteration),
-        TdEvent::IterationCompleted { iteration, outcome, .. } => {
+        LoopEvent::IterationStarted { iteration, .. } => format!("Iteration {} started", iteration),
+        LoopEvent::IterationCompleted { iteration, outcome, .. } => {
             format!("Iteration {} completed: {:?}", iteration, outcome)
         }
-        TdEvent::LoopCompleted {
+        LoopEvent::LoopCompleted {
             success,
             total_iterations,
             ..
@@ -2149,13 +2149,13 @@ fn format_event_for_display(event: &TdEvent) -> String {
                 format!("Loop failed after {} iterations", total_iterations)
             }
         }
-        TdEvent::PromptSent {
+        LoopEvent::PromptSent {
             prompt_summary,
             token_count,
             ..
         } => format!("Prompt sent ({} tokens): {}...", token_count, prompt_summary),
-        TdEvent::TokenReceived { token, .. } => token.clone(),
-        TdEvent::ResponseCompleted {
+        LoopEvent::TokenReceived { token, .. } => token.clone(),
+        LoopEvent::ResponseCompleted {
             response_summary,
             input_tokens,
             output_tokens,
@@ -2168,12 +2168,12 @@ fn format_event_for_display(event: &TdEvent) -> String {
             if *has_tool_calls { ", with tools" } else { "" },
             response_summary
         ),
-        TdEvent::ToolCallStarted {
+        LoopEvent::ToolCallStarted {
             tool_name,
             tool_args_summary,
             ..
         } => format!("Tool: {} - {}", tool_name, tool_args_summary),
-        TdEvent::ToolCallCompleted {
+        LoopEvent::ToolCallCompleted {
             tool_name,
             success,
             result_summary,
@@ -2183,15 +2183,15 @@ fn format_event_for_display(event: &TdEvent) -> String {
             let status = if *success { "✓" } else { "✗" };
             format!("{} {} ({}ms): {}", status, tool_name, duration_ms, result_summary)
         }
-        TdEvent::ValidationStarted { command, .. } => format!("Validation: {}", command),
-        TdEvent::ValidationOutput { line, is_stderr, .. } => {
+        LoopEvent::ValidationStarted { command, .. } => format!("Validation: {}", command),
+        LoopEvent::ValidationOutput { line, is_stderr, .. } => {
             if *is_stderr {
                 format!("stderr: {}", line)
             } else {
                 line.clone()
             }
         }
-        TdEvent::ValidationCompleted {
+        LoopEvent::ValidationCompleted {
             exit_code, duration_ms, ..
         } => {
             let status = if *exit_code == 0 { "✓" } else { "✗" };
@@ -2200,8 +2200,8 @@ fn format_event_for_display(event: &TdEvent) -> String {
                 status, exit_code, duration_ms
             )
         }
-        TdEvent::Error { context, message, .. } => format!("ERROR [{}]: {}", context, message),
-        TdEvent::Warning { context, message, .. } => format!("WARN [{}]: {}", context, message),
+        LoopEvent::Error { context, message, .. } => format!("ERROR [{}]: {}", context, message),
+        LoopEvent::Warning { context, message, .. } => format!("WARN [{}]: {}", context, message),
     }
 }
 
