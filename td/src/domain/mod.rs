@@ -9,13 +9,13 @@
 #[allow(unused_imports)]
 use tracing::debug;
 
-mod execution;
 mod id;
 mod iteration_log;
 mod priority;
 mod record;
+mod run;
 
-pub use execution::{LoopExecution, LoopExecutionStatus};
+pub use run::{LoopExecution, LoopExecutionStatus, LoopRun, LoopRunStatus};
 pub use id::{DomainId, IdResolver};
 pub use iteration_log::{IterationLog, ToolCallSummary};
 pub use priority::Priority;
