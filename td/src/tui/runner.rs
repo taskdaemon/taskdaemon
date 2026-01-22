@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
+use crate::events::{EventBus, TdEvent};
 use crate::llm::{
     CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
 };
@@ -99,6 +100,12 @@ pub struct TuiRunner {
     state_event_rx: Option<tokio::sync::broadcast::Receiver<StateEvent>>,
     /// Last known state version (for cross-process change detection)
     last_state_version: u64,
+
+    // === Event bus integration ===
+    /// Event bus for observability events
+    event_bus: Option<Arc<EventBus>>,
+    /// Receiver for event bus events
+    event_bus_rx: Option<tokio::sync::broadcast::Receiver<TdEvent>>,
 }
 
 /// Progress updates from plan creation background task
@@ -148,6 +155,8 @@ impl TuiRunner {
             plan_task: None,
             state_event_rx: None,
             last_state_version: 0,
+            event_bus: None,
+            event_bus_rx: None,
         }
     }
 
@@ -183,6 +192,8 @@ impl TuiRunner {
             plan_task: None,
             state_event_rx,
             last_state_version: read_state_version(),
+            event_bus: None,
+            event_bus_rx: None,
         }
     }
 
@@ -235,6 +246,8 @@ impl TuiRunner {
             plan_task: None,
             state_event_rx,
             last_state_version: read_state_version(),
+            event_bus: None,
+            event_bus_rx: None,
         }
     }
 
@@ -294,6 +307,25 @@ You have access to these tools for exploring the codebase:
 Working directory: {}"#,
             worktree.display()
         )
+    }
+
+    /// Set the event bus for observability events
+    ///
+    /// When set, the TUI will subscribe to events and can display them
+    /// in the Logs view for real-time streaming output.
+    pub fn with_event_bus(mut self, event_bus: Arc<EventBus>) -> Self {
+        debug!("TuiRunner::with_event_bus: called");
+        // Subscribe to event bus
+        self.event_bus_rx = Some(event_bus.subscribe());
+        self.event_bus = Some(event_bus);
+        self
+    }
+
+    /// Get an event emitter for a specific execution
+    ///
+    /// Returns None if no event bus is configured.
+    pub fn event_emitter_for(&self, execution_id: &str) -> Option<crate::events::EventEmitter> {
+        self.event_bus.as_ref().map(|bus| bus.emitter_for(execution_id))
     }
 
     /// Get the current system prompt based on REPL mode
@@ -483,6 +515,9 @@ Working directory: {}"#,
             self.execute_action(action).await;
         }
 
+        // Process event bus events (streaming validation output, etc.)
+        self.process_event_bus_events();
+
         // Check for state change events (instant refresh on new executions - same process)
         self.process_state_events().await?;
 
@@ -509,6 +544,54 @@ Working directory: {}"#,
         }
 
         Ok(())
+    }
+
+    /// Process event bus events (for Logs view updates)
+    fn process_event_bus_events(&mut self) {
+        trace!("TuiRunner::process_event_bus_events: called");
+        if let Some(rx) = &mut self.event_bus_rx {
+            // Process all available events (non-blocking)
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => {
+                        // If we're in the Logs view and the event matches our target, add to logs
+                        if let View::Logs { ref target_id } = self.app.state().current_view
+                            && event.execution_id() == target_id
+                        {
+                            // Convert event to log entry for display
+                            let log_entry = LogEntry {
+                                iteration: match &event {
+                                    TdEvent::IterationStarted { iteration, .. }
+                                    | TdEvent::IterationCompleted { iteration, .. }
+                                    | TdEvent::PromptSent { iteration, .. }
+                                    | TdEvent::TokenReceived { iteration, .. }
+                                    | TdEvent::ResponseCompleted { iteration, .. }
+                                    | TdEvent::ToolCallStarted { iteration, .. }
+                                    | TdEvent::ToolCallCompleted { iteration, .. }
+                                    | TdEvent::ValidationStarted { iteration, .. }
+                                    | TdEvent::ValidationOutput { iteration, .. }
+                                    | TdEvent::ValidationCompleted { iteration, .. } => *iteration,
+                                    _ => 0,
+                                },
+                                text: format_event_for_display(&event),
+                                is_error: matches!(event, TdEvent::Error { .. }),
+                                is_stdout: matches!(event, TdEvent::ValidationOutput { is_stderr: false, .. }),
+                            };
+                            self.app.state_mut().logs.push(log_entry);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        warn!("Event bus lagged, missed {} events", n);
+                    }
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        debug!("Event bus channel closed");
+                        self.event_bus_rx = None;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// Process pending stream chunks from LLM (non-blocking)
@@ -2035,6 +2118,91 @@ fn clean_title(raw: &str) -> String {
     // Limit to 5 words max
     let words: Vec<&str> = title.split_whitespace().take(5).collect();
     words.join(" ")
+}
+
+/// Format a TdEvent for display in the Logs view
+fn format_event_for_display(event: &TdEvent) -> String {
+    match event {
+        TdEvent::LoopStarted {
+            loop_type,
+            task_description,
+            ..
+        } => format!("Loop started: {} - {}", loop_type, task_description),
+        TdEvent::PhaseStarted {
+            phase_index,
+            phase_name,
+            total_phases,
+            ..
+        } => format!("Phase {}/{} started: {}", phase_index + 1, total_phases, phase_name),
+        TdEvent::IterationStarted { iteration, .. } => format!("Iteration {} started", iteration),
+        TdEvent::IterationCompleted { iteration, outcome, .. } => {
+            format!("Iteration {} completed: {:?}", iteration, outcome)
+        }
+        TdEvent::LoopCompleted {
+            success,
+            total_iterations,
+            ..
+        } => {
+            if *success {
+                format!("Loop completed successfully after {} iterations", total_iterations)
+            } else {
+                format!("Loop failed after {} iterations", total_iterations)
+            }
+        }
+        TdEvent::PromptSent {
+            prompt_summary,
+            token_count,
+            ..
+        } => format!("Prompt sent ({} tokens): {}...", token_count, prompt_summary),
+        TdEvent::TokenReceived { token, .. } => token.clone(),
+        TdEvent::ResponseCompleted {
+            response_summary,
+            input_tokens,
+            output_tokens,
+            has_tool_calls,
+            ..
+        } => format!(
+            "Response ({} in / {} out{}): {}",
+            input_tokens,
+            output_tokens,
+            if *has_tool_calls { ", with tools" } else { "" },
+            response_summary
+        ),
+        TdEvent::ToolCallStarted {
+            tool_name,
+            tool_args_summary,
+            ..
+        } => format!("Tool: {} - {}", tool_name, tool_args_summary),
+        TdEvent::ToolCallCompleted {
+            tool_name,
+            success,
+            result_summary,
+            duration_ms,
+            ..
+        } => {
+            let status = if *success { "✓" } else { "✗" };
+            format!("{} {} ({}ms): {}", status, tool_name, duration_ms, result_summary)
+        }
+        TdEvent::ValidationStarted { command, .. } => format!("Validation: {}", command),
+        TdEvent::ValidationOutput { line, is_stderr, .. } => {
+            if *is_stderr {
+                format!("stderr: {}", line)
+            } else {
+                line.clone()
+            }
+        }
+        TdEvent::ValidationCompleted {
+            exit_code, duration_ms, ..
+        } => {
+            let status = if *exit_code == 0 { "✓" } else { "✗" };
+            format!(
+                "{} Validation completed (exit {}, {}ms)",
+                status, exit_code, duration_ms
+            )
+        }
+        TdEvent::Error { context, message, .. } => format!("ERROR [{}]: {}", context, message),
+        TdEvent::Warning { context, message, .. } => format!("WARN [{}]: {}", context, message),
+    }
 }
 
 #[cfg(test)]
