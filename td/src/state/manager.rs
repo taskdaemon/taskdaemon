@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::domain::{Filter, FilterOp, IndexValue, IterationLog, Loop, LoopExecution, LoopExecutionStatus, Store};
+use crate::ipc::DaemonClient;
 
 use super::messages::{StateCommand, StateError, StateResponse};
 
@@ -123,6 +124,27 @@ impl StateManager {
     /// Subscribe to state change events (for instant TUI updates)
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<StateEvent> {
         self.event_tx.subscribe()
+    }
+
+    /// Notify daemon via IPC that an execution is pending
+    ///
+    /// This is fire-and-forget: errors are logged but not propagated to avoid
+    /// blocking the TUI. The daemon's 60-second poll serves as a fallback.
+    async fn notify_daemon_pending(&self, id: &str) {
+        debug!(%id, "notify_daemon_pending: sending IPC notification");
+        let client = DaemonClient::new();
+        if let Err(e) = client.notify_pending(id).await {
+            debug!(error = %e, %id, "notify_daemon_pending: could not notify daemon (may be running in same process)");
+        }
+    }
+
+    /// Notify daemon via IPC that an execution was resumed
+    async fn notify_daemon_resumed(&self, id: &str) {
+        debug!(%id, "notify_daemon_resumed: sending IPC notification");
+        let client = DaemonClient::new();
+        if let Err(e) = client.notify_resumed(id).await {
+            debug!(error = %e, %id, "notify_daemon_resumed: could not notify daemon (may be running in same process)");
+        }
     }
 
     // === Loop operations (generic work units) ===
@@ -553,7 +575,15 @@ impl StateManager {
 
         debug!("resume_execution: setting status to Running");
         execution.set_status(LoopExecutionStatus::Running);
-        self.update_execution(execution).await
+        let exec_id = execution.id.clone();
+        let result = self.update_execution(execution).await;
+
+        // Notify daemon via IPC for immediate pickup (fire-and-forget)
+        if result.is_ok() {
+            self.notify_daemon_resumed(&exec_id).await;
+        }
+
+        result
     }
 
     /// Start a draft execution (transitions Draft -> Pending, daemon picks it up)
@@ -571,7 +601,17 @@ impl StateManager {
 
         debug!("start_draft: marking execution as ready");
         execution.mark_ready();
-        self.update_execution(execution).await
+        let exec_id = execution.id.clone();
+        let result = self.update_execution(execution).await;
+
+        // Notify daemon via IPC for immediate pickup (fire-and-forget)
+        // Also send in-process event for same-process daemon
+        if result.is_ok() {
+            let _ = self.event_tx.send(StateEvent::ExecutionPending { id: exec_id.clone() });
+            self.notify_daemon_pending(&exec_id).await;
+        }
+
+        result
     }
 
     /// Activate a draft execution (transitions Draft -> Running directly, no pending state)
@@ -593,8 +633,10 @@ impl StateManager {
         let result = self.update_execution(execution).await;
 
         // Notify LoopManager that work is ready for immediate pickup
+        // Both in-process event (for same-process daemon) and IPC (for separate daemon)
         if result.is_ok() {
-            let _ = self.event_tx.send(StateEvent::ExecutionPending { id: exec_id });
+            let _ = self.event_tx.send(StateEvent::ExecutionPending { id: exec_id.clone() });
+            self.notify_daemon_pending(&exec_id).await;
         }
 
         result
