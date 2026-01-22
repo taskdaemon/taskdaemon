@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
+// Use backward-compatible type aliases
 use taskdaemon::domain::{Loop, LoopExecution, LoopExecutionStatus, LoopStatus, Phase, Priority};
 use taskdaemon::r#loop::{CascadeHandler, LoopLoader};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
@@ -2012,4 +2013,125 @@ async fn test_event_order_created_before_pending() {
     );
 
     state.shutdown().await.expect("Failed to shutdown");
+}
+
+// =============================================================================
+// Explore / Tool Profile Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_tool_profile_full_has_all_tools() {
+    use taskdaemon::{ToolExecutor, ToolProfile};
+
+    let executor = ToolExecutor::with_profile(ToolProfile::Full);
+    let tool_names = executor.tool_names();
+
+    // Full profile should have write tools
+    assert!(
+        tool_names.contains(&"write".to_string()),
+        "Full profile should have write tool"
+    );
+    assert!(
+        tool_names.contains(&"edit".to_string()),
+        "Full profile should have edit tool"
+    );
+    assert!(
+        tool_names.contains(&"bash".to_string()),
+        "Full profile should have bash tool"
+    );
+    assert!(
+        tool_names.contains(&"explore".to_string()),
+        "Full profile should have explore tool"
+    );
+
+    // And read tools
+    assert!(
+        tool_names.contains(&"read".to_string()),
+        "Full profile should have read tool"
+    );
+    assert!(
+        tool_names.contains(&"glob".to_string()),
+        "Full profile should have glob tool"
+    );
+    assert!(
+        tool_names.contains(&"grep".to_string()),
+        "Full profile should have grep tool"
+    );
+}
+
+#[tokio::test]
+async fn test_tool_profile_readonly_excludes_write_tools() {
+    use taskdaemon::{ToolExecutor, ToolProfile};
+
+    let executor = ToolExecutor::with_profile(ToolProfile::ReadOnly);
+    let tool_names = executor.tool_names();
+
+    // ReadOnly profile should NOT have write tools
+    assert!(
+        !tool_names.contains(&"write".to_string()),
+        "ReadOnly profile should not have write tool"
+    );
+    assert!(
+        !tool_names.contains(&"edit".to_string()),
+        "ReadOnly profile should not have edit tool"
+    );
+    assert!(
+        !tool_names.contains(&"complete_task".to_string()),
+        "ReadOnly profile should not have complete_task tool"
+    );
+    assert!(
+        !tool_names.contains(&"share".to_string()),
+        "ReadOnly profile should not have share tool"
+    );
+
+    // But should have read tools
+    assert!(
+        tool_names.contains(&"read".to_string()),
+        "ReadOnly profile should have read tool"
+    );
+    assert!(
+        tool_names.contains(&"glob".to_string()),
+        "ReadOnly profile should have glob tool"
+    );
+    assert!(
+        tool_names.contains(&"grep".to_string()),
+        "ReadOnly profile should have grep tool"
+    );
+    assert!(
+        tool_names.contains(&"bash".to_string()),
+        "ReadOnly profile should have bash tool (read-only version)"
+    );
+}
+
+#[tokio::test]
+async fn test_explore_config_default_values() {
+    use taskdaemon::{ExploreConfig, Thoroughness};
+
+    let config = ExploreConfig::default();
+
+    assert_eq!(config.thoroughness, Thoroughness::Medium);
+    assert_eq!(config.max_iterations, 6);
+    assert_eq!(config.timeout_secs, 120);
+    assert!(config.model.is_none());
+    assert!(config.parent_id.is_none());
+}
+
+#[tokio::test]
+async fn test_thoroughness_max_iterations() {
+    use taskdaemon::Thoroughness;
+
+    assert_eq!(Thoroughness::Quick.max_iterations(), 3);
+    assert_eq!(Thoroughness::Medium.max_iterations(), 6);
+    assert_eq!(Thoroughness::Thorough.max_iterations(), 10);
+}
+
+#[tokio::test]
+async fn test_tool_context_without_explore_spawner() {
+    use std::path::PathBuf;
+    use taskdaemon::ToolContext;
+
+    let ctx = ToolContext::new(PathBuf::from("/tmp"), "test-exec".to_string());
+
+    // Default context should not have explore spawner (prevents nested explores)
+    assert!(ctx.explore_spawner.is_none());
 }

@@ -65,9 +65,9 @@ const BLOCKED_COMMANDS: &[&str] = &[
 
 /// Blocked output redirections
 const BLOCKED_REDIRECTS: &[&str] = &[
-    ">",  // Output redirect (overwrites)
+    ">", // Output redirect (overwrites)
     ">>", // Output redirect (appends)
-    // Note: We don't block < or | as those are read operations
+         // Note: We don't block < or | as those are read operations
 ];
 
 /// Execute a shell command in the worktree with read-only restrictions
@@ -211,11 +211,7 @@ impl Tool for ReadOnlyBashTool {
         // Truncate long output (slightly smaller limit for exploration)
         let truncated = if result.len() > 20_000 {
             debug!("ReadOnlyBashTool::execute: truncating long output");
-            format!(
-                "{}...\n[truncated, {} chars total]",
-                &result[..20_000],
-                result.len()
-            )
+            format!("{}...\n[truncated, {} chars total]", &result[..20_000], result.len())
         } else {
             debug!("ReadOnlyBashTool::execute: output within size limit");
             result
@@ -260,7 +256,10 @@ mod tests {
             .execute(serde_json::json!({"command": "cat /etc/hostname"}), &ctx)
             .await;
         // cat is allowed (reading), though file might not exist
-        assert!(!result.is_error || result.content.contains("Exit code"), "cat should be allowed");
+        assert!(
+            !result.is_error || result.content.contains("Exit code"),
+            "cat should be allowed"
+        );
     }
 
     #[tokio::test]
@@ -277,7 +276,9 @@ mod tests {
         let result = tool.execute(serde_json::json!({"command": "mkdir newdir"}), &ctx).await;
         assert!(result.is_error, "mkdir should be blocked");
 
-        let result = tool.execute(serde_json::json!({"command": "touch newfile"}), &ctx).await;
+        let result = tool
+            .execute(serde_json::json!({"command": "touch newfile"}), &ctx)
+            .await;
         assert!(result.is_error, "touch should be blocked");
 
         let result = tool
@@ -340,7 +341,9 @@ mod tests {
         let result = tool.execute(serde_json::json!({"command": "git status"}), &ctx).await;
         assert!(!result.is_error, "git status should be allowed");
 
-        let result = tool.execute(serde_json::json!({"command": "git log --oneline"}), &ctx).await;
+        let result = tool
+            .execute(serde_json::json!({"command": "git log --oneline"}), &ctx)
+            .await;
         // Even if there are no commits, the command itself should not be blocked
         assert!(
             !result.is_error || result.content.contains("Exit code"),

@@ -15,11 +15,11 @@ mod priority;
 mod record;
 mod run;
 
-pub use run::{LoopExecution, LoopExecutionStatus, LoopRun, LoopRunStatus};
 pub use id::{DomainId, IdResolver};
 pub use iteration_log::{IterationLog, ToolCallSummary};
 pub use priority::Priority;
 pub use record::{Loop, LoopStatus, Phase, PhaseStatus};
+pub use run::{LoopExecution, LoopExecutionStatus, LoopRun, LoopRunStatus};
 
 // Re-export taskstore types for convenience
 pub use taskstore::{Filter, FilterOp, IndexValue, Record, Store};

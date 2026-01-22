@@ -22,8 +22,8 @@ pub use config::LoopConfig;
 pub use engine::{IterationResult, LoopEngine, LoopStatus};
 pub use explore::{ExploreTask, generate_explore_id};
 pub use manager::{
-    LoopManager, LoopManagerConfig, LoopTaskResult, TaskManager, TaskManagerConfig, TaskResult,
-    topological_sort, validate_dependency_graph,
+    LoopManager, LoopManagerConfig, LoopTaskResult, TaskManager, TaskManagerConfig, TaskResult, topological_sort,
+    validate_dependency_graph,
 };
 pub use metrics::{GlobalSummary, IterationTimer, LoopMetrics, LoopStats, TypeMetrics};
 pub use type_loader::{LoopLoader, LoopType};

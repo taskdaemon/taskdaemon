@@ -167,11 +167,11 @@ impl ExploreTask {
     fn response_to_message(&self, response: &CompletionResponse) -> Message {
         let mut blocks = Vec::new();
 
-        // Add text content if present
-        if let Some(text) = &response.content {
-            if !text.is_empty() {
-                blocks.push(ContentBlock::text(text));
-            }
+        // Add text content if present and non-empty
+        if let Some(text) = &response.content
+            && !text.is_empty()
+        {
+            blocks.push(ContentBlock::text(text));
         }
 
         // Add tool use blocks
@@ -251,10 +251,7 @@ impl ExploreTask {
             Err(e) => {
                 // If summary fails, extract what we can from the last messages
                 warn!(%self.id, error = %e, "ExploreTask: force_summary LLM call failed");
-                Ok(format!(
-                    "Exploration incomplete ({}). Unable to generate summary.",
-                    e
-                ))
+                Ok(format!("Exploration incomplete ({}). Unable to generate summary.", e))
             }
         }
     }
@@ -324,8 +321,7 @@ mod tests {
         // We can't easily test this without a real LLM, but we can test the extraction logic
         let response = CompletionResponse {
             content: Some(
-                "I found several files.\n\n## SUMMARY\n- Found 5 config files\n- Main entry is src/main.rs"
-                    .to_string(),
+                "I found several files.\n\n## SUMMARY\n- Found 5 config files\n- Main entry is src/main.rs".to_string(),
             ),
             tool_calls: vec![],
             stop_reason: StopReason::EndTurn,

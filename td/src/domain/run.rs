@@ -346,10 +346,7 @@ impl LoopRun {
     /// Check if the loop is active (running or rebasing)
     pub fn is_active(&self) -> bool {
         debug!(%self.id, ?self.status, "LoopRun::is_active: called");
-        let result = matches!(
-            self.status,
-            LoopRunStatus::Running | LoopRunStatus::Rebasing
-        );
+        let result = matches!(self.status, LoopRunStatus::Running | LoopRunStatus::Rebasing);
         if result {
             debug!("LoopRun::is_active: is active");
         } else {
