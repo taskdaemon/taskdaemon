@@ -209,4 +209,44 @@ mod tests {
         let client = DaemonClient::with_socket_path(path);
         assert!(!client.socket_exists());
     }
+
+    #[tokio::test]
+    async fn test_connect_to_nonexistent_socket_fails() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("nonexistent.sock");
+        let client = DaemonClient::with_socket_path(path).with_timeout(Duration::from_millis(100));
+
+        // Should fail because socket doesn't exist
+        let result = client.ping().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // Should be a connection error
+        assert!(
+            err.contains("connect") || err.contains("No such file") || err.contains("Connection refused"),
+            "Expected connection error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_notify_pending_to_nonexistent_socket_fails() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("nonexistent.sock");
+        let client = DaemonClient::with_socket_path(path).with_timeout(Duration::from_millis(100));
+
+        // Should fail gracefully
+        let result = client.notify_pending("test-exec").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_notify_resumed_to_nonexistent_socket_fails() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("nonexistent.sock");
+        let client = DaemonClient::with_socket_path(path).with_timeout(Duration::from_millis(100));
+
+        // Should fail gracefully
+        let result = client.notify_resumed("test-exec").await;
+        assert!(result.is_err());
+    }
 }
