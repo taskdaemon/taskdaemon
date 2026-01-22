@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
-use crate::events::{Event as LoopEvent, EventBus};
+use crate::events::{Event as LoopEvent, EventBus, replay_execution_events};
 use crate::llm::{
     CompletionRequest, ContentBlock, LlmClient, Message, StopReason, StreamChunk, ToolCall, ToolDefinition,
 };
@@ -106,6 +106,10 @@ pub struct TuiRunner {
     event_bus: Option<Arc<EventBus>>,
     /// Receiver for event bus events
     event_bus_rx: Option<tokio::sync::broadcast::Receiver<LoopEvent>>,
+
+    // === Logs view state ===
+    /// Track which execution's logs we've loaded to avoid reloading on every refresh
+    logs_loaded_for: Option<String>,
 }
 
 /// Progress updates from plan creation background task
@@ -157,6 +161,7 @@ impl TuiRunner {
             last_state_version: 0,
             event_bus: None,
             event_bus_rx: None,
+            logs_loaded_for: None,
         }
     }
 
@@ -194,6 +199,7 @@ impl TuiRunner {
             last_state_version: read_state_version(),
             event_bus: None,
             event_bus_rx: None,
+            logs_loaded_for: None,
         }
     }
 
@@ -248,6 +254,7 @@ impl TuiRunner {
             last_state_version: read_state_version(),
             event_bus: None,
             event_bus_rx: None,
+            logs_loaded_for: None,
         }
     }
 
@@ -1880,78 +1887,60 @@ Working directory: {}"#,
         let view = self.app.state().current_view.clone();
         debug!(?view, "TuiRunner::load_view_data: current view");
 
+        // Clear logs cache when not in Logs view so re-entry reloads
+        if !matches!(view, View::Logs { .. }) {
+            self.logs_loaded_for = None;
+        }
+
         match view {
             View::Logs { ref target_id } => {
-                debug!(%target_id, "TuiRunner::load_view_data: loading logs");
-                // Load IterationLogs for the execution
-                if let Ok(iteration_logs) = state_manager.list_iteration_logs(target_id).await {
-                    let mut entries: Vec<LogEntry> = Vec::new();
+                // Only load historical events ONCE when first entering this view
+                // Live updates come via event bus subscription in process_event_bus_events()
+                if self.logs_loaded_for.as_deref() != Some(target_id.as_str()) {
+                    debug!(%target_id, "TuiRunner::load_view_data: first load for logs view");
+                    self.logs_loaded_for = Some(target_id.clone());
 
-                    for log in iteration_logs {
-                        // Add stdout lines
-                        if !log.stdout.is_empty() {
-                            for line in log.stdout.lines() {
-                                entries.push(LogEntry {
-                                    iteration: log.iteration,
-                                    text: line.to_string(),
-                                    is_error: false,
-                                    is_stdout: true,
-                                });
-                            }
+                    // Load persisted events from JSONL file (historical data)
+                    match replay_execution_events(target_id) {
+                        Ok(events) if !events.is_empty() => {
+                            debug!(%target_id, event_count = events.len(), "TuiRunner::load_view_data: loaded events from JSONL");
+                            let entries: Vec<LogEntry> = events
+                                .iter()
+                                .map(|event| {
+                                    let iteration = match event {
+                                        LoopEvent::IterationStarted { iteration, .. }
+                                        | LoopEvent::IterationCompleted { iteration, .. }
+                                        | LoopEvent::PromptSent { iteration, .. }
+                                        | LoopEvent::TokenReceived { iteration, .. }
+                                        | LoopEvent::ResponseCompleted { iteration, .. }
+                                        | LoopEvent::ToolCallStarted { iteration, .. }
+                                        | LoopEvent::ToolCallCompleted { iteration, .. }
+                                        | LoopEvent::ValidationStarted { iteration, .. }
+                                        | LoopEvent::ValidationOutput { iteration, .. }
+                                        | LoopEvent::ValidationCompleted { iteration, .. } => *iteration,
+                                        _ => 0,
+                                    };
+                                    LogEntry {
+                                        iteration,
+                                        text: format_event_for_display(event),
+                                        is_error: matches!(event, LoopEvent::Error { .. }),
+                                        is_stdout: matches!(
+                                            event,
+                                            LoopEvent::ValidationOutput { is_stderr: false, .. }
+                                        ),
+                                    }
+                                })
+                                .collect();
+                            self.app.state_mut().logs = entries;
                         }
-
-                        // Add stderr lines (marked as errors if exit_code != 0)
-                        if !log.stderr.is_empty() {
-                            for line in log.stderr.lines() {
-                                entries.push(LogEntry {
-                                    iteration: log.iteration,
-                                    text: line.to_string(),
-                                    is_error: log.exit_code != 0,
-                                    is_stdout: false,
-                                });
-                            }
-                        }
-
-                        // Add a summary line if neither stdout nor stderr
-                        if log.stdout.is_empty() && log.stderr.is_empty() {
-                            let summary = if log.exit_code == 0 {
-                                format!("Validation passed ({}ms)", log.duration_ms)
-                            } else {
-                                format!(
-                                    "Validation failed with exit code {} ({}ms)",
-                                    log.exit_code, log.duration_ms
-                                )
-                            };
-                            entries.push(LogEntry {
-                                iteration: log.iteration,
-                                text: summary,
-                                is_error: log.exit_code != 0,
-                                is_stdout: false,
-                            });
+                        _ => {
+                            // Clear logs if no events found
+                            debug!(%target_id, "TuiRunner::load_view_data: no events found");
+                            self.app.state_mut().logs.clear();
                         }
                     }
-
-                    self.app.state_mut().logs = entries;
-                } else if let Ok(Some(exec)) = state_manager.get_execution(target_id).await {
-                    // Fallback: parse progress string if no IterationLogs exist
-                    let entries: Vec<LogEntry> = exec
-                        .progress
-                        .lines()
-                        .enumerate()
-                        .map(|(i, line)| {
-                            let is_error = line.contains("ERROR") || line.contains("error:");
-                            let is_stdout = line.contains("STDOUT:") || line.starts_with('>');
-                            LogEntry {
-                                iteration: (i / 10 + 1) as u32, // Rough estimate
-                                text: line.to_string(),
-                                is_error,
-                                is_stdout,
-                            }
-                        })
-                        .collect();
-
-                    self.app.state_mut().logs = entries;
                 }
+                // Live events are added via process_event_bus_events() - no polling!
             }
             View::Describe {
                 ref target_id,

@@ -30,6 +30,7 @@ pub mod coordinator;
 pub mod daemon;
 pub mod domain;
 pub mod events;
+pub mod ipc;
 pub mod llm;
 pub mod progress;
 pub mod prompts;
