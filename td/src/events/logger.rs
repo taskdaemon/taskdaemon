@@ -160,6 +160,17 @@ pub fn spawn_event_logger(event_bus: Arc<EventBus>) -> eyre::Result<tokio::task:
     }))
 }
 
+/// Replay events for an execution from the default runs directory
+///
+/// Returns all events for the given execution ID, sorted by timestamp.
+/// Returns an empty Vec if the execution has no logged events.
+pub fn replay_execution_events(execution_id: &str) -> eyre::Result<Vec<TdEvent>> {
+    let home = dirs::home_dir().ok_or_else(|| eyre::eyre!("Could not determine home directory"))?;
+    let runs_dir = home.join(".taskdaemon").join("runs");
+    let entries = read_execution_events(&runs_dir, execution_id)?;
+    Ok(entries.into_iter().map(|e| e.event).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +310,50 @@ mod tests {
         assert!(logger.writers.contains_key("test-close"));
         logger.close_execution("test-close");
         assert!(!logger.writers.contains_key("test-close"));
+    }
+
+    #[test]
+    fn test_replay_preserves_order() {
+        let temp = tempdir().unwrap();
+        let mut logger = EventLogger::new(temp.path());
+
+        // Write events in order
+        logger
+            .write_event(&TdEvent::LoopStarted {
+                execution_id: "test-replay".to_string(),
+                loop_type: "plan".to_string(),
+                task_description: "Test".to_string(),
+            })
+            .unwrap();
+        logger
+            .write_event(&TdEvent::IterationStarted {
+                execution_id: "test-replay".to_string(),
+                iteration: 1,
+            })
+            .unwrap();
+        logger
+            .write_event(&TdEvent::ValidationStarted {
+                execution_id: "test-replay".to_string(),
+                iteration: 1,
+                command: "echo test".to_string(),
+            })
+            .unwrap();
+        logger
+            .write_event(&TdEvent::LoopCompleted {
+                execution_id: "test-replay".to_string(),
+                success: true,
+                total_iterations: 1,
+            })
+            .unwrap();
+
+        // Read back events
+        let entries = read_execution_events(temp.path(), "test-replay").unwrap();
+        assert_eq!(entries.len(), 4);
+
+        // Verify order
+        assert_eq!(entries[0].event.event_type(), "LoopStarted");
+        assert_eq!(entries[1].event.event_type(), "IterationStarted");
+        assert_eq!(entries[2].event.event_type(), "ValidationStarted");
+        assert_eq!(entries[3].event.event_type(), "LoopCompleted");
     }
 }
