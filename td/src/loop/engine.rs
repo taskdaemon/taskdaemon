@@ -21,7 +21,7 @@ use crate::state::StateManager;
 use crate::tools::{ToolContext, ToolExecutor, ToolResult};
 
 use super::LoopConfig;
-use super::validation::run_validation;
+use super::validation::{run_validation, run_validation_streaming};
 
 /// Truncate a string to a maximum length, adding "..." if truncated
 fn truncate_str(s: &str, max_len: usize) -> String {
@@ -574,14 +574,25 @@ impl LoopEngine {
             }
         }
 
-        // Run validation
+        // Run validation (use streaming if event emitter is configured)
         debug!(exec_id = %self.exec_id, command = %self.config.validation_command, "run_iteration: running validation");
-        let validation = run_validation(
-            &self.config.validation_command,
-            &self.worktree,
-            Duration::from_millis(self.config.iteration_timeout_ms),
-        )
-        .await?;
+        let validation = if let Some(ref emitter) = self.event_emitter {
+            run_validation_streaming(
+                &self.config.validation_command,
+                &self.worktree,
+                Duration::from_millis(self.config.iteration_timeout_ms),
+                emitter,
+                self.iteration,
+            )
+            .await?
+        } else {
+            run_validation(
+                &self.config.validation_command,
+                &self.worktree,
+                Duration::from_millis(self.config.iteration_timeout_ms),
+            )
+            .await?
+        };
         debug!(exec_id = %self.exec_id, exit_code = validation.exit_code, duration_ms = validation.duration_ms, "run_iteration: validation complete");
 
         // Record progress
