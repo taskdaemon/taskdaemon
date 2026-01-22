@@ -6,8 +6,8 @@ use tracing::debug;
 use crate::llm::{ToolCall, ToolDefinition};
 
 use super::builtin::{
-    CompleteTaskTool, EditFileTool, FetchTool, GlobTool, GrepTool, ListDirectoryTool, QueryTool, ReadFileTool,
-    ReadOnlyBashTool, RunCommandTool, SearchTool, ShareTool, TodoTool, TreeTool, WriteFileTool,
+    CompleteTaskTool, EditFileTool, ExploreTool, FetchTool, GlobTool, GrepTool, ListDirectoryTool, QueryTool,
+    ReadFileTool, ReadOnlyBashTool, RunCommandTool, SearchTool, ShareTool, TodoTool, TreeTool, WriteFileTool,
 };
 use super::{Tool, ToolContext, ToolResult};
 
@@ -62,6 +62,9 @@ impl ToolExecutor {
                 // Coordination tools (require coordinator handle in context)
                 tools.insert("query".into(), Box::new(QueryTool));
                 tools.insert("share".into(), Box::new(ShareTool));
+
+                // Exploration tool (requires explore_spawner in context)
+                tools.insert("explore".into(), Box::new(ExploreTool));
             }
             ToolProfile::ReadOnly => {
                 // Read-only file system tools

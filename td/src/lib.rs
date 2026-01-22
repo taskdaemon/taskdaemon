@@ -60,15 +60,18 @@ pub use llm::{
     AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError, OpenAIClient, create_client,
 };
 pub use r#loop::{
-    CascadeHandler, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopLoader, LoopManager,
-    LoopManagerConfig, LoopMetrics, LoopStats, LoopTaskResult, LoopType, TaskManager, TaskManagerConfig, TaskResult,
-    TypeMetrics, topological_sort, validate_dependency_graph,
+    CascadeHandler, ExploreTask, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopLoader,
+    LoopManager, LoopManagerConfig, LoopMetrics, LoopStats, LoopTaskResult, LoopType, TaskManager, TaskManagerConfig,
+    TaskResult, TypeMetrics, generate_explore_id, topological_sort, validate_dependency_graph,
 };
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 pub use prompts::{FocusArea, PromptContext, PromptLoader};
 pub use scheduler::{QueueEntry, QueueEntryStatus, QueueState, ScheduleResult, Scheduler, SchedulerConfig};
 pub use state::{RecoveryStats, StateCommand, StateError, StateManager, StateResponse, recover, scan_for_recovery};
-pub use tools::{Tool, ToolContext, ToolError, ToolExecutor, ToolResult};
+pub use tools::{
+    ExploreConfig, ExploreSpawner, ExploreSpawnerRef, Thoroughness, Tool, ToolContext, ToolError, ToolExecutor,
+    ToolProfile, ToolResult,
+};
 pub use validation::{PassResult, PlanRefinementContext, ReviewPass};
 pub use watcher::{MainWatcher, WatcherConfig};
 pub use worktree::{MergeResult, WorktreeConfig, WorktreeError, WorktreeInfo, WorktreeManager, merge_to_main};

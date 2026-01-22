@@ -2,6 +2,7 @@
 
 mod complete_task;
 mod edit_file;
+mod explore;
 mod fetch;
 mod glob;
 mod grep;
@@ -18,6 +19,7 @@ mod write_file;
 
 pub use complete_task::CompleteTaskTool;
 pub use edit_file::EditFileTool;
+pub use explore::ExploreTool;
 pub use fetch::FetchTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
