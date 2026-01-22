@@ -213,6 +213,12 @@ impl LoopManager {
         let ipc_listener = ipc_listener;
 
         loop {
+            // Check if shutdown was requested via IPC
+            if self.shutdown_requested {
+                debug!("run: shutdown_requested flag set, breaking loop");
+                break;
+            }
+
             // Handle with or without IPC listener using a macro-like approach
             // We need to handle both cases since accept() requires &self
             if let Some(ref listener) = ipc_listener {

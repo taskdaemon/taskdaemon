@@ -150,6 +150,9 @@ pub enum DaemonCommand {
         #[arg(short, long, default_value = "text")]
         format: OutputFormat,
     },
+
+    /// Ping the daemon to check if it's alive and responsive
+    Ping,
 }
 
 /// Result of checking a required tool

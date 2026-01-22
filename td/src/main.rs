@@ -121,6 +121,10 @@ async fn main() -> Result<()> {
                     debug!(detailed, ?format, "main: matched DaemonCommand::Status");
                     cmd_status(detailed, format).await
                 }
+                DaemonCommand::Ping => {
+                    debug!("main: matched DaemonCommand::Ping");
+                    cmd_ping().await
+                }
             }
         }
         Some(Command::Run {
@@ -187,6 +191,8 @@ async fn cmd_start(config: &Config, foreground: bool) -> Result<()> {
 }
 
 /// Stop the daemon
+///
+/// Tries IPC shutdown first for graceful stop, falls back to SIGTERM if IPC fails.
 async fn cmd_stop() -> Result<()> {
     debug!("cmd_stop: called");
     let daemon = DaemonManager::new();
@@ -197,14 +203,83 @@ async fn cmd_stop() -> Result<()> {
         return Ok(());
     }
 
-    debug!("cmd_stop: daemon is running, stopping");
     let pid = daemon.running_pid();
+
+    // Try graceful IPC shutdown first
+    let client = ipc::DaemonClient::new();
+    if client.socket_exists() {
+        debug!("cmd_stop: trying IPC shutdown");
+        match client.shutdown().await {
+            Ok(()) => {
+                debug!("cmd_stop: IPC shutdown acknowledged");
+                // Wait for process to exit
+                let mut attempts = 0;
+                while daemon.is_running() && attempts < 50 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    attempts += 1;
+                }
+                if !daemon.is_running() {
+                    if let Some(pid) = pid {
+                        println!("TaskDaemon stopped gracefully via IPC (was PID: {})", pid);
+                    } else {
+                        println!("TaskDaemon stopped gracefully via IPC");
+                    }
+                    return Ok(());
+                }
+                debug!("cmd_stop: IPC shutdown timed out, falling back to SIGTERM");
+            }
+            Err(e) => {
+                debug!(error = %e, "cmd_stop: IPC shutdown failed, falling back to SIGTERM");
+            }
+        }
+    }
+
+    // Fall back to SIGTERM
+    debug!("cmd_stop: using SIGTERM");
     daemon.stop()?;
     if let Some(pid) = pid {
         println!("TaskDaemon stopped (was PID: {})", pid);
     } else {
         println!("TaskDaemon stopped");
     }
+    Ok(())
+}
+
+/// Ping the daemon via IPC to check if it's alive and responsive
+async fn cmd_ping() -> Result<()> {
+    debug!("cmd_ping: called");
+
+    // First check if daemon is running via PID file
+    let daemon = DaemonManager::new();
+    if !daemon.is_running() {
+        debug!("cmd_ping: daemon is not running (no PID)");
+        println!("TaskDaemon is not running");
+        return Ok(());
+    }
+
+    // Try to ping via IPC
+    let client = ipc::DaemonClient::new();
+    if !client.socket_exists() {
+        debug!("cmd_ping: socket does not exist");
+        println!("Daemon PID file exists but IPC socket not found");
+        println!("The daemon may be starting up or in an inconsistent state");
+        return Ok(());
+    }
+
+    match client.ping().await {
+        Ok(version) => {
+            debug!(%version, "cmd_ping: pong received");
+            println!("Daemon is alive and responsive");
+            println!("Version: {}", version);
+        }
+        Err(e) => {
+            debug!(error = %e, "cmd_ping: ping failed");
+            println!("Daemon PID file exists but not responding to IPC");
+            println!("Error: {}", e);
+            println!("The daemon may be hung or the IPC socket may be stale");
+        }
+    }
+
     Ok(())
 }
 
