@@ -1,8 +1,8 @@
-//! LoopManager - top-level orchestrator for spawning and managing loops
+//! TaskManager - top-level orchestrator for spawning and managing tasks
 //!
-//! The LoopManager is responsible for:
-//! - Spawning loops as tokio tasks
-//! - Tracking loop lifecycle via task registry
+//! The TaskManager is responsible for:
+//! - Spawning tasks as tokio tasks
+//! - Tracking task lifecycle via task registry
 //! - Resolving dependencies before spawning
 //! - Enforcing concurrency limits via semaphore
 //! - Graceful shutdown coordination
@@ -28,13 +28,13 @@ use crate::scheduler::Scheduler;
 use crate::state::{StateEvent, StateManager};
 use crate::worktree::{MergeResult, WorktreeConfig, WorktreeManager, merge_to_main};
 
-/// Configuration for the LoopManager
+/// Configuration for the TaskManager
 #[derive(Debug, Clone)]
-pub struct LoopManagerConfig {
-    /// Maximum concurrent loops
-    pub max_concurrent_loops: usize,
+pub struct TaskManagerConfig {
+    /// Maximum concurrent tasks
+    pub max_concurrent_tasks: usize,
 
-    /// Polling interval for ready loops (in seconds)
+    /// Polling interval for ready tasks (in seconds)
     pub poll_interval_secs: u64,
 
     /// Shutdown timeout (in seconds)
@@ -47,10 +47,10 @@ pub struct LoopManagerConfig {
     pub worktree_dir: PathBuf,
 }
 
-impl Default for LoopManagerConfig {
+impl Default for TaskManagerConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_loops: 50,
+            max_concurrent_tasks: 50,
             // Increased from 10s to 60s since event-driven pickup handles immediate work.
             // Polling is now a fallback for edge cases, orphan recovery, and missed events.
             poll_interval_secs: 60,
@@ -61,24 +61,30 @@ impl Default for LoopManagerConfig {
     }
 }
 
-/// Result of a loop task
+// Type alias for backward compatibility
+pub type LoopManagerConfig = TaskManagerConfig;
+
+/// Result of a task
 #[derive(Debug)]
-pub enum LoopTaskResult {
-    /// Loop completed successfully
+pub enum TaskResult {
+    /// Task completed successfully
     Complete { exec_id: String, iterations: u32 },
-    /// Loop failed
+    /// Task failed
     Failed { exec_id: String, reason: String },
-    /// Loop was stopped
+    /// Task was stopped
     Stopped { exec_id: String },
 }
 
-/// LoopManager orchestrates the spawning and lifecycle of loops
-pub struct LoopManager {
-    /// Configuration
-    config: LoopManagerConfig,
+// Type alias for backward compatibility
+pub type LoopTaskResult = TaskResult;
 
-    /// Running loop tasks by exec_id
-    tasks: HashMap<String, JoinHandle<LoopTaskResult>>,
+/// TaskManager orchestrates the spawning and lifecycle of tasks
+pub struct TaskManager {
+    /// Configuration
+    config: TaskManagerConfig,
+
+    /// Running tasks by exec_id
+    tasks: HashMap<String, JoinHandle<TaskResult>>,
 
     /// Concurrency limiter
     semaphore: Arc<Semaphore>,
@@ -108,15 +114,18 @@ pub struct LoopManager {
     shutdown_requested: bool,
 }
 
-impl LoopManager {
-    /// Create a new LoopManager
+// Type alias for backward compatibility
+pub type LoopManager = TaskManager;
+
+impl TaskManager {
+    /// Create a new TaskManager
     ///
     /// Takes a coordinator sender (not the Coordinator itself) because the
     /// Coordinator runs as its own task. This allows proper ownership:
     /// - Coordinator::run() consumes self
-    /// - LoopManager communicates via the sender
+    /// - TaskManager communicates via the sender
     pub fn new(
-        config: LoopManagerConfig,
+        config: TaskManagerConfig,
         coordinator_tx: mpsc::Sender<CoordRequest>,
         scheduler: Scheduler,
         llm: Arc<dyn LlmClient>,
@@ -125,11 +134,11 @@ impl LoopManager {
         type_loader: Arc<RwLock<LoopLoader>>,
     ) -> Self {
         debug!(
-            max_concurrent = config.max_concurrent_loops,
+            max_concurrent = config.max_concurrent_tasks,
             poll_interval = config.poll_interval_secs,
             ?config.repo_root,
             ?config.worktree_dir,
-            "LoopManager::new: called"
+            "TaskManager::new: called"
         );
         let worktree_config = WorktreeConfig {
             base_dir: config.worktree_dir.clone(),
@@ -139,7 +148,7 @@ impl LoopManager {
         };
 
         Self {
-            semaphore: Arc::new(Semaphore::new(config.max_concurrent_loops)),
+            semaphore: Arc::new(Semaphore::new(config.max_concurrent_tasks)),
             config,
             tasks: HashMap::new(),
             coordinator_tx,
@@ -1298,9 +1307,9 @@ mod tests {
     }
 
     #[test]
-    fn test_loop_manager_config_default() {
-        let config = LoopManagerConfig::default();
-        assert_eq!(config.max_concurrent_loops, 50);
+    fn test_task_manager_config_default() {
+        let config = TaskManagerConfig::default();
+        assert_eq!(config.max_concurrent_tasks, 50);
         assert_eq!(config.poll_interval_secs, 60); // Increased for event-driven pickup
         assert_eq!(config.shutdown_timeout_secs, 60);
     }

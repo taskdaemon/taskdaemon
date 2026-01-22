@@ -16,7 +16,10 @@ pub use cascade::CascadeHandler;
 pub use config::LoopConfig;
 #[allow(unused_imports)]
 pub use engine::{IterationResult, LoopEngine, LoopStatus};
-pub use manager::{LoopManager, LoopManagerConfig, LoopTaskResult, topological_sort, validate_dependency_graph};
+pub use manager::{
+    LoopManager, LoopManagerConfig, LoopTaskResult, TaskManager, TaskManagerConfig, TaskResult,
+    topological_sort, validate_dependency_graph,
+};
 pub use metrics::{GlobalSummary, IterationTimer, LoopMetrics, LoopStats, TypeMetrics};
 pub use type_loader::{LoopLoader, LoopType};
 #[allow(unused_imports)]

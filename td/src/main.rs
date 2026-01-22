@@ -18,7 +18,7 @@ use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
 use taskdaemon::ipc;
 use taskdaemon::llm::{LlmClient, create_client};
-use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopLoader, LoopManager, LoopManagerConfig};
+use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopLoader, TaskManager, TaskManagerConfig};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
 use taskdaemon::state::StateManager;
 use taskdaemon::tui;
@@ -892,26 +892,26 @@ async fn run_daemon(config: &Config) -> Result<()> {
     let llm_client: Arc<dyn LlmClient> = create_client(&config.llm).context("Failed to create LLM client")?;
     info!("LLM client initialized ({})", config.llm.default);
 
-    // Initialize LoopManager for loop orchestration
+    // Initialize TaskManager for task orchestration
     // poll_interval_secs is 60s (fallback) since event-driven pickup handles immediate work
-    let manager_config = LoopManagerConfig {
-        max_concurrent_loops: config.concurrency.max_loops as usize,
+    let manager_config = TaskManagerConfig {
+        max_concurrent_tasks: config.concurrency.max_loops as usize,
         poll_interval_secs: 60,
         shutdown_timeout_secs: 60,
         repo_root: repo_root.clone(),
         worktree_dir: config.git.worktree_dir.clone(),
     };
 
-    let mut loop_manager = LoopManager::new(
+    let mut task_manager = TaskManager::new(
         manager_config,
-        coordinator_tx, // LoopManager gets the sender, not the Coordinator
+        coordinator_tx, // TaskManager gets the sender, not the Coordinator
         scheduler,
         llm_client,
         state_manager.clone(),
         loop_configs,
         type_loader,
     );
-    info!("LoopManager initialized");
+    info!("TaskManager initialized");
 
     // Create IPC listener for cross-process wake-up
     let (ipc_listener, socket_path) = ipc::create_listener()?;
@@ -920,13 +920,13 @@ async fn run_daemon(config: &Config) -> Result<()> {
     // Create shutdown channel for LoopManager
     let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-    // Spawn LoopManager with IPC listener
+    // Spawn TaskManager with IPC listener
     let manager_handle = tokio::spawn(async move {
-        if let Err(e) = loop_manager.run(shutdown_rx, Some(ipc_listener)).await {
-            tracing::error!(error = %e, "LoopManager error");
+        if let Err(e) = task_manager.run(shutdown_rx, Some(ipc_listener)).await {
+            tracing::error!(error = %e, "TaskManager error");
         }
     });
-    info!("LoopManager started");
+    info!("TaskManager started");
 
     info!("Daemon running. Press Ctrl+C to stop, SIGHUP to reload config.");
 
@@ -990,11 +990,11 @@ async fn run_daemon(config: &Config) -> Result<()> {
     }
 
     info!("Daemon shutting down...");
-    debug!("run_daemon: waiting for LoopManager to finish");
+    debug!("run_daemon: waiting for TaskManager to finish");
 
-    // Wait for LoopManager to finish (it handles coordinator shutdown)
+    // Wait for TaskManager to finish (it handles coordinator shutdown)
     let _ = manager_handle.await;
-    debug!("run_daemon: LoopManager finished");
+    debug!("run_daemon: TaskManager finished");
 
     // Cleanup - remove IPC socket
     debug!("run_daemon: cleaning up IPC socket");

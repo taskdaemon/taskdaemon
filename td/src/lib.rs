@@ -53,16 +53,16 @@ pub use coordinator::{
     PersistedEvent, PersistedEventType,
 };
 pub use domain::{
-    DomainId, Filter, FilterOp, IndexValue, Loop, LoopExecution, LoopExecutionStatus, LoopStatus, Phase, PhaseStatus,
-    Priority, Record, Store,
+    DomainId, Filter, FilterOp, IndexValue, Loop, LoopExecution, LoopExecutionStatus, LoopRun, LoopRunStatus,
+    LoopStatus, Phase, PhaseStatus, Priority, Record, Store,
 };
 pub use llm::{
     AnthropicClient, CompletionRequest, CompletionResponse, LlmClient, LlmError, OpenAIClient, create_client,
 };
 pub use r#loop::{
     CascadeHandler, GlobalSummary, IterationResult, IterationTimer, LoopConfig, LoopEngine, LoopLoader, LoopManager,
-    LoopManagerConfig, LoopMetrics, LoopStats, LoopTaskResult, LoopType, TypeMetrics, topological_sort,
-    validate_dependency_graph,
+    LoopManagerConfig, LoopMetrics, LoopStats, LoopTaskResult, LoopType, TaskManager, TaskManagerConfig, TaskResult,
+    TypeMetrics, topological_sort, validate_dependency_graph,
 };
 pub use progress::{IterationContext, ProgressStrategy, SystemCapturedProgress};
 pub use prompts::{FocusArea, PromptContext, PromptLoader};
