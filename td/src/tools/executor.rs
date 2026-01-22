@@ -1,4 +1,4 @@
-//! ToolExecutor - manages tool execution for a loop
+//! ToolExecutor - manages tool execution for a loop or task
 
 use std::collections::HashMap;
 use tracing::debug;
@@ -7,9 +7,19 @@ use crate::llm::{ToolCall, ToolDefinition};
 
 use super::builtin::{
     CompleteTaskTool, EditFileTool, FetchTool, GlobTool, GrepTool, ListDirectoryTool, QueryTool, ReadFileTool,
-    RunCommandTool, SearchTool, ShareTool, TodoTool, TreeTool, WriteFileTool,
+    ReadOnlyBashTool, RunCommandTool, SearchTool, ShareTool, TodoTool, TreeTool, WriteFileTool,
 };
 use super::{Tool, ToolContext, ToolResult};
+
+/// Tool profiles define which tools are available for different task types
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolProfile {
+    /// Full access to all tools (default for Ralph loops)
+    #[default]
+    Full,
+    /// Read-only access for exploration (no write, edit, or dangerous bash)
+    ReadOnly,
+}
 
 /// Manages tool execution for a loop
 pub struct ToolExecutor {
@@ -17,36 +27,70 @@ pub struct ToolExecutor {
 }
 
 impl ToolExecutor {
-    /// Create executor with standard tools
+    /// Create executor with standard tools (full profile)
     pub fn standard() -> Self {
-        debug!("ToolExecutor::standard: called");
+        Self::with_profile(ToolProfile::Full)
+    }
+
+    /// Create executor with a specific tool profile
+    pub fn with_profile(profile: ToolProfile) -> Self {
+        debug!(?profile, "ToolExecutor::with_profile: called");
         let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
 
-        // File system tools
-        tools.insert("read".into(), Box::new(ReadFileTool));
-        tools.insert("write".into(), Box::new(WriteFileTool));
-        tools.insert("edit".into(), Box::new(EditFileTool));
-        tools.insert("list".into(), Box::new(ListDirectoryTool));
-        tools.insert("glob".into(), Box::new(GlobTool));
-        tools.insert("grep".into(), Box::new(GrepTool));
+        match profile {
+            ToolProfile::Full => {
+                // File system tools (read/write)
+                tools.insert("read".into(), Box::new(ReadFileTool));
+                tools.insert("write".into(), Box::new(WriteFileTool));
+                tools.insert("edit".into(), Box::new(EditFileTool));
+                tools.insert("list".into(), Box::new(ListDirectoryTool));
+                tools.insert("glob".into(), Box::new(GlobTool));
+                tools.insert("grep".into(), Box::new(GrepTool));
 
-        // Command execution
-        tools.insert("bash".into(), Box::new(RunCommandTool));
+                // Command execution (full access)
+                tools.insert("bash".into(), Box::new(RunCommandTool));
 
-        // New tools
-        tools.insert("tree".into(), Box::new(TreeTool));
-        tools.insert("todo".into(), Box::new(TodoTool::new()));
-        tools.insert("fetch".into(), Box::new(FetchTool::new()));
-        tools.insert("search".into(), Box::new(SearchTool));
+                // New tools
+                tools.insert("tree".into(), Box::new(TreeTool));
+                tools.insert("todo".into(), Box::new(TodoTool::new()));
+                tools.insert("fetch".into(), Box::new(FetchTool::new()));
+                tools.insert("search".into(), Box::new(SearchTool));
 
-        // Task completion
-        tools.insert("complete_task".into(), Box::new(CompleteTaskTool));
+                // Task completion
+                tools.insert("complete_task".into(), Box::new(CompleteTaskTool));
 
-        // Coordination tools (require coordinator handle in context)
-        tools.insert("query".into(), Box::new(QueryTool));
-        tools.insert("share".into(), Box::new(ShareTool));
+                // Coordination tools (require coordinator handle in context)
+                tools.insert("query".into(), Box::new(QueryTool));
+                tools.insert("share".into(), Box::new(ShareTool));
+            }
+            ToolProfile::ReadOnly => {
+                // Read-only file system tools
+                tools.insert("read".into(), Box::new(ReadFileTool));
+                tools.insert("list".into(), Box::new(ListDirectoryTool));
+                tools.insert("glob".into(), Box::new(GlobTool));
+                tools.insert("grep".into(), Box::new(GrepTool));
+                tools.insert("tree".into(), Box::new(TreeTool));
+
+                // Read-only bash (blocks write commands)
+                tools.insert("bash".into(), Box::new(ReadOnlyBashTool));
+
+                // Research tools
+                tools.insert("fetch".into(), Box::new(FetchTool::new()));
+                tools.insert("search".into(), Box::new(SearchTool));
+
+                // Query other tasks (read-only coordination)
+                tools.insert("query".into(), Box::new(QueryTool));
+
+                // Note: No write, edit, complete_task, share, todo
+            }
+        }
 
         Self { tools }
+    }
+
+    /// Create executor with read-only tools (for exploration)
+    pub fn read_only() -> Self {
+        Self::with_profile(ToolProfile::ReadOnly)
     }
 
     /// Create an empty executor (for testing)

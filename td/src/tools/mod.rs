@@ -11,7 +11,7 @@ mod traits;
 
 pub mod builtin;
 
-pub use context::ToolContext;
+pub use context::{ExploreConfig, ExploreSpawner, ExploreSpawnerRef, Thoroughness, ToolContext};
 pub use error::ToolError;
-pub use executor::ToolExecutor;
+pub use executor::{ToolExecutor, ToolProfile};
 pub use traits::{Tool, ToolResult};

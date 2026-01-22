@@ -10,9 +10,104 @@ use crate::coordinator::CoordinatorHandle;
 
 use super::ToolError;
 
-/// Execution context for tools - scoped to a single loop
+/// Configuration for spawning explore tasks
+#[derive(Debug, Clone)]
+pub struct ExploreConfig {
+    /// The question to investigate
+    pub question: String,
+
+    /// How thorough to be
+    pub thoroughness: Thoroughness,
+
+    /// Parent task ID (for context)
+    pub parent_id: Option<String>,
+
+    /// Worktree to explore (inherits from parent or uses main)
+    pub worktree: PathBuf,
+
+    /// Maximum iterations before forced summary (default: 6)
+    pub max_iterations: u32,
+
+    /// Model to use (default: claude-3-haiku)
+    pub model: Option<String>,
+
+    /// Timeout in seconds (default: 120)
+    pub timeout_secs: u32,
+}
+
+impl Default for ExploreConfig {
+    fn default() -> Self {
+        Self {
+            question: String::new(),
+            thoroughness: Thoroughness::default(),
+            parent_id: None,
+            worktree: PathBuf::from("."),
+            max_iterations: 6,
+            model: None, // Uses Haiku by default
+            timeout_secs: 120,
+        }
+    }
+}
+
+/// How thorough the exploration should be
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Thoroughness {
+    /// max_iterations: 3, surface-level
+    Quick,
+    /// max_iterations: 6, reasonable depth (default)
+    #[default]
+    Medium,
+    /// max_iterations: 10, comprehensive
+    Thorough,
+}
+
+impl Thoroughness {
+    /// Get the max iterations for this thoroughness level
+    pub fn max_iterations(&self) -> u32 {
+        match self {
+            Self::Quick => 3,
+            Self::Medium => 6,
+            Self::Thorough => 10,
+        }
+    }
+}
+
+impl std::str::FromStr for Thoroughness {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "quick" => Ok(Self::Quick),
+            "medium" => Ok(Self::Medium),
+            "thorough" => Ok(Self::Thorough),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for Thoroughness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Quick => write!(f, "quick"),
+            Self::Medium => write!(f, "medium"),
+            Self::Thorough => write!(f, "thorough"),
+        }
+    }
+}
+
+/// Trait for spawning explore tasks - allows dependency injection
+#[async_trait::async_trait]
+pub trait ExploreSpawner: Send + Sync {
+    /// Spawn an explore task and return the summary
+    async fn spawn(&self, config: ExploreConfig) -> eyre::Result<String>;
+}
+
+/// Type alias for boxed explore spawner
+pub type ExploreSpawnerRef = Arc<dyn ExploreSpawner>;
+
+/// Execution context for tools - scoped to a single loop or task
 ///
-/// Each loop gets its own `ToolContext` that scopes all operations to
+/// Each loop/task gets its own `ToolContext` that scopes all operations to
 /// its git worktree. This provides sandboxing - tools cannot escape
 /// the worktree unless explicitly disabled.
 #[derive(Clone)]
@@ -34,6 +129,10 @@ pub struct ToolContext {
 
     /// Max tokens for LLM requests (used by tools that call LLM)
     pub max_tokens: u32,
+
+    /// Optional callback for spawning explore tasks
+    /// Set to None in explore tasks to prevent nested explores
+    pub explore_spawner: Option<ExploreSpawnerRef>,
 }
 
 /// Default max tokens when not specified
@@ -50,6 +149,7 @@ impl ToolContext {
             sandbox_enabled: true,
             coordinator: None,
             max_tokens: DEFAULT_MAX_TOKENS,
+            explore_spawner: None,
         }
     }
 
@@ -63,6 +163,7 @@ impl ToolContext {
             sandbox_enabled: true,
             coordinator: None,
             max_tokens,
+            explore_spawner: None,
         }
     }
 
@@ -76,6 +177,7 @@ impl ToolContext {
             sandbox_enabled: false,
             coordinator: None,
             max_tokens: DEFAULT_MAX_TOKENS,
+            explore_spawner: None,
         }
     }
 
@@ -89,6 +191,7 @@ impl ToolContext {
             sandbox_enabled: true,
             coordinator: Some(coordinator),
             max_tokens: DEFAULT_MAX_TOKENS,
+            explore_spawner: None,
         }
     }
 
@@ -107,7 +210,15 @@ impl ToolContext {
             sandbox_enabled: true,
             coordinator: Some(coordinator),
             max_tokens,
+            explore_spawner: None,
         }
+    }
+
+    /// Builder method to set the explore spawner
+    pub fn with_explore_spawner(mut self, spawner: ExploreSpawnerRef) -> Self {
+        debug!(%self.exec_id, "ToolContext::with_explore_spawner: called");
+        self.explore_spawner = Some(spawner);
+        self
     }
 
     /// Track that a file was read (enables edit validation)

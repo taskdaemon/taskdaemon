@@ -1,4 +1,4 @@
-//! Built-in tools for Ralph loops
+//! Built-in tools for Ralph loops and exploration
 
 mod complete_task;
 mod edit_file;
@@ -8,6 +8,7 @@ mod grep;
 mod list_directory;
 mod query;
 mod read_file;
+mod read_only_bash;
 mod run_command;
 mod search;
 mod share;
@@ -23,6 +24,7 @@ pub use grep::GrepTool;
 pub use list_directory::ListDirectoryTool;
 pub use query::QueryTool;
 pub use read_file::ReadFileTool;
+pub use read_only_bash::ReadOnlyBashTool;
 pub use run_command::RunCommandTool;
 pub use search::SearchTool;
 pub use share::ShareTool;
