@@ -13,12 +13,15 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use eyre::{Context, Result};
+use tokio::net::UnixListener;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use crate::coordinator::{CoordRequest, CoordinatorHandle};
+use crate::daemon::VERSION;
 use crate::domain::{Loop, LoopExecution, LoopExecutionStatus, LoopStatus};
+use crate::ipc::{DaemonMessage, DaemonResponse, read_message, send_response};
 use crate::llm::LlmClient;
 use crate::r#loop::{CascadeHandler, LoopConfig, LoopEngine, LoopLoader};
 use crate::scheduler::Scheduler;
@@ -179,7 +182,10 @@ impl LoopManager {
     /// This polls for ready loops and spawns them, handling shutdown gracefully.
     /// Also subscribes to state events for immediate work pickup when executions
     /// become pending (instead of waiting for the next poll interval).
-    pub async fn run(&mut self, mut shutdown_rx: mpsc::Receiver<()>) -> Result<()> {
+    ///
+    /// If an IPC listener is provided, it will also handle cross-process messages
+    /// from the TUI/CLI for immediate work pickup.
+    pub async fn run(&mut self, mut shutdown_rx: mpsc::Receiver<()>, ipc_listener: Option<UnixListener>) -> Result<()> {
         debug!("run: called");
         info!("LoopManager starting");
 
@@ -197,58 +203,71 @@ impl LoopManager {
         let poll_interval = Duration::from_secs(self.config.poll_interval_secs);
         let mut interval = tokio::time::interval(poll_interval);
 
+        // Check if we have an IPC listener
+        let has_ipc = ipc_listener.is_some();
+        if has_ipc {
+            info!("LoopManager: IPC listener enabled for cross-process wake-up");
+        }
+
+        // Keep the listener for the select loop
+        let ipc_listener = ipc_listener;
+
         loop {
-            tokio::select! {
-                // Handle state events for immediate work pickup
-                event = state_events.recv() => {
-                    match event {
-                        Ok(StateEvent::ExecutionPending { id }) => {
-                            debug!(%id, "run: received ExecutionPending event");
-                            // Immediately try to spawn this execution
-                            if let Ok(Some(exec)) = self.state.get_execution(&id).await {
-                                if self.loop_deps_satisfied(&exec).await.unwrap_or(false) {
-                                    debug!(%id, "run: deps satisfied, spawning immediately");
-                                    if let Err(e) = self.spawn_loop(&exec).await {
-                                        warn!(%id, error = %e, "run: failed to spawn loop from event");
-                                    }
-                                } else {
-                                    debug!(%id, "run: deps not satisfied, will pick up on next poll");
+            // Handle with or without IPC listener using a macro-like approach
+            // We need to handle both cases since accept() requires &self
+            if let Some(ref listener) = ipc_listener {
+                tokio::select! {
+                    // Handle IPC connections for cross-process wake-up
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            Ok((mut stream, _addr)) => {
+                                debug!("run: IPC connection accepted");
+                                if let Err(e) = self.handle_ipc_connection(&mut stream).await {
+                                    warn!(error = %e, "run: IPC connection error");
                                 }
                             }
-                        }
-                        Ok(_) => {
-                            // Ignore other events (ExecutionCreated, ExecutionUpdated)
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            warn!("run: state event channel closed, falling back to polling only");
-                            // Channel closed, continue with polling only
-                            // We can't break here, just stop listening to events
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            debug!(n, "run: lagged behind on state events, doing full poll");
-                            // We missed some events, do a full poll to catch up
-                            if !self.shutdown_requested {
-                                self.poll_and_spawn().await?;
+                            Err(e) => {
+                                warn!(error = %e, "run: IPC accept error");
                             }
                         }
                     }
-                }
-                // Fallback polling for edge cases and orphan recovery
-                _ = interval.tick() => {
-                    debug!("run: tick");
-                    if !self.shutdown_requested {
-                        debug!("run: polling and spawning");
-                        self.poll_and_spawn().await?;
-                    } else {
-                        debug!("run: shutdown requested, skipping poll");
+
+                    // Handle in-process state events for immediate work pickup
+                    event = state_events.recv() => {
+                        self.handle_state_event(event).await?;
                     }
-                    self.reap_completed_tasks().await;
+
+                    // Fallback polling for edge cases and orphan recovery
+                    _ = interval.tick() => {
+                        self.handle_poll_tick().await?;
+                    }
+
+                    _ = shutdown_rx.recv() => {
+                        debug!("run: shutdown signal received");
+                        info!("Shutdown signal received");
+                        self.shutdown_requested = true;
+                        break;
+                    }
                 }
-                _ = shutdown_rx.recv() => {
-                    debug!("run: shutdown signal received");
-                    info!("Shutdown signal received");
-                    self.shutdown_requested = true;
-                    break;
+            } else {
+                // No IPC listener - original behavior
+                tokio::select! {
+                    // Handle in-process state events for immediate work pickup
+                    event = state_events.recv() => {
+                        self.handle_state_event(event).await?;
+                    }
+
+                    // Fallback polling for edge cases and orphan recovery
+                    _ = interval.tick() => {
+                        self.handle_poll_tick().await?;
+                    }
+
+                    _ = shutdown_rx.recv() => {
+                        debug!("run: shutdown signal received");
+                        info!("Shutdown signal received");
+                        self.shutdown_requested = true;
+                        break;
+                    }
                 }
             }
         }
@@ -259,6 +278,94 @@ impl LoopManager {
 
         debug!("run: complete");
         Ok(())
+    }
+
+    /// Handle a state event from the in-process broadcast channel
+    async fn handle_state_event(
+        &mut self,
+        event: Result<StateEvent, tokio::sync::broadcast::error::RecvError>,
+    ) -> Result<()> {
+        match event {
+            Ok(StateEvent::ExecutionPending { id }) => {
+                debug!(%id, "handle_state_event: received ExecutionPending");
+                self.try_spawn_execution(&id).await;
+            }
+            Ok(_) => {
+                // Ignore other events (ExecutionCreated, ExecutionUpdated)
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                warn!("handle_state_event: channel closed, falling back to polling only");
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                debug!(n, "handle_state_event: lagged behind, doing full poll");
+                if !self.shutdown_requested {
+                    self.poll_and_spawn().await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle the poll interval tick
+    async fn handle_poll_tick(&mut self) -> Result<()> {
+        debug!("handle_poll_tick: tick");
+        if !self.shutdown_requested {
+            debug!("handle_poll_tick: polling and spawning");
+            self.poll_and_spawn().await?;
+        } else {
+            debug!("handle_poll_tick: shutdown requested, skipping poll");
+        }
+        self.reap_completed_tasks().await;
+        Ok(())
+    }
+
+    /// Handle an IPC connection from TUI/CLI
+    async fn handle_ipc_connection(&mut self, stream: &mut tokio::net::UnixStream) -> Result<()> {
+        let msg = read_message(stream).await?;
+        debug!(?msg, "handle_ipc_connection: received message");
+
+        let response = match msg {
+            DaemonMessage::ExecutionPending { id } => {
+                debug!(%id, "handle_ipc_connection: ExecutionPending");
+                self.try_spawn_execution(&id).await;
+                DaemonResponse::Ok
+            }
+            DaemonMessage::ExecutionResumed { id } => {
+                debug!(%id, "handle_ipc_connection: ExecutionResumed");
+                self.try_spawn_execution(&id).await;
+                DaemonResponse::Ok
+            }
+            DaemonMessage::Ping => {
+                debug!("handle_ipc_connection: Ping");
+                DaemonResponse::Pong {
+                    version: VERSION.to_string(),
+                }
+            }
+            DaemonMessage::Shutdown => {
+                debug!("handle_ipc_connection: Shutdown");
+                self.shutdown_requested = true;
+                DaemonResponse::Ok
+            }
+        };
+
+        send_response(stream, response).await?;
+        Ok(())
+    }
+
+    /// Try to spawn an execution if it exists and deps are satisfied
+    async fn try_spawn_execution(&mut self, id: &str) {
+        if let Ok(Some(exec)) = self.state.get_execution(id).await {
+            if self.loop_deps_satisfied(&exec).await.unwrap_or(false) {
+                debug!(%id, "try_spawn_execution: deps satisfied, spawning");
+                if let Err(e) = self.spawn_loop(&exec).await {
+                    warn!(%id, error = %e, "try_spawn_execution: failed to spawn");
+                }
+            } else {
+                debug!(%id, "try_spawn_execution: deps not satisfied, will pick up on next poll");
+            }
+        } else {
+            debug!(%id, "try_spawn_execution: execution not found");
+        }
     }
 
     /// Poll for ready loops and spawn them

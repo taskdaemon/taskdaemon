@@ -7,9 +7,11 @@
 use std::path::PathBuf;
 
 pub mod client;
+pub mod listener;
 pub mod messages;
 
 pub use client::DaemonClient;
+pub use listener::{cleanup_socket, create_listener, read_message, send_response};
 pub use messages::{DaemonMessage, DaemonResponse};
 
 /// Get the socket path for daemon IPC

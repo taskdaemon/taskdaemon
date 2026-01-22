@@ -16,6 +16,7 @@ use taskdaemon::cli::{Cli, Command, DaemonCommand, ExecCommand, OutputFormat, ge
 use taskdaemon::config::Config;
 use taskdaemon::coordinator::Coordinator;
 use taskdaemon::daemon::DaemonManager;
+use taskdaemon::ipc;
 use taskdaemon::llm::{LlmClient, create_client};
 use taskdaemon::r#loop::{IterationResult, LoopEngine, LoopLoader, LoopManager, LoopManagerConfig};
 use taskdaemon::scheduler::{Scheduler, SchedulerConfig};
@@ -837,12 +838,16 @@ async fn run_daemon(config: &Config) -> Result<()> {
     );
     info!("LoopManager initialized");
 
+    // Create IPC listener for cross-process wake-up
+    let (ipc_listener, socket_path) = ipc::create_listener()?;
+    info!(?socket_path, "IPC socket listening");
+
     // Create shutdown channel for LoopManager
     let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-    // Spawn LoopManager
+    // Spawn LoopManager with IPC listener
     let manager_handle = tokio::spawn(async move {
-        if let Err(e) = loop_manager.run(shutdown_rx).await {
+        if let Err(e) = loop_manager.run(shutdown_rx, Some(ipc_listener)).await {
             tracing::error!(error = %e, "LoopManager error");
         }
     });
@@ -915,6 +920,10 @@ async fn run_daemon(config: &Config) -> Result<()> {
     // Wait for LoopManager to finish (it handles coordinator shutdown)
     let _ = manager_handle.await;
     debug!("run_daemon: LoopManager finished");
+
+    // Cleanup - remove IPC socket
+    debug!("run_daemon: cleaning up IPC socket");
+    ipc::cleanup_socket(&socket_path);
 
     // Cleanup - abort watcher task
     debug!("run_daemon: aborting watcher task");
