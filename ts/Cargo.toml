@@ -41,3 +41,7 @@ predicates = { workspace = true }
 proptest = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+
+# Examples are auto-discovered from examples/ directory
+# Run one: cargo run --example 01_basic_crud
+# Run all: otto examples
