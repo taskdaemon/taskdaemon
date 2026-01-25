@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 use crate::coordinator::{CoordRequest, CoordinatorHandle};
 use crate::daemon::VERSION;
 use crate::domain::{Loop, LoopExecution, LoopExecutionStatus, LoopStatus};
-use crate::events::{Event as LoopEvent, EventBus};
+use crate::events::{Event as LoopEvent, EventBus, spawn_event_logger};
 use crate::ipc::{DaemonMessage, DaemonResponse, read_message, send_response};
 use crate::llm::LlmClient;
 use crate::r#loop::{CascadeHandler, LoopConfig, LoopEngine, LoopLoader};
@@ -246,6 +246,11 @@ impl TaskManager {
         // Start event bridge task - forwards EventBus events to StateManager's broadcast
         // so TUI can receive live streaming events
         self.event_bridge_handle = Some(self.start_event_bridge());
+
+        // Start event logger - writes events to ~/.taskdaemon/runs/{exec-id}/events.jsonl
+        // This allows TUI to read live output from disk (cross-process)
+        let _event_logger_handle =
+            spawn_event_logger(self.event_bus.clone()).context("Failed to spawn event logger")?;
 
         // Run recovery first
         debug!("run: starting recovery");

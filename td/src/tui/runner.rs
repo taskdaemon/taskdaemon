@@ -2125,6 +2125,52 @@ Working directory: {}"#,
 
                 let _ = target_type; // Used for context in future
 
+                // For running executions, load live output from event log files (cross-process)
+                if let Some(ref d) = data
+                    && d.status == "running"
+                    && let Ok(events) = replay_execution_events(&d.id)
+                {
+                    let mut live_output = String::new();
+                    let mut current_iteration = 1u32;
+                    for event in events {
+                        match event {
+                            LoopEvent::TokenReceived { token, .. } => {
+                                live_output.push_str(&token);
+                            }
+                            LoopEvent::ValidationOutput { line, .. } => {
+                                if !live_output.is_empty() && !live_output.ends_with('\n') {
+                                    live_output.push('\n');
+                                }
+                                live_output.push_str(&line);
+                                live_output.push('\n');
+                            }
+                            LoopEvent::ToolCallStarted {
+                                tool_name,
+                                tool_args_summary,
+                                ..
+                            } => {
+                                if !live_output.is_empty() && !live_output.ends_with('\n') {
+                                    live_output.push('\n');
+                                }
+                                live_output.push_str(&format!("[tool] {} {}\n", tool_name, tool_args_summary));
+                            }
+                            LoopEvent::IterationStarted { iteration, .. } => {
+                                current_iteration = iteration;
+                                if !live_output.is_empty() {
+                                    live_output.push_str("\n---\n");
+                                }
+                                live_output.push_str(&format!("## Iteration {}\n", iteration));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !live_output.is_empty() {
+                        self.app
+                            .state_mut()
+                            .append_live_output(&d.id, current_iteration, &live_output);
+                    }
+                }
+
                 self.app.state_mut().describe_data = data;
             }
             _ => {}
