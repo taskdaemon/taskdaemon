@@ -944,7 +944,8 @@ fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
         return;
     };
 
-    let lines: Vec<Line> = state
+    // First, add stored logs from completed iterations
+    let mut display_lines: Vec<Line> = state
         .logs
         .iter()
         .map(|entry| {
@@ -968,8 +969,24 @@ fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
+    // Add live streaming output for running executions
+    if let Some(live_buf) = state.get_live_output(&target_id) {
+        if !display_lines.is_empty() && !live_buf.content.is_empty() {
+            display_lines.push(Line::from(""));
+            display_lines.push(Line::from(Span::styled(
+                "── Live Output ──",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+        }
+        for line in live_buf.content.lines() {
+            display_lines.push(Line::from(vec![
+                Span::styled("[live] ", Style::default().fg(Color::Green)),
+                Span::raw(line.to_string()),
+            ]));
+        }
+    }
+
     // Add cursor if following
-    let mut display_lines = lines;
     if state.logs_follow && !display_lines.is_empty() {
         display_lines.push(Line::from(Span::styled(
             "▌",
@@ -978,9 +995,16 @@ fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
     }
 
     let follow_indicator = if state.logs_follow { " [following]" } else { "" };
-    let title = format!(" Logs: {}{} ", truncate_str(&target_id, 30), follow_indicator);
+    let has_live = state.get_live_output(&target_id).is_some();
+    let live_indicator = if has_live { " [live]" } else { "" };
+    let title = format!(
+        " Logs: {}{}{} ",
+        truncate_str(&target_id, 30),
+        follow_indicator,
+        live_indicator
+    );
 
-    let logs = Paragraph::new(display_lines)
+    let logs = Paragraph::new(display_lines.clone())
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -992,7 +1016,7 @@ fn render_logs_view(state: &AppState, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(logs, area);
 
-    if state.logs.is_empty() {
+    if display_lines.is_empty() {
         render_empty_message(frame, area, "No logs yet.");
     }
 }
@@ -1064,7 +1088,34 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
         )]));
         lines.push(Line::from(vec![Span::raw("  Iteration: "), Span::raw(&exec.iteration)]));
         lines.push(Line::from(vec![Span::raw("  Duration:  "), Span::raw(&exec.duration)]));
-        if !exec.progress.is_empty() {
+
+        // For running executions, show live output status
+        if data.status == "running" {
+            if let Some(live_buf) = state.get_live_output(&data.id) {
+                let line_count = live_buf.content.lines().count();
+                let last_line = live_buf.content.lines().last().unwrap_or("").to_string();
+                let truncated = if last_line.len() > 60 {
+                    format!("{}...", &last_line[..60])
+                } else {
+                    last_line
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("  Live:      "),
+                    Span::styled(format!("{} lines", line_count), Style::default().fg(Color::Green)),
+                ]));
+                if !truncated.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("  Latest:    "),
+                        Span::styled(truncated, Style::default().fg(Color::Yellow)),
+                    ]));
+                }
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw("  Live:      "),
+                    Span::styled("waiting for output...", Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+        } else if !exec.progress.is_empty() {
             lines.push(Line::from(vec![Span::raw("  Progress:  "), Span::raw(&exec.progress)]));
         }
     }
@@ -1077,14 +1128,10 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )]));
         if let Some(ref path) = data.artifact_path {
-            // Extract just the filename from the path
-            let filename = std::path::Path::new(path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(path);
+            // Show the full artifact path
             lines.push(Line::from(vec![
                 Span::raw("  Path:   "),
-                Span::styled(filename, Style::default().fg(Color::Cyan)),
+                Span::styled(path, Style::default().fg(Color::Cyan)),
             ]));
         }
         if let Some(ref status) = data.artifact_status {
@@ -1096,6 +1143,19 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
                 ),
             ]));
         }
+    }
+
+    // Worktree section (show where the work is being done)
+    if let Some(ref worktree) = data.worktree {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "Worktree:",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )]));
+        lines.push(Line::from(vec![
+            Span::raw("  Path:   "),
+            Span::styled(worktree, Style::default().fg(Color::Cyan)),
+        ]));
     }
 
     // Aggregate Metrics section (only show if there's activity)
@@ -1135,7 +1195,28 @@ fn render_describe_view(state: &mut AppState, frame: &mut Frame, area: Rect) {
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )]));
         lines.push(Line::from(""));
-        if let Some(ref output) = data.output {
+
+        // For running executions, show live streaming output if available
+        let live_output = if data.status == "running" {
+            state.get_live_output(&data.id).map(|buf| buf.content.as_str())
+        } else {
+            None
+        };
+
+        if let Some(live_content) = live_output {
+            // Show live streaming output
+            if live_content.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    "(Waiting for output...)",
+                    Style::default().fg(Color::Yellow),
+                )]));
+            } else {
+                for line in live_content.lines() {
+                    lines.push(Line::from(line.to_string()));
+                }
+            }
+        } else if let Some(ref output) = data.output {
+            // Fall back to stored progress output
             for line in output.lines() {
                 lines.push(Line::from(line.to_string()));
             }

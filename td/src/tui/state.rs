@@ -1092,6 +1092,8 @@ pub struct DescribeData {
     pub artifact_path: Option<String>,
     /// Artifact validation status: "draft" | "complete" | "failed"
     pub artifact_status: Option<String>,
+    /// Git worktree path where execution runs
+    pub worktree: Option<String>,
     /// Total LLM input tokens consumed
     pub total_input_tokens: u64,
     /// Total LLM output tokens generated
