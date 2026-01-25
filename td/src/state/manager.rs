@@ -49,6 +49,49 @@ pub enum StateEvent {
         iteration: u32,
         exit_code: i32,
     },
+    // === Live streaming events (forwarded from EventBus) ===
+    /// Loop execution started
+    LoopStarted { execution_id: String, loop_type: String },
+    /// Iteration started within a loop
+    IterationStarted { execution_id: String, iteration: u32 },
+    /// LLM token received (for live streaming display)
+    TokenReceived {
+        execution_id: String,
+        iteration: u32,
+        token: String,
+    },
+    /// Tool call started
+    ToolCallStarted {
+        execution_id: String,
+        iteration: u32,
+        tool_name: String,
+    },
+    /// Tool call completed
+    ToolCallCompleted {
+        execution_id: String,
+        iteration: u32,
+        tool_name: String,
+        success: bool,
+    },
+    /// Validation output line (for live streaming display)
+    ValidationOutput {
+        execution_id: String,
+        iteration: u32,
+        line: String,
+        is_stderr: bool,
+    },
+    /// Validation completed
+    ValidationCompleted {
+        execution_id: String,
+        iteration: u32,
+        exit_code: i32,
+    },
+    /// Loop execution completed
+    LoopCompleted {
+        execution_id: String,
+        success: bool,
+        total_iterations: u32,
+    },
 }
 
 /// Path to the state change notification file
@@ -124,6 +167,19 @@ impl StateManager {
     /// Subscribe to state change events (for instant TUI updates)
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<StateEvent> {
         self.event_tx.subscribe()
+    }
+
+    /// Broadcast a streaming event (for live output display)
+    ///
+    /// This is used by TaskManager to forward events from the EventBus
+    /// to the TUI via the StateManager's broadcast channel.
+    pub fn broadcast_event(&self, event: StateEvent) {
+        let _ = self.event_tx.send(event);
+    }
+
+    /// Get a clone of the event sender (for bridging EventBus to StateManager)
+    pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<StateEvent> {
+        self.event_tx.clone()
     }
 
     /// Notify daemon via IPC that an execution is pending

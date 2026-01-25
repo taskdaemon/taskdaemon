@@ -21,6 +21,7 @@ use tracing::{debug, error, info, warn};
 use crate::coordinator::{CoordRequest, CoordinatorHandle};
 use crate::daemon::VERSION;
 use crate::domain::{Loop, LoopExecution, LoopExecutionStatus, LoopStatus};
+use crate::events::{Event as LoopEvent, EventBus};
 use crate::ipc::{DaemonMessage, DaemonResponse, read_message, send_response};
 use crate::llm::LlmClient;
 use crate::r#loop::{CascadeHandler, LoopConfig, LoopEngine, LoopLoader};
@@ -112,6 +113,12 @@ pub struct TaskManager {
 
     /// Shutdown flag
     shutdown_requested: bool,
+
+    /// Event bus for streaming loop events to TUI
+    event_bus: Arc<EventBus>,
+
+    /// Event bridge task handle (forwards events to StateManager)
+    event_bridge_handle: Option<JoinHandle<()>>,
 }
 
 // Type alias for backward compatibility
@@ -147,6 +154,9 @@ impl TaskManager {
             branch_prefix: "taskdaemon".to_string(),
         };
 
+        // Create event bus for streaming loop events to TUI
+        let event_bus = Arc::new(EventBus::with_default_capacity());
+
         Self {
             semaphore: Arc::new(Semaphore::new(config.max_concurrent_tasks)),
             config,
@@ -159,6 +169,8 @@ impl TaskManager {
             loop_configs,
             type_loader,
             shutdown_requested: false,
+            event_bus,
+            event_bridge_handle: None,
         }
     }
 
@@ -186,6 +198,36 @@ impl TaskManager {
         ))
     }
 
+    /// Start the event bridge that forwards EventBus events to StateManager's broadcast
+    ///
+    /// This allows the TUI to receive live streaming events from daemon-spawned loops
+    /// via the existing StateManager subscription mechanism.
+    fn start_event_bridge(&self) -> JoinHandle<()> {
+        let mut event_rx = self.event_bus.subscribe();
+        let state_event_tx = self.state.event_sender();
+
+        tokio::spawn(async move {
+            debug!("event_bridge: started");
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        // Convert EventBus event to StateEvent and forward
+                        if let Some(state_event) = convert_to_state_event(&event) {
+                            let _ = state_event_tx.send(state_event);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        debug!(n, "event_bridge: lagged, missed events");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        debug!("event_bridge: channel closed, exiting");
+                        break;
+                    }
+                }
+            }
+        })
+    }
+
     /// Run the manager's main loop
     ///
     /// This polls for ready loops and spawns them, handling shutdown gracefully.
@@ -200,6 +242,10 @@ impl TaskManager {
 
         // Subscribe to state events for immediate work pickup
         let mut state_events = self.state.subscribe_events();
+
+        // Start event bridge task - forwards EventBus events to StateManager's broadcast
+        // so TUI can receive live streaming events
+        self.event_bridge_handle = Some(self.start_event_bridge());
 
         // Run recovery first
         debug!("run: starting recovery");
@@ -594,15 +640,19 @@ impl TaskManager {
         let scheduler = self.scheduler.clone();
         let type_loader = self.type_loader.clone();
 
+        // Create event emitter for live streaming to TUI
+        let event_emitter = self.event_bus.emitter_for(&exec.id);
+
         let handle = tokio::spawn(async move {
             debug!(exec_id = %exec_id, "spawn_loop task: starting");
-            // Build engine with coordinator, scheduler, execution context, repo root, and state
+            // Build engine with coordinator, scheduler, execution context, repo root, state, and event emitter
             let engine =
                 LoopEngine::with_coordinator(exec_id.clone(), loop_config, llm, worktree_path.clone(), coord_handle)
                     .with_scheduler(scheduler.clone())
                     .with_execution_context(exec_context)
                     .with_repo_root(repo_root.clone())
-                    .with_state(state.clone());
+                    .with_state(state.clone())
+                    .with_event_emitter(event_emitter);
 
             let result = run_loop_task(engine, state, worktree_path, repo_root, type_loader, loop_type).await;
 
@@ -1160,6 +1210,92 @@ fn topo_dfs_idx(
     }
     debug!(idx, "topo_dfs_idx: adding to result");
     result.push(idx);
+}
+
+/// Convert an EventBus event to a StateEvent for broadcasting to TUI
+///
+/// Returns None for events that don't need to be forwarded (e.g., already handled by state updates)
+fn convert_to_state_event(event: &LoopEvent) -> Option<StateEvent> {
+    match event {
+        LoopEvent::LoopStarted {
+            execution_id,
+            loop_type,
+            ..
+        } => Some(StateEvent::LoopStarted {
+            execution_id: execution_id.clone(),
+            loop_type: loop_type.clone(),
+        }),
+        LoopEvent::IterationStarted {
+            execution_id,
+            iteration,
+        } => Some(StateEvent::IterationStarted {
+            execution_id: execution_id.clone(),
+            iteration: *iteration,
+        }),
+        LoopEvent::TokenReceived {
+            execution_id,
+            iteration,
+            token,
+        } => Some(StateEvent::TokenReceived {
+            execution_id: execution_id.clone(),
+            iteration: *iteration,
+            token: token.clone(),
+        }),
+        LoopEvent::ToolCallStarted {
+            execution_id,
+            iteration,
+            tool_name,
+            ..
+        } => Some(StateEvent::ToolCallStarted {
+            execution_id: execution_id.clone(),
+            iteration: *iteration,
+            tool_name: tool_name.clone(),
+        }),
+        LoopEvent::ToolCallCompleted {
+            execution_id,
+            iteration,
+            tool_name,
+            success,
+            ..
+        } => Some(StateEvent::ToolCallCompleted {
+            execution_id: execution_id.clone(),
+            iteration: *iteration,
+            tool_name: tool_name.clone(),
+            success: *success,
+        }),
+        LoopEvent::ValidationOutput {
+            execution_id,
+            iteration,
+            line,
+            is_stderr,
+        } => Some(StateEvent::ValidationOutput {
+            execution_id: execution_id.clone(),
+            iteration: *iteration,
+            line: line.clone(),
+            is_stderr: *is_stderr,
+        }),
+        LoopEvent::ValidationCompleted {
+            execution_id,
+            iteration,
+            exit_code,
+            ..
+        } => Some(StateEvent::ValidationCompleted {
+            execution_id: execution_id.clone(),
+            iteration: *iteration,
+            exit_code: *exit_code,
+        }),
+        LoopEvent::LoopCompleted {
+            execution_id,
+            success,
+            total_iterations,
+        } => Some(StateEvent::LoopCompleted {
+            execution_id: execution_id.clone(),
+            success: *success,
+            total_iterations: *total_iterations,
+        }),
+        // Other events don't need to be forwarded to TUI
+        _ => None,
+    }
 }
 
 #[cfg(test)]

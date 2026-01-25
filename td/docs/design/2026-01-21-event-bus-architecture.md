@@ -5,6 +5,47 @@
 **Status:** Implemented
 **Review Passes Completed:** 5/5
 
+## Implementation Notes (2026-01-25)
+
+The EventBus infrastructure was implemented in Phase 1, but daemon-spawned loops were **not wired up** to emit events. The TUI's REPL chat had streaming, but loops spawned by TaskManager ran without an EventEmitter, causing output to only appear after completion.
+
+### Completed 2026-01-25:
+
+**TaskManager wiring (`td/src/loop/manager.rs`):**
+- Added `EventBus` field to TaskManager
+- Added `start_event_bridge()` method - subscribes to EventBus and forwards events to StateManager's broadcast channel
+- Modified `spawn_loop()` to create an `EventEmitter` and pass it to LoopEngine via `.with_event_emitter()`
+- Added `convert_to_state_event()` function to bridge EventBus events → StateEvents
+
+**StateManager extensions (`td/src/state/manager.rs`):**
+- Added new `StateEvent` variants for live streaming: `LoopStarted`, `IterationStarted`, `TokenReceived`, `ToolCallStarted`, `ToolCallCompleted`, `ValidationOutput`, `ValidationCompleted`, `LoopCompleted`
+- Added `broadcast_event()` and `event_sender()` methods for event forwarding
+
+**TUI live output (`td/src/tui/runner.rs`, `td/src/tui/state.rs`):**
+- Added `LiveOutputBuffer` struct for accumulating streaming output
+- Added `live_output` HashMap to AppState keyed by execution_id
+- Added event handlers: `handle_live_token()`, `handle_live_tool_started()`, `handle_live_tool_completed()`, `handle_live_validation_output()`
+- Updated `process_state_events()` to handle all new streaming event types
+
+**Data flow:**
+```
+LoopEngine (daemon-spawned)
+    │ emits events
+    ▼
+EventBus (broadcast channel)
+    │ event_bridge subscribes
+    ▼
+StateManager.event_sender() (broadcast channel)
+    │ TUI subscribes
+    ▼
+TuiRunner.process_state_events()
+    │ updates live output
+    ▼
+AppState.live_output
+```
+
+---
+
 ## Summary
 
 TaskDaemon currently operates as a black box - tasks go in, results come out, but the journey is invisible. This design introduces an event bus as the architectural spine, enabling real-time visibility into the agentic loop: prompts sent, LLM responses streaming, tool calls executing, and validation results appearing - all visible as they happen.

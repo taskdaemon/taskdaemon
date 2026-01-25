@@ -1203,50 +1203,15 @@ Working directory: {}"#,
     /// When cascade creates child executions, the TUI is notified immediately
     /// and refreshes data without waiting for the polling interval.
     async fn process_state_events(&mut self) -> Result<()> {
-        if let Some(rx) = &mut self.state_event_rx {
-            // Drain all pending events
-            let mut should_refresh = false;
+        // Collect all pending events first to avoid borrowing issues
+        let events: Vec<StateEvent> = if let Some(rx) = &mut self.state_event_rx {
+            let mut collected = Vec::new();
             loop {
                 match rx.try_recv() {
-                    Ok(event) => match &event {
-                        StateEvent::ExecutionCreated { id, loop_type } => {
-                            debug!(
-                                %id,
-                                %loop_type,
-                                "process_state_events: new execution created"
-                            );
-                            info!("New {} execution created: {}", loop_type, id);
-                            should_refresh = true;
-                        }
-                        StateEvent::ExecutionUpdated { id } => {
-                            debug!(%id, "process_state_events: execution updated");
-                            should_refresh = true;
-                        }
-                        StateEvent::ExecutionPending { id } => {
-                            debug!(%id, "process_state_events: execution pending (for LoopManager)");
-                            // TUI doesn't need to do anything special for pending events,
-                            // but we refresh to show the status change
-                            should_refresh = true;
-                        }
-                        StateEvent::IterationLogCreated {
-                            execution_id,
-                            iteration,
-                            exit_code,
-                        } => {
-                            debug!(
-                                %execution_id,
-                                iteration,
-                                exit_code,
-                                "process_state_events: iteration log created"
-                            );
-                            // Refresh to update Output/Logs views if this execution is selected
-                            should_refresh = true;
-                        }
-                    },
+                    Ok(event) => collected.push(event),
                     Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                         debug!(n, "process_state_events: lagged behind, catching up");
-                        should_refresh = true;
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
                         debug!("process_state_events: channel closed");
@@ -1255,15 +1220,153 @@ Working directory: {}"#,
                     }
                 }
             }
+            collected
+        } else {
+            return Ok(());
+        };
 
-            // Refresh immediately if we received any events
-            if should_refresh {
-                debug!("process_state_events: triggering immediate refresh");
-                self.refresh_data().await?;
-                self.last_refresh = Instant::now();
+        // Now process collected events
+        let mut should_refresh = false;
+        for event in events {
+            match &event {
+                StateEvent::ExecutionCreated { id, loop_type } => {
+                    debug!(
+                        %id,
+                        %loop_type,
+                        "process_state_events: new execution created"
+                    );
+                    info!("New {} execution created: {}", loop_type, id);
+                    should_refresh = true;
+                }
+                StateEvent::ExecutionUpdated { id } => {
+                    debug!(%id, "process_state_events: execution updated");
+                    should_refresh = true;
+                }
+                StateEvent::ExecutionPending { id } => {
+                    debug!(%id, "process_state_events: execution pending (for LoopManager)");
+                    // TUI doesn't need to do anything special for pending events,
+                    // but we refresh to show the status change
+                    should_refresh = true;
+                }
+                StateEvent::IterationLogCreated {
+                    execution_id,
+                    iteration,
+                    exit_code,
+                } => {
+                    debug!(
+                        %execution_id,
+                        iteration,
+                        exit_code,
+                        "process_state_events: iteration log created"
+                    );
+                    // Refresh to update Output/Logs views if this execution is selected
+                    should_refresh = true;
+                }
+                // === Live streaming events ===
+                StateEvent::LoopStarted {
+                    execution_id,
+                    loop_type,
+                } => {
+                    debug!(%execution_id, %loop_type, "process_state_events: loop started");
+                    should_refresh = true;
+                }
+                StateEvent::IterationStarted {
+                    execution_id,
+                    iteration,
+                } => {
+                    debug!(%execution_id, iteration, "process_state_events: iteration started");
+                    should_refresh = true;
+                }
+                StateEvent::TokenReceived {
+                    execution_id,
+                    iteration,
+                    token,
+                } => {
+                    trace!(%execution_id, iteration, token_len = token.len(), "process_state_events: token received");
+                    // Append token to live output display
+                    self.handle_live_token(execution_id, *iteration, token);
+                }
+                StateEvent::ToolCallStarted {
+                    execution_id,
+                    iteration,
+                    tool_name,
+                } => {
+                    debug!(%execution_id, iteration, %tool_name, "process_state_events: tool call started");
+                    self.handle_live_tool_started(execution_id, *iteration, tool_name);
+                }
+                StateEvent::ToolCallCompleted {
+                    execution_id,
+                    iteration,
+                    tool_name,
+                    success,
+                } => {
+                    debug!(%execution_id, iteration, %tool_name, success, "process_state_events: tool call completed");
+                    self.handle_live_tool_completed(execution_id, *iteration, tool_name, *success);
+                }
+                StateEvent::ValidationOutput {
+                    execution_id,
+                    iteration,
+                    line,
+                    is_stderr,
+                } => {
+                    trace!(%execution_id, iteration, line_len = line.len(), is_stderr, "process_state_events: validation output");
+                    self.handle_live_validation_output(execution_id, *iteration, line, *is_stderr);
+                }
+                StateEvent::ValidationCompleted {
+                    execution_id,
+                    iteration,
+                    exit_code,
+                } => {
+                    debug!(%execution_id, iteration, exit_code, "process_state_events: validation completed");
+                    should_refresh = true;
+                }
+                StateEvent::LoopCompleted {
+                    execution_id,
+                    success,
+                    total_iterations,
+                } => {
+                    debug!(%execution_id, success, total_iterations, "process_state_events: loop completed");
+                    // Clear live output buffer for completed execution
+                    self.app.state_mut().clear_live_output(execution_id);
+                    should_refresh = true;
+                }
             }
         }
+
+        // Refresh immediately if we received any events
+        if should_refresh {
+            debug!("process_state_events: triggering immediate refresh");
+            self.refresh_data().await?;
+            self.last_refresh = Instant::now();
+        }
         Ok(())
+    }
+
+    // === Live streaming event handlers ===
+
+    /// Handle live token received from LLM streaming
+    fn handle_live_token(&mut self, execution_id: &str, iteration: u32, token: &str) {
+        // Store live output in app state for display
+        self.app.state_mut().append_live_output(execution_id, iteration, token);
+    }
+
+    /// Handle tool call started event
+    fn handle_live_tool_started(&mut self, execution_id: &str, iteration: u32, tool_name: &str) {
+        let msg = format!("[Tool: {}] Running...\n", tool_name);
+        self.app.state_mut().append_live_output(execution_id, iteration, &msg);
+    }
+
+    /// Handle tool call completed event
+    fn handle_live_tool_completed(&mut self, execution_id: &str, iteration: u32, tool_name: &str, success: bool) {
+        let status = if success { "✓" } else { "✗" };
+        let msg = format!("[Tool: {}] {} Done\n", tool_name, status);
+        self.app.state_mut().append_live_output(execution_id, iteration, &msg);
+    }
+
+    /// Handle validation output line
+    fn handle_live_validation_output(&mut self, execution_id: &str, iteration: u32, line: &str, _is_stderr: bool) {
+        let msg = format!("{}\n", line);
+        self.app.state_mut().append_live_output(execution_id, iteration, &msg);
     }
 
     /// Run plan creation (executes in background task)

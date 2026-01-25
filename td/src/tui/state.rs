@@ -556,6 +556,22 @@ pub struct AppState {
     pub session_cost_usd: f64,
     /// Current model name (for cost calculation)
     pub current_model: String,
+
+    // === Live output streaming ===
+    /// Live output buffers keyed by execution_id
+    /// Each buffer contains the streaming output for a loop execution
+    pub live_output: std::collections::HashMap<String, LiveOutputBuffer>,
+}
+
+/// Buffer for live streaming output from a loop execution
+#[derive(Debug, Clone, Default)]
+pub struct LiveOutputBuffer {
+    /// Current iteration number
+    pub iteration: u32,
+    /// Accumulated output text
+    pub content: String,
+    /// Maximum content size before truncating (keep last N chars)
+    pub max_size: usize,
 }
 
 impl Default for AppState {
@@ -612,6 +628,39 @@ impl Default for AppState {
             session_output_tokens: 0,
             session_cost_usd: 0.0,
             current_model: String::new(),
+            // Live output
+            live_output: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl LiveOutputBuffer {
+    /// Maximum size of live output buffer (100KB)
+    const MAX_SIZE: usize = 100 * 1024;
+
+    /// Create a new buffer for the given iteration
+    pub fn new(iteration: u32) -> Self {
+        Self {
+            iteration,
+            content: String::new(),
+            max_size: Self::MAX_SIZE,
+        }
+    }
+
+    /// Append content, truncating from the beginning if needed
+    pub fn append(&mut self, text: &str) {
+        self.content.push_str(text);
+        // If over max size, keep only the last max_size chars
+        if self.content.len() > self.max_size {
+            let excess = self.content.len() - self.max_size;
+            // Find a safe char boundary to cut at
+            let cut_at = self
+                .content
+                .char_indices()
+                .find(|(i, _)| *i >= excess)
+                .map(|(i, _)| i)
+                .unwrap_or(excess);
+            self.content = self.content[cut_at..].to_string();
         }
     }
 }
@@ -914,6 +963,35 @@ impl AppState {
         self.streaming_input_tokens = None;
         self.streaming_output_tokens = None;
         self.current_model = model.to_string();
+    }
+
+    /// Append live output for an execution
+    ///
+    /// This is called when streaming events are received from daemon-spawned loops.
+    pub fn append_live_output(&mut self, execution_id: &str, iteration: u32, text: &str) {
+        let buffer = self
+            .live_output
+            .entry(execution_id.to_string())
+            .or_insert_with(|| LiveOutputBuffer::new(iteration));
+
+        // Update iteration if changed
+        if buffer.iteration != iteration {
+            buffer.iteration = iteration;
+            // Optionally clear buffer on new iteration, or keep accumulating
+            // For now, keep accumulating to show full history
+        }
+
+        buffer.append(text);
+    }
+
+    /// Get live output for an execution
+    pub fn get_live_output(&self, execution_id: &str) -> Option<&LiveOutputBuffer> {
+        self.live_output.get(execution_id)
+    }
+
+    /// Clear live output for an execution (called when loop completes)
+    pub fn clear_live_output(&mut self, execution_id: &str) {
+        self.live_output.remove(execution_id);
     }
 
     /// Finish a request and accumulate session totals
